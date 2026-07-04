@@ -25,6 +25,19 @@ const MIGRATIONS: string[] = [
     result TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
+  // Phase 2
+  `CREATE TABLE IF NOT EXISTS gym_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    notes TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS leetcode_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    total_solved INTEGER NOT NULL,
+    streak INTEGER NOT NULL DEFAULT 0,
+    recent TEXT
+  )`,
 ];
 
 function connect(): Database.Database {
