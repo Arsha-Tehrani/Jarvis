@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { weeklyDigestJob } from "@/lib/digest";
 import { pollCalendarJob } from "@/lib/google";
 import { pullLeetCodeJob } from "@/lib/leetcode";
 import { netWorthSnapshotJob } from "@/lib/networth";
@@ -18,6 +19,7 @@ const JOBS: Job[] = [
   { name: "stocks-refresh", schedule: "*/15 * * * *", run: refreshStocksJob },
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
+  { name: "weekly-digest", schedule: "0 21 * * 0", run: weeklyDigestJob },
 ];
 
 const globalForCron = globalThis as unknown as { __jarvisCronStarted?: boolean };
