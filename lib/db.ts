@@ -38,6 +38,29 @@ const MIGRATIONS: string[] = [
     streak INTEGER NOT NULL DEFAULT 0,
     recent TEXT
   )`,
+  // Phase 3
+  `CREATE TABLE IF NOT EXISTS statements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT,
+    file_path TEXT NOT NULL UNIQUE,
+    imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    amount REAL NOT NULL,
+    merchant TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'Uncategorized',
+    raw_description TEXT NOT NULL,
+    statement_id INTEGER REFERENCES statements(id) ON DELETE CASCADE,
+    is_recurring INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL UNIQUE,
+    target REAL NOT NULL,
+    period TEXT NOT NULL DEFAULT 'month'
+  )`,
 ];
 
 function connect(): Database.Database {
