@@ -38,7 +38,7 @@ export function GymHeatmap({ loggedDates }: { loggedDates: string[] }) {
                   title={`${date}${logged.has(date) ? " — gym ✓" : ""}`}
                   className={cn(
                     "size-2.5 rounded-[2px]",
-                    logged.has(date) ? "bg-emerald-500" : "bg-muted",
+                    logged.has(date) ? "bg-primary" : "bg-muted",
                     date === todayKey && "ring-1 ring-foreground/40"
                   )}
                 />
