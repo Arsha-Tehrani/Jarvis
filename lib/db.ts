@@ -3,7 +3,10 @@ import path from "path";
 
 // One connection per process. Next.js dev hot-reload re-evaluates modules,
 // so stash the handle on globalThis to avoid leaking connections.
-const globalForDb = globalThis as unknown as { __jarvisDb?: Database.Database };
+const globalForDb = globalThis as unknown as {
+  __jarvisDb?: Database.Database;
+  __jarvisMigrationCount?: number;
+};
 
 // Schema definitions are centralized here. Tables are created per phase:
 // each entry is idempotent (CREATE TABLE IF NOT EXISTS), run on startup.
@@ -86,6 +89,15 @@ const MIGRATIONS: string[] = [
     refresh_token TEXT,
     expires_at TEXT NOT NULL
   )`,
+  // Phase 6a — sleep + health metrics (one row per date+kind)
+  `CREATE TABLE IF NOT EXISTS health_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('sleep_hours','bedtime','weight','mood')),
+    value REAL NOT NULL,
+    notes TEXT,
+    UNIQUE(date, kind)
+  )`,
 ];
 
 function connect(): Database.Database {
@@ -99,6 +111,12 @@ function connect(): Database.Database {
 export function getDb(): Database.Database {
   if (!globalForDb.__jarvisDb) {
     globalForDb.__jarvisDb = connect();
+    globalForDb.__jarvisMigrationCount = MIGRATIONS.length;
+  } else if (globalForDb.__jarvisMigrationCount !== MIGRATIONS.length) {
+    // Dev hot-reload added migrations since this connection opened —
+    // re-run the (idempotent) list so new tables exist without a restart.
+    for (const sql of MIGRATIONS) globalForDb.__jarvisDb.exec(sql);
+    globalForDb.__jarvisMigrationCount = MIGRATIONS.length;
   }
   return globalForDb.__jarvisDb;
 }
