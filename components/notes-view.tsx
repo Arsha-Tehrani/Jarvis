@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -37,9 +38,17 @@ export function NotesView() {
     }
   }, []);
 
+  const requestedPath = useSearchParams().get("path");
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Deep link: /notes?path=… opens that note (used by the reading list).
+  useEffect(() => {
+    if (requestedPath) void open(requestedPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedPath]);
 
   async function search(e: React.FormEvent) {
     e.preventDefault();

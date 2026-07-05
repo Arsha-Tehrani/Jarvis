@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  BookOpen,
   Briefcase,
   Calendar,
   FileText,
@@ -23,6 +24,7 @@ export const NAV_ITEMS = [
   { href: "/health", label: "Health", icon: HeartPulse },
   { href: "/habits", label: "Habits", icon: Repeat },
   { href: "/career", label: "Career", icon: Briefcase },
+  { href: "/reading", label: "Reading", icon: BookOpen },
   { href: "/finance", label: "Finance", icon: Wallet },
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
   { href: "/notes", label: "Notes", icon: FileText },

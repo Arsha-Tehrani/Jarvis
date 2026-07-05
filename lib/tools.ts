@@ -5,6 +5,7 @@ import { createCalendarEvent } from "@/lib/google";
 import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
 import { logHabitByName } from "@/lib/habits";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
+import { READING_KINDS, addReadingItem } from "@/lib/reading";
 import { appendNote } from "@/lib/notes";
 import type { LlmToolDef } from "@/lib/llm";
 
@@ -323,6 +324,29 @@ const advanceApplicationTool: Tool<typeof advanceApplicationSchema> = {
     advanceApplicationByCompany(args.company, args.stage, args.next_action, args.next_action_at),
 };
 
+const addToReadingListSchema = z.object({
+  title: z.string().trim().min(1).max(300).describe("Title of the book/article/course"),
+  kind: z
+    .enum(READING_KINDS)
+    .optional()
+    .describe("What it is; omit for 'book'"),
+  author: z.string().max(200).optional().describe("Author, if mentioned"),
+  link: z.string().max(1000).optional().describe("URL, if mentioned"),
+  notes: z.string().max(5000).optional().describe("Why it was added / context"),
+});
+
+const addToReadingListTool: Tool<typeof addToReadingListSchema> = {
+  name: "add_to_reading_list",
+  description:
+    "Add a book, article, course, paper, or video to the user's reading/learning list. Use when the user says they want to read/watch/learn something.",
+  schema: addToReadingListSchema,
+  requiresConfirm: false,
+  handler: (args) => {
+    addReadingItem(args);
+    return `Added "${args.title}" to the reading list (${args.kind ?? "book"}).`;
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -335,6 +359,7 @@ export const tools: Tool[] = [
   logHabitTool as Tool,
   addApplicationTool as Tool,
   advanceApplicationTool as Tool,
+  addToReadingListTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

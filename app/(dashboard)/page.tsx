@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   Briefcase,
   Calendar,
   Code2,
@@ -12,6 +13,7 @@ import {
 import { getDb } from "@/lib/db";
 import { followUpsDue } from "@/lib/career";
 import { listHabits } from "@/lib/habits";
+import { currentReads } from "@/lib/reading";
 import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
 import { AgentChat } from "@/components/agent-chat";
@@ -118,6 +120,9 @@ export default function TodayPage() {
 
   // Career: follow-ups due
   const dueFollowUps = followUpsDue();
+
+  // Reading: current reads
+  const reads = currentReads();
 
   // Habits: done today + best streak
   const habits = listHabits();
@@ -261,6 +266,16 @@ export default function TodayPage() {
         >
           {lcTrend.length > 1 && <Sparkline data={lcTrend} />}
         </MetricCard>
+        {reads.length > 0 && (
+          <MetricCard
+            href="/reading"
+            label="Reading"
+            icon={<BookOpen />}
+            hero={reads.length}
+            unit={reads.length === 1 ? "in progress" : "in progress"}
+            sub={`now: ${reads[0].title}${reads[0].author ? ` — ${reads[0].author}` : ""}`}
+          />
+        )}
         <MetricCard
           href="/finance"
           label="Spend"
