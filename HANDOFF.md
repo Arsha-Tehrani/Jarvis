@@ -1,112 +1,127 @@
-# HANDOFF — updated after Phase 4 (2026-07-05)
+# HANDOFF — updated after Phases 5–8 (2026-07-05)
 
-All four phases are **built, verified as far as possible without live
-credentials/models, and committed**. The app is feature-complete per
-`jarvis-plan-final.md` §6. What remains is filling in your keys and running the
-deferred-tests checklist below.
+Phases 1–8 are built and committed. This run (5–8) had no live Ollama and no
+credentials, so everything below marked *deferred* still needs your keys and a
+walkthrough. Every phase finished on a green `npm run build` + `npm run
+typecheck`; `npm test` runs 8 passing unit tests. The test DB was deleted —
+first boot starts clean.
 
-## Commits
+## Commits (this run)
 
 | Commit | What |
 |---|---|
-| `d073f60` | Phase 1: spine — Next.js + SQLite, Tasks CRUD, agent with validated `add_task` |
-| `fcfda2c` | Phase 2: trackers — gym heatmap, LeetCode pull + fallback, cron worker |
-| `f361964` | Phase 3: finance — statement ingest, categorization, views, goals |
-| `deaa6e9` | HANDOFF (phase 1–3 version) |
-| `5526d55` | Phase 4: notes, stocks, calendar + backup export |
-| (this file) | HANDOFF update |
+| `99439a9` | Phase 5: minimalist hub restyle, PWA basics, responsive pass |
+| `cd36aab` | 6a: sleep + health metrics (`log_metric`) |
+| `f018590` | 6b: generic habits + shared heatmap (`log_habit`) |
+| `72e1bf2` | 6c: career/job hunt (`add_application`, `advance_application`) |
+| `1530cfa` | 6d: reading & learning (`add_to_reading_list`, /notes?path= links) |
+| `96cbe86` | 6e: people/keep-in-touch (`log_contact`) |
+| `876f60a` | 6f: net worth rollup (accounts + daily snapshots) |
+| `946673c` | 6g: weekly digest (Sunday cron → LLM → daily note) |
+| `1a913be` | Phase 7: Slack morning check-in |
+| `8eca66b` | Phase 8: Gmail triage |
 
-Every phase finished on a green `npm run build` + `npm run typecheck`.
-`jarvis.db` and the temp test env were deleted after verification — first boot
-starts clean and recreates the schema.
+(Earlier: `d073f60` P1, `fcfda2c` P2, `f361964` P3, `5526d55` P4.)
 
-## What Phase 4 added
+## What this run built
 
-- **Google Calendar (Testing mode, as you decided)**: Connect button on the
-  Calendar tab → Google OAuth (CSRF state cookie) → redirect
-  `http://localhost:3000/api/google/callback` → tokens in `oauth_tokens`
-  (server-side only). Polls on app open + hourly (`lib/cron.ts`), read-back
-  into `calendar_cache` — Google is the single source of truth, no webhooks.
-  Access tokens auto-refresh; when the ~weekly testing-mode refresh token dies
-  you get a clear "reconnect from the Calendar tab" error, not a crash.
-- **Stocks**: holdings + watchlist with value / P&L / day move. Finnhub
-  preferred, Alpha Vantage fallback; 15-minute in-memory quote cache + 15-min
-  cron refresh (+ launch catch-up) keeps free tiers happy. No key → tab still
-  works for tracking, quotes show a clear error.
-- **Obsidian Notes**: today's daily note (found wherever it lives in the
-  vault), recently edited list, content search with snippets, note viewer.
-  Appends are additive-only and path-traversal-guarded.
-- **Agent tools**: `append_note` (defaults to today's daily note),
-  `create_calendar_event`, `set_reminder` (15-min calendar event → free phone
-  notification). All zod-validated like everything else.
-- **Today view**: today's events (from the poll cache) + portfolio day move
-  (from the quote cache — no network during render).
-- **Backup**: "Backup ↓" button in the header downloads a JSON dump of all 10
-  tables and writes a copy to `backups/`; `npm run backup` does the same from
-  the CLI. `oauth_tokens` is deliberately excluded from dumps.
+**Phase 5 — restyle.** Tokens only (globals.css + card.tsx): light-neutral
+page, white cards, single indigo accent, 1rem radius, soft shadows. Slim icon
+sidebar (bottom bar on phones), top bar with page title + backup. Home is a
+hub of metric cards (events, tasks, gym ring, sleep, habits, follow-ups,
+people, reading, mail, spend, net worth, portfolio) — every card links to its
+detail page. Sparkline component has the dotted-guide hover tooltip; RingGauge
+is the one gauge card. PWA: manifest + generated icons; installable from
+Chrome/Safari on the phone *later* — cross-device access itself is deferred
+(see back-burner).
 
-## Env vars you still need to fill in (.env.local)
+**Phase 6 — life areas.** Each follows the same pattern (table in lib/db.ts →
+/api route → page → hub card → zod-validated agent tool):
+- Health: sleep_hours / bedtime / weight / mood, one per day, trend charts.
+- Habits: create habits, per-habit contribution heatmap, streaks, weekly goals.
+- Career: applications by stage, follow-ups due, agent can add/advance.
+- Reading: queue/reading/done, links into Obsidian notes (`/notes?path=`).
+- People: contact cadence → overdue list, birthdays (reminders via the
+  existing `set_reminder` tool through the agent).
+- Net worth: manual accounts (debt subtracts) + holdings (cached quotes, cost
+  basis as stated fallback), daily snapshot cron → over-time chart + weekly
+  delta.
+- Weekly digest: Sunday 21:00 cron (+ catch-up) gathers the week's facts →
+  `lib/llm.chat` writes a short review → appended to today's daily note.
+  Idempotent per week; while Ollama is down it logs and retries next launch.
 
-```
-cp .env.example .env.local   # then fill in:
-```
+**Phase 7 — Slack check-in.** Outbound works now: 08:30 cron (+ catch-up,
+1/day marker) DMs the enabled questions (sleep/gym/leetcode toggles via
+`/api/slack`). Inbound is code-complete but needs the deferred tunnel: signed
+events webhook (`/api/slack/events`), replies answer pending questions in
+order, deterministic parsers first (unit-tested), LLM only for ambiguity, all
+writes through the existing tool handlers.
 
-| Var | Needed for | Where to get it |
-|---|---|---|
-| `LLM_MODEL` (+ Ollama running) | agent chat, finance categorization | `ollama pull` a tool-capable model |
-| `LEETCODE_USERNAME` | daily LeetCode pull | your leetcode.com username |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar | Google Cloud Console → OAuth client (Web), **redirect URI exactly** `http://localhost:3000/api/google/callback`, app in *Testing* mode, add yourself as a test user |
-| `FINNHUB_API_KEY` (preferred) or `ALPHAVANTAGE_API_KEY` | stock quotes | finnhub.io / alphavantage.co free signup |
-| `OBSIDIAN_VAULT_PATH` | Notes tab | absolute path to your vault folder |
+**Phase 8 — Gmail triage.** Multi-account OAuth (per-inbox token rows,
+`gmail:<email>`), 30-min poll cron (+ catch-up) fetching From/Subject/snippet
+metadata only, deterministic newsletter pre-filter, LLM triage into
+Important / Can-wait / Noise with one-line reasons, bucketed Mail tab tagged
+by inbox, hub card with important-unread count. Read-only; "Draft reply"
+creates a Gmail draft (gmail.compose) only on click — nothing can ever send.
 
-`LLM_PROVIDER`/`LLM_BASE_URL` defaults already point at local Ollama;
-`ANTHROPIC_API_KEY` only if you flip `LLM_PROVIDER=anthropic`.
+## Env vars still blank (.env.local)
 
-## Deferred tests — the full checklist
+| Var | For |
+|---|---|
+| `LLM_MODEL` + Ollama running | agent, categorization, triage, digest, draft replies |
+| `LEETCODE_USERNAME` | daily LeetCode pull |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar **and** Gmail. Redirect URIs needed on the OAuth client: `http://localhost:3000/api/google/callback` and `http://localhost:3000/api/mail/callback` |
+| `FINNHUB_API_KEY` (or `ALPHAVANTAGE_API_KEY`) | quotes, net-worth market pricing |
+| `OBSIDIAN_VAULT_PATH` | Notes tab, reading links, weekly digest |
+| `SLACK_BOT_TOKEN`, `SLACK_USER_ID` | outbound morning DM |
+| `SLACK_SIGNING_SECRET` | inbound webhook (tunnel-gated) |
 
-LLM-dependent (from phases 1–3):
-1. Live agent turn: "add a task to review my budget Friday" → task lands with
-   Friday's date; turn in `agent_log`.
-2. Confirm gate live: "set my savings goal to 30%" → pending confirmation
-   appears (must NOT auto-execute); Confirm commits it.
-3. LLM categorization: copy `samples/*.csv` into `statements/`, Import on the
-   Finance tab → "categorized by llm" instead of "rules".
+**Slack app setup (outbound):** create an app at api.slack.com → OAuth scopes
+`chat:write`, `im:write` → install to your workspace → copy the bot token
+(xoxb-…) and your member ID (profile → three dots → Copy member ID). Test with
+`POST /api/slack {"action":"send_now"}` or wait for the 08:30 cron.
 
-Credential-dependent (new in Phase 4):
-4. Real Google login: Calendar tab → Connect → sign in → lands back on
-   /calendar?google=connected with upcoming events listed; `oauth_tokens` has
-   a row; restart the app → catch-up poll logs `[google] calendar poll ok`.
-5. Agent event + reminder: "put lunch with Sam on my calendar Friday at noon"
-   and "remind me to submit the form at 5pm" → both appear in Google Calendar
-   (reminder as a 15-min ⏰ event) and in the Calendar tab after the read-back.
-6. Weekly-expiry path (whenever it happens): after ~7 days the Calendar tab
-   should show the "reconnect" error and Connect should fix it.
-7. Real quotes: add FINNHUB_API_KEY, add a holding → price/value/P&L/day move
-   fill in; Today view shows portfolio day move after the next cron tick (or
-   restart); `[stocks] refreshed N quotes` in the log every 15 min.
-8. Real vault: set OBSIDIAN_VAULT_PATH → Notes tab shows your actual daily
-   note and search works on your notes; "note down X" via the agent appends to
-   today's daily note.
-9. LeetCode live pull (from Phase 2): set LEETCODE_USERNAME → Refresh.
+**Gmail restricted-scope caveat:** `gmail.readonly` is a *restricted* Google
+scope. In Testing mode with yourself as a test user it works without
+verification (same weekly token expiry as Calendar), but publishing the app
+would require a security assessment — stay in Testing mode for this. Add both
+Gmail scopes when the consent screen asks.
 
-Verified this run (no credentials needed): all tabs render with graceful
-unconfigured states; notes daily-note/search/append on a dummy vault incl.
-default-append finding the existing daily note; path traversal rejected;
-agent `append_note` executes, calendar tools fail cleanly when unconnected and
-reject invalid args; stocks CRUD + no-key error state; google endpoints return
-actionable 409s; OAuth callback rejects a bad CSRF state; backup button and
-`npm run backup` both dump all 10 tables; all three new cron jobs schedule and
-catch-up-skip cleanly at launch.
+## Deferred tests
 
-## Known limitations / notes
+LLM-dependent: live agent turn; confirm-gate on `set_goal`; finance
+categorization on `samples/*.csv`; weekly digest content (`[digest]` log line
+Monday-ish or on launch); mail triage buckets + reasons; draft-reply quality;
+Slack ambiguous-answer fallback; agent use of the seven new Phase 6 tools.
 
-- Statement amount convention: negative = money out (debit/credit column
-  layouts handled; an all-positive single-amount CSV would read as income).
-- PDF statement parsing is best-effort (pdf-parse v2); clear "export as CSV"
-  error when nothing parses.
-- The Notes/Calendar/Stocks tabs assume one user on localhost — no auth on the
-  API routes (same as the rest of the app, by design).
-- `npm run backup` prints a harmless Node module-type warning.
-- Dark mode styles exist but there's no theme toggle yet (app renders light).
-- Deferred by plan (§7 — do not build yet): Slack capture, push sync, 24/7
-  host, email triage, command palette, weekly digest.
+Credential-dependent: Google Calendar connect/poll/event; Gmail link → poll →
+triage → draft (then link a second account); LeetCode pull; real quotes (+ net
+worth switching from cost-basis to market pricing); real vault (notes, reading
+links, digest target); Slack morning DM.
+
+Visual: eyeball the restyle on desktop + a phone (cards, sidebar/bottom nav,
+charts, heatmaps); install the PWA from the browser menu and check the icon.
+
+## Back-burner (explicitly NOT built this run, per the access note)
+
+- **Cross-device access**: no LAN binding, no tunnel. When wanted: a
+  Cloudflare Tunnel (or Tailscale for private-only) in front of
+  localhost:3000, then the PWA works from the phone anywhere.
+- **Slack inbound** rides that tunnel: expose `/api/slack/events`, set the
+  Events API request URL to `<tunnel>/api/slack/events` (the url_verification
+  handshake is implemented), subscribe to `message.im`, set
+  `SLACK_SIGNING_SECRET`, and reply to a morning check-in to test end-to-end.
+- **Gmail push notifications** (watch/webhooks) — polling covers it for now.
+- Plan §7/§9 extras: 24/7 home server, email send, command palette.
+
+## Known limitations
+
+- Hub cards for habits/reading/mail appear only once that area has data.
+- Slack inbound answers map to "yesterday" for gym/LeetCode and today for
+  sleep — by design of the morning questions.
+- Mail poll reads the 25 most recent INBOX messages per account per cycle;
+  older backlog isn't imported.
+- `npm test` prints a harmless module-type warning (package.json has no
+  `"type"` field; adding one would affect other tooling).
+- Statement amount convention unchanged (negative = money out); PDF ingest
+  still best-effort.
