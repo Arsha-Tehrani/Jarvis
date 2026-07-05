@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
+import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -132,7 +133,38 @@ const logLeetcode: Tool<typeof logLeetcodeSchema> = {
   },
 };
 
-export const tools: Tool[] = [addTask as Tool, logGym as Tool, logLeetcode as Tool];
+const setGoalSchema = z.object({
+  kind: z
+    .enum(GOAL_KINDS)
+    .describe("Which goal to set: savings_rate (percent of income), gym_days_per_week, or leetcode_per_week"),
+  target: z
+    .number()
+    .positive()
+    .max(1_000_000)
+    .describe("Target value: percent for savings_rate, count for the others"),
+  period: z.enum(["week", "month"]).optional().describe("Measurement period; omit for the sensible default"),
+});
+
+// Writes financial data → requiresConfirm (non-negotiable #2). The agent
+// route returns this as pending; it only runs after the user confirms.
+const setGoal: Tool<typeof setGoalSchema> = {
+  name: "set_goal",
+  description:
+    "Set or update a personal goal (savings rate, gym days per week, LeetCode problems per week). Requires user confirmation before it commits.",
+  schema: setGoalSchema,
+  requiresConfirm: true,
+  handler: (args) => {
+    upsertGoal(args.kind, args.target, args.period);
+    return `Goal set: ${args.kind} → ${args.target}${args.kind === "savings_rate" ? "%" : ""}.`;
+  },
+};
+
+export const tools: Tool[] = [
+  addTask as Tool,
+  logGym as Tool,
+  logLeetcode as Tool,
+  setGoal as Tool,
+];
 
 export function getTool(name: string): Tool | undefined {
   return tools.find((t) => t.name === name);

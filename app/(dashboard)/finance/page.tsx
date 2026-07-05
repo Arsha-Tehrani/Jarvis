@@ -1,5 +1,10 @@
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { FinanceView } from "@/components/finance-view";
 
 export default function FinancePage() {
-  return <PlaceholderPage title="Finance" phase={3} />;
+  return (
+    <div className="flex flex-col gap-4">
+      <h2 className="text-lg font-semibold">Finance</h2>
+      <FinanceView />
+    </div>
+  );
 }
