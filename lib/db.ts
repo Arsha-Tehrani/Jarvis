@@ -98,6 +98,19 @@ const MIGRATIONS: string[] = [
     notes TEXT,
     UNIQUE(date, kind)
   )`,
+  // Phase 6b — generic habits
+  `CREATE TABLE IF NOT EXISTS habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    cadence TEXT NOT NULL DEFAULT 'daily' CHECK (cadence IN ('daily','weekly')),
+    goal INTEGER NOT NULL DEFAULT 1
+  )`,
+  `CREATE TABLE IF NOT EXISTS habit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    UNIQUE(habit_id, date)
+  )`,
 ];
 
 function connect(): Database.Database {

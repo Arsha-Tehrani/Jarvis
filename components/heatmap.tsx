@@ -3,8 +3,9 @@
 import { cn } from "@/lib/utils";
 
 // GitHub-style contribution grid: 53 columns of weeks, rows Sun–Sat.
-// Binary cells — you either went that day or you didn't.
-export function GymHeatmap({ loggedDates }: { loggedDates: string[] }) {
+// Binary cells — the day is either logged or it isn't. Shared by the gym
+// tracker and every habit.
+export function ContributionHeatmap({ loggedDates }: { loggedDates: string[] }) {
   const logged = new Set(loggedDates);
   const today = new Date();
   const todayKey = toKey(today);
@@ -35,7 +36,7 @@ export function GymHeatmap({ loggedDates }: { loggedDates: string[] }) {
               ) : (
                 <div
                   key={d}
-                  title={`${date}${logged.has(date) ? " — gym ✓" : ""}`}
+                  title={`${date}${logged.has(date) ? " ✓" : ""}`}
                   className={cn(
                     "size-2.5 rounded-[2px]",
                     logged.has(date) ? "bg-primary" : "bg-muted",
