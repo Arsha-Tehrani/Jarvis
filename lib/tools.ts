@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
 import { createCalendarEvent } from "@/lib/google";
+import { logHabitByName } from "@/lib/habits";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { appendNote } from "@/lib/notes";
 import type { LlmToolDef } from "@/lib/llm";
@@ -259,6 +260,24 @@ const logMetricTool: Tool<typeof logMetricSchema> = {
   },
 };
 
+const logHabitSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(100)
+    .describe("The habit's name as the user calls it (matched case-insensitively)"),
+  date: dateField,
+});
+
+const logHabitTool: Tool<typeof logHabitSchema> = {
+  name: "log_habit",
+  description:
+    "Mark a habit as done for a date (defaults to today). Use when the user says they did one of their tracked habits. Fails with the list of existing habits if the name doesn't match.",
+  schema: logHabitSchema,
+  requiresConfirm: false,
+  handler: (args) => logHabitByName(args.name, args.date),
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -268,6 +287,7 @@ export const tools: Tool[] = [
   createEventTool as Tool,
   setReminderTool as Tool,
   logMetricTool as Tool,
+  logHabitTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

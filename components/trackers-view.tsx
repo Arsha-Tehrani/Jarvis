@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { GymHeatmap } from "@/components/gym-heatmap";
+import { ContributionHeatmap } from "@/components/heatmap";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -131,7 +131,7 @@ export function TrackersView() {
             </span>
           </div>
           {gymError && <p className="text-sm text-destructive">{gymError}</p>}
-          <GymHeatmap loggedDates={gymLogs.map((l) => l.date)} />
+          <ContributionHeatmap loggedDates={gymLogs.map((l) => l.date)} />
         </CardContent>
       </Card>
 

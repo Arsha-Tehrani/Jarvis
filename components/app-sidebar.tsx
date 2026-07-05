@@ -9,6 +9,7 @@ import {
   HeartPulse,
   Home,
   ListChecks,
+  Repeat,
   TrendingUp,
   Wallet,
 } from "lucide-react";
@@ -19,6 +20,7 @@ export const NAV_ITEMS = [
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/trackers", label: "Trackers", icon: Activity },
   { href: "/health", label: "Health", icon: HeartPulse },
+  { href: "/habits", label: "Habits", icon: Repeat },
   { href: "/finance", label: "Finance", icon: Wallet },
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
   { href: "/notes", label: "Notes", icon: FileText },

@@ -4,10 +4,12 @@ import {
   Dumbbell,
   HeartPulse,
   ListChecks,
+  Repeat,
   TrendingUp,
   Wallet,
 } from "lucide-react";
 import { getDb } from "@/lib/db";
+import { listHabits } from "@/lib/habits";
 import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
 import { AgentChat } from "@/components/agent-chat";
@@ -112,6 +114,14 @@ export default function TodayPage() {
     return { label: d.slice(5), value: spendByDay.get(d) ?? 0 };
   });
 
+  // Habits: done today + best streak
+  const habits = listHabits();
+  const habitsDoneToday = habits.filter((h) => h.doneToday).length;
+  const bestStreak = habits.reduce(
+    (best, h) => (h.streak > (best?.streak ?? 0) ? h : best),
+    undefined as (typeof habits)[number] | undefined
+  );
+
   // Health: last night's sleep + latest mood
   const sleep = latestMetric("sleep_hours");
   const mood = latestMetric("mood");
@@ -194,6 +204,20 @@ export default function TodayPage() {
           sub={wentToday ? "logged today ✓" : "not logged today"}
           range="Past 7 days"
         />
+        {habits.length > 0 && (
+          <MetricCard
+            href="/habits"
+            label="Habits"
+            icon={<Repeat />}
+            hero={`${habitsDoneToday}/${habits.length}`}
+            unit="done today"
+            sub={
+              bestStreak && bestStreak.streak > 0
+                ? `best streak: ${bestStreak.name} (${bestStreak.streak}d)`
+                : "log one to start a streak"
+            }
+          />
+        )}
         <MetricCard
           href="/health"
           label="Sleep"
