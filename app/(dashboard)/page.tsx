@@ -8,11 +8,13 @@ import {
   ListChecks,
   Repeat,
   TrendingUp,
+  Users,
   Wallet,
 } from "lucide-react";
 import { getDb } from "@/lib/db";
 import { followUpsDue } from "@/lib/career";
 import { listHabits } from "@/lib/habits";
+import { birthdaysThisWeek, overduePeople } from "@/lib/people";
 import { currentReads } from "@/lib/reading";
 import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
@@ -123,6 +125,10 @@ export default function TodayPage() {
 
   // Reading: current reads
   const reads = currentReads();
+
+  // People: overdue + birthdays within 7 days
+  const overdue = overduePeople();
+  const birthdays = birthdaysThisWeek();
 
   // Habits: done today + best streak
   const habits = listHabits();
@@ -266,6 +272,25 @@ export default function TodayPage() {
         >
           {lcTrend.length > 1 && <Sparkline data={lcTrend} />}
         </MetricCard>
+        <MetricCard
+          href="/people"
+          label="People"
+          icon={<Users />}
+          hero={overdue.length}
+          unit="to catch up with"
+          sub={
+            birthdays.length > 0
+              ? `🎂 ${birthdays
+                  .slice(0, 2)
+                  .map((p) =>
+                    p.birthdayInDays === 0 ? `${p.name} today` : `${p.name} in ${p.birthdayInDays}d`
+                  )
+                  .join(", ")}`
+              : overdue[0]
+                ? `start with ${overdue[0].name}`
+                : "all caught up"
+          }
+        />
         {reads.length > 0 && (
           <MetricCard
             href="/reading"
