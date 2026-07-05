@@ -26,8 +26,10 @@ export function SpendChart({ data }: { data: CategorySpend[] }) {
   return (
     <div
       className={[
-        "[--gridline:#e1e0d9] [--ink-muted:#898781] [--series-1:#2a78d6] [--series-2:#1baf7a]",
-        "dark:[--gridline:#2c2c2a] dark:[--series-1:#3987e5] dark:[--series-2:#199e70]",
+        // Single-accent minimalist scheme: this month = accent, last month =
+        // muted neutral context. Identity also carried by legend + table.
+        "[--gridline:#ececea] [--ink-muted:#8b8a85] [--series-1:var(--primary)] [--series-2:#b8b7b2]",
+        "dark:[--gridline:#2c2c2a] dark:[--series-2:#6b6a66]",
       ].join(" ")}
     >
       <div className="mb-2 flex gap-4 text-xs text-muted-foreground">

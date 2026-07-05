@@ -1,187 +1,226 @@
-import Link from "next/link";
+import { Calendar, Code2, Dumbbell, ListChecks, TrendingUp, Wallet } from "lucide-react";
 import { getDb } from "@/lib/db";
 import { getCachedQuote } from "@/lib/stocks";
 import { AgentChat } from "@/components/agent-chat";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MetricCard } from "@/components/metric-card";
+import { RingGauge } from "@/components/ring-gauge";
+import { Sparkline, type SparkPoint } from "@/components/sparkline";
 
 export const dynamic = "force-dynamic";
 
-type TaskRow = {
-  id: number;
-  title: string;
-  due_at: string | null;
-  priority: "low" | "medium" | "high";
-};
+const usd = (v: number) =>
+  `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
+function isoDaysAgo(n: number): string {
+  return new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
+}
 
 export default function TodayPage() {
   const db = getDb();
-  const tasks = db
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Tasks
+  const openTasks = (
+    db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'open'").get() as { n: number }
+  ).n;
+  const dueToday = (
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND substr(due_at,1,10) <= ?"
+      )
+      .get(today) as { n: number }
+  ).n;
+  const topTask = db
     .prepare(
-      `SELECT id, title, due_at, priority FROM tasks
-       WHERE status = 'open'
+      `SELECT title FROM tasks WHERE status = 'open'
        ORDER BY due_at IS NULL, due_at ASC,
          CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
-       LIMIT 5`
+       LIMIT 1`
     )
-    .all() as TaskRow[];
+    .get() as { title: string } | undefined;
 
-  const today = new Date().toISOString().slice(0, 10);
-  const wentToday = !!db.prepare("SELECT 1 FROM gym_logs WHERE date = ?").get(today);
-  const gymThisMonth = (
+  // Calendar (poll cache — Google is the source of truth)
+  const todaysEvents = db
+    .prepare(
+      `SELECT title, start FROM calendar_cache
+       WHERE substr(start, 1, 10) = ? ORDER BY start ASC`
+    )
+    .all(today) as { title: string; start: string }[];
+  const nextEvent = todaysEvents.find(
+    (e) => /^\d{4}-\d{2}-\d{2}$/.test(e.start) || Date.parse(e.start) >= Date.now()
+  );
+
+  // Gym: rolling 7 days vs weekly goal
+  const gymWeek = (
     db
-      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date LIKE ?")
-      .get(`${today.slice(0, 7)}%`) as { n: number }
+      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ?")
+      .get(isoDaysAgo(7)) as { n: number }
   ).n;
+  const gymGoal =
+    (
+      db.prepare("SELECT target FROM goals WHERE kind = 'gym_days_per_week'").get() as
+        | { target: number }
+        | undefined
+    )?.target ?? 4;
+  const wentToday = !!db.prepare("SELECT 1 FROM gym_logs WHERE date = ?").get(today);
+
+  // LeetCode: latest + trend
   const leetcode = db
     .prepare(
       "SELECT date, total_solved, streak FROM leetcode_stats ORDER BY date DESC LIMIT 1"
     )
     .get() as { date: string; total_solved: number; streak: number } | undefined;
+  const lcTrend = (
+    db
+      .prepare(
+        "SELECT date, total_solved FROM leetcode_stats ORDER BY date DESC LIMIT 14"
+      )
+      .all() as { date: string; total_solved: number }[]
+  )
+    .reverse()
+    .map<SparkPoint>((r) => ({ label: r.date, value: r.total_solved }));
 
-  // Today's events from the poll cache (Google is the source of truth; we
-  // only read back). Covers timed events today and all-day events.
-  const todaysEvents = db
+  // Spend this month + last-14-day daily spend
+  const spendMonth = (
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(-amount), 0) AS s FROM transactions
+         WHERE amount < 0 AND category NOT IN ('Transfer','Investment')
+           AND substr(date, 1, 7) = ?`
+      )
+      .get(today.slice(0, 7)) as { s: number }
+  ).s;
+  const spendRows = db
     .prepare(
-      `SELECT google_event_id, title, start FROM calendar_cache
-       WHERE substr(start, 1, 10) = ? ORDER BY start ASC LIMIT 8`
+      `SELECT substr(date, 1, 10) AS d, SUM(-amount) AS s FROM transactions
+       WHERE amount < 0 AND category NOT IN ('Transfer','Investment') AND date > ?
+       GROUP BY d`
     )
-    .all(today) as { google_event_id: string; title: string; start: string }[];
+    .all(isoDaysAgo(14)) as { d: string; s: number }[];
+  const spendByDay = new Map(spendRows.map((r) => [r.d, r.s]));
+  const spendTrend: SparkPoint[] = Array.from({ length: 14 }, (_, i) => {
+    const d = isoDaysAgo(13 - i);
+    return { label: d.slice(5), value: spendByDay.get(d) ?? 0 };
+  });
 
-  // Portfolio day change from the in-memory quote cache only — no network
-  // in a server render. Cron warms it at launch and every 15 minutes.
+  // Portfolio from the quote cache only (no network in render)
   const holdings = db
     .prepare("SELECT ticker, shares FROM holdings")
     .all() as { ticker: string; shares: number }[];
+  let portfolioValue: number | null = null;
   let dayMove: number | null = null;
   if (holdings.length > 0) {
-    let sum = 0;
+    let value = 0;
+    let move = 0;
     let covered = false;
     for (const h of holdings) {
       const q = getCachedQuote(h.ticker);
       if (q) {
-        sum += q.change * h.shares;
+        value += q.price * h.shares;
+        move += q.change * h.shares;
         covered = true;
       }
     }
-    dayMove = covered ? sum : null;
+    if (covered) {
+      portfolioValue = value;
+      dayMove = move;
+    }
   }
 
   return (
     <div className="flex flex-col gap-6">
       <AgentChat />
-      {(todaysEvents.length > 0 || holdings.length > 0) && (
-        <Card>
-          <CardHeader>
-            <CardTitle>
-              <Link href="/calendar" className="hover:underline">
-                Today
-              </Link>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 text-sm">
-            {todaysEvents.length > 0 ? (
-              <ul className="flex flex-col gap-1">
-                {todaysEvents.map((e) => (
-                  <li key={e.google_event_id} className="flex items-baseline gap-2">
-                    <span className="w-16 shrink-0 text-muted-foreground">
-                      {/^\d{4}-\d{2}-\d{2}$/.test(e.start)
-                        ? "all day"
-                        : new Date(e.start).toLocaleTimeString("en-US", {
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })}
-                    </span>
-                    <span>{e.title}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-muted-foreground">No events today.</p>
-            )}
-            {holdings.length > 0 && (
-              <p className="text-muted-foreground">
-                Portfolio day move:{" "}
-                {dayMove == null ? (
-                  <span>— (quotes not loaded yet)</span>
-                ) : (
-                  <span
-                    className={
-                      dayMove >= 0
-                        ? "text-emerald-600 dark:text-emerald-500"
-                        : "text-destructive"
-                    }
-                  >
-                    {dayMove >= 0 ? "▲" : "▼"} $
-                    {Math.abs(dayMove).toLocaleString("en-US", {
-                      maximumFractionDigits: 2,
-                    })}
-                  </span>
-                )}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            <Link href="/trackers" className="hover:underline">
-              Trackers
-            </Link>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-6 text-sm">
-          <div>
-            <p className="font-medium">Gym</p>
-            <p className="text-muted-foreground">
-              {wentToday ? "Went today ✓" : "Not logged today"} · {gymThisMonth} this month
-            </p>
-          </div>
-          <div>
-            <p className="font-medium">LeetCode</p>
-            <p className="text-muted-foreground">
-              {leetcode
-                ? `${leetcode.total_solved} solved · ${leetcode.streak} day streak (as of ${leetcode.date})`
-                : "No stats yet"}
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            <Link href="/tasks" className="hover:underline">
-              Top tasks
-            </Link>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {tasks.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No open tasks. Add one in the Tasks tab or ask Jarvis.
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {tasks.map((t) => (
-                <li key={t.id} className="flex items-center gap-2 text-sm">
-                  <span>{t.title}</span>
-                  {t.due_at && (
-                    <span className="text-muted-foreground">
-                      due {t.due_at.slice(0, 10)}
-                    </span>
-                  )}
-                  {t.priority !== "medium" && (
-                    <Badge variant={t.priority === "high" ? "destructive" : "secondary"}>
-                      {t.priority}
-                    </Badge>
-                  )}
-                </li>
-              ))}
-            </ul>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <MetricCard
+          href="/calendar"
+          label="Events"
+          icon={<Calendar />}
+          hero={todaysEvents.length}
+          unit={todaysEvents.length === 1 ? "event today" : "events today"}
+          sub={
+            nextEvent
+              ? `next: ${nextEvent.title}${
+                  /^\d{4}-\d{2}-\d{2}$/.test(nextEvent.start)
+                    ? " (all day)"
+                    : ` at ${new Date(nextEvent.start).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`
+                }`
+              : "nothing scheduled"
+          }
+        />
+        <MetricCard
+          href="/tasks"
+          label="Tasks"
+          icon={<ListChecks />}
+          hero={openTasks}
+          unit="open"
+          sub={
+            topTask
+              ? `${dueToday > 0 ? `${dueToday} due · ` : ""}top: ${topTask.title}`
+              : "all clear"
+          }
+        />
+        <MetricCard
+          href="/trackers"
+          label="Gym"
+          icon={<Dumbbell />}
+          hero={
+            <span className="inline-flex items-center gap-4">
+              <RingGauge value={gymWeek} target={gymGoal} />
+            </span>
+          }
+          sub={wentToday ? "logged today ✓" : "not logged today"}
+          range="Past 7 days"
+        />
+        <MetricCard
+          href="/trackers"
+          label="LeetCode"
+          icon={<Code2 />}
+          hero={leetcode?.total_solved ?? "—"}
+          unit="solved"
+          sub={leetcode ? `${leetcode.streak}-day streak` : "no stats yet"}
+        >
+          {lcTrend.length > 1 && <Sparkline data={lcTrend} />}
+        </MetricCard>
+        <MetricCard
+          href="/finance"
+          label="Spend"
+          icon={<Wallet />}
+          hero={usd(spendMonth)}
+          unit="this month"
+          range="Past 14 days"
+        >
+          {spendTrend.some((p) => p.value > 0) && (
+            <Sparkline
+              data={spendTrend}
+              variant="bars"
+              formatValue={(v) => usd(v)}
+            />
           )}
-        </CardContent>
-      </Card>
+        </MetricCard>
+        <MetricCard
+          href="/stocks"
+          label="Portfolio"
+          icon={<TrendingUp />}
+          hero={portfolioValue != null ? usd(portfolioValue) : "—"}
+          sub={
+            holdings.length === 0 ? (
+              "no holdings yet"
+            ) : dayMove == null ? (
+              "quotes not loaded yet"
+            ) : (
+              <span
+                className={
+                  dayMove >= 0
+                    ? "text-emerald-600 dark:text-emerald-500"
+                    : "text-destructive"
+                }
+              >
+                {dayMove >= 0 ? "▲" : "▼"} {usd(Math.abs(dayMove))} today
+              </span>
+            )
+          }
+        />
+      </div>
     </div>
   );
 }
