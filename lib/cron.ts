@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { weeklyDigestJob } from "@/lib/digest";
 import { pollCalendarJob } from "@/lib/google";
 import { pullLeetCodeJob } from "@/lib/leetcode";
+import { pollMailJob } from "@/lib/mail";
 import { netWorthSnapshotJob } from "@/lib/networth";
 import { slackCheckinJob } from "@/lib/slack";
 import { refreshStocksJob } from "@/lib/stocks";
@@ -22,6 +23,7 @@ const JOBS: Job[] = [
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
   { name: "weekly-digest", schedule: "0 21 * * 0", run: weeklyDigestJob },
   { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
+  { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
 ];
 
 const globalForCron = globalThis as unknown as { __jarvisCronStarted?: boolean };

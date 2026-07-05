@@ -12,6 +12,7 @@ import {
   Home,
   Landmark,
   ListChecks,
+  Mail,
   Repeat,
   TrendingUp,
   Users,
@@ -32,6 +33,7 @@ export const NAV_ITEMS = [
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
   { href: "/networth", label: "Net worth", icon: Landmark },
   { href: "/notes", label: "Notes", icon: FileText },
+  { href: "/mail", label: "Mail", icon: Mail },
   { href: "/calendar", label: "Calendar", icon: Calendar },
 ];
 
