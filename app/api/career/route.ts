@@ -1,0 +1,75 @@
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { getDb } from "@/lib/db";
+import { STAGES, addApplication, followUpsDue, listApplications } from "@/lib/career";
+
+const createSchema = z.object({
+  company: z.string().trim().min(1).max(200),
+  role: z.string().trim().min(1).max(200),
+  stage: z.enum(STAGES).optional(),
+  next_action: z.string().max(500).optional(),
+  next_action_at: z.string().max(40).optional(),
+  contact: z.string().max(200).optional(),
+  link: z.string().max(1000).optional(),
+  notes: z.string().max(5000).optional(),
+});
+
+const updateSchema = z.object({
+  id: z.number().int().positive(),
+  company: z.string().trim().min(1).max(200).optional(),
+  role: z.string().trim().min(1).max(200).optional(),
+  stage: z.enum(STAGES).optional(),
+  next_action: z.string().max(500).nullable().optional(),
+  next_action_at: z.string().max(40).nullable().optional(),
+  contact: z.string().max(200).nullable().optional(),
+  link: z.string().max(1000).nullable().optional(),
+  notes: z.string().max(5000).nullable().optional(),
+});
+
+export async function GET() {
+  return NextResponse.json({
+    applications: listApplications(),
+    followUpsDue: followUpsDue(),
+  });
+}
+
+export async function POST(req: NextRequest) {
+  const parsed = createSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
+  }
+  const id = addApplication(parsed.data);
+  return NextResponse.json({ id }, { status: 201 });
+}
+
+export async function PATCH(req: NextRequest) {
+  const parsed = updateSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
+  }
+  const { id, ...fields } = parsed.data;
+  const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
+  if (entries.length === 0) {
+    return NextResponse.json({ error: "No fields to update" }, { status: 400 });
+  }
+  const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
+  const info = getDb()
+    .prepare(`UPDATE applications SET ${setClause} WHERE id = ?`)
+    .run(...entries.map(([, v]) => v), id);
+  if (info.changes === 0) {
+    return NextResponse.json({ error: "Application not found" }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true });
+}
+
+export async function DELETE(req: NextRequest) {
+  const id = Number(req.nextUrl.searchParams.get("id"));
+  if (!Number.isInteger(id) || id <= 0) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+  const info = getDb().prepare("DELETE FROM applications WHERE id = ?").run(id);
+  if (info.changes === 0) {
+    return NextResponse.json({ error: "Application not found" }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true });
+}

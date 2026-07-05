@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
 import { createCalendarEvent } from "@/lib/google";
+import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
 import { logHabitByName } from "@/lib/habits";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { appendNote } from "@/lib/notes";
@@ -278,6 +279,50 @@ const logHabitTool: Tool<typeof logHabitSchema> = {
   handler: (args) => logHabitByName(args.name, args.date),
 };
 
+const addApplicationSchema = z.object({
+  company: z.string().trim().min(1).max(200).describe("Company name"),
+  role: z.string().trim().min(1).max(200).describe("Role / job title"),
+  stage: z.enum(STAGES).optional().describe("Pipeline stage; omit for 'applied'"),
+  next_action: z.string().max(500).optional().describe("What to do next, if known"),
+  next_action_at: dateField,
+  contact: z.string().max(200).optional().describe("Recruiter / referral contact"),
+  link: z.string().max(1000).optional().describe("Job-posting URL"),
+});
+
+const addApplicationTool: Tool<typeof addApplicationSchema> = {
+  name: "add_application",
+  description:
+    "Track a new job application (company + role, optional stage/next action). Use when the user says they applied somewhere or wants to track a role.",
+  schema: addApplicationSchema,
+  requiresConfirm: false,
+  handler: (args) => {
+    addApplication(args);
+    return `Tracking ${args.company} — ${args.role} (${args.stage ?? "applied"}).`;
+  },
+};
+
+const advanceApplicationSchema = z.object({
+  company: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("Company of the application to move (matched case-insensitively)"),
+  stage: z.enum(STAGES).describe("New pipeline stage"),
+  next_action: z.string().max(500).optional().describe("Updated next action"),
+  next_action_at: dateField,
+});
+
+const advanceApplicationTool: Tool<typeof advanceApplicationSchema> = {
+  name: "advance_application",
+  description:
+    "Move a tracked job application to a new stage (e.g. got an interview, got rejected). Use when the user reports progress on an application.",
+  schema: advanceApplicationSchema,
+  requiresConfirm: false,
+  handler: (args) =>
+    advanceApplicationByCompany(args.company, args.stage, args.next_action, args.next_action_at),
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -288,6 +333,8 @@ export const tools: Tool[] = [
   setReminderTool as Tool,
   logMetricTool as Tool,
   logHabitTool as Tool,
+  addApplicationTool as Tool,
+  advanceApplicationTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {
