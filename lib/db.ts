@@ -111,6 +111,26 @@ const MIGRATIONS: string[] = [
     date TEXT NOT NULL,
     UNIQUE(habit_id, date)
   )`,
+  // Phase 8 — Gmail triage (read-only + on-demand drafts)
+  `CREATE TABLE IF NOT EXISTS mail_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    connected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS mail_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account TEXT NOT NULL,
+    gmail_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    snippet TEXT,
+    received_at TEXT,
+    importance TEXT CHECK (importance IN ('important','can_wait','noise')),
+    importance_reason TEXT,
+    category TEXT,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(account, gmail_id)
+  )`,
   // Phase 6g — tiny key/value store (digest markers, Slack config, …)
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,

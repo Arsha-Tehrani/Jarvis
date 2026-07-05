@@ -7,6 +7,7 @@ import {
   HeartPulse,
   Landmark,
   ListChecks,
+  Mail,
   Repeat,
   TrendingUp,
   Users,
@@ -153,6 +154,27 @@ export default function TodayPage() {
     .reverse()
     .map<SparkPoint>((r) => ({ label: r.date.slice(5), value: r.value }));
   const bedtime = latestMetric("bedtime");
+
+  // Mail: important unread across linked inboxes
+  const mailLinked = !!db.prepare("SELECT 1 FROM mail_accounts LIMIT 1").get();
+  const importantUnread = mailLinked
+    ? (db
+        .prepare(
+          `SELECT sender, subject FROM mail_messages
+           WHERE importance = 'important' AND is_read = 0
+           ORDER BY received_at DESC LIMIT 3`
+        )
+        .all() as { sender: string; subject: string }[])
+    : [];
+  const importantUnreadCount = mailLinked
+    ? (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM mail_messages WHERE importance = 'important' AND is_read = 0"
+          )
+          .get() as { n: number }
+      ).n
+    : 0;
 
   // Net worth (accounts + holdings; cached quotes or cost basis)
   const hasNetWorthData = !!db
@@ -326,6 +348,23 @@ export default function TodayPage() {
             />
           )}
         </MetricCard>
+        {mailLinked && (
+          <MetricCard
+            href="/mail"
+            label="Mail"
+            icon={<Mail />}
+            hero={importantUnreadCount}
+            unit="important unread"
+            sub={
+              importantUnread[0]
+                ? importantUnread
+                    .slice(0, 2)
+                    .map((m) => m.sender.replace(/<.*>/, "").trim())
+                    .join(", ")
+                : "inbox handled"
+            }
+          />
+        )}
         <MetricCard
           href="/networth"
           label="Net worth"
