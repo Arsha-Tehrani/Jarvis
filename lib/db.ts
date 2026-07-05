@@ -111,6 +111,20 @@ const MIGRATIONS: string[] = [
     date TEXT NOT NULL,
     UNIQUE(habit_id, date)
   )`,
+  // Phase 6c — career / job hunt
+  `CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company TEXT NOT NULL,
+    role TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT 'applied'
+      CHECK (stage IN ('wishlist','applied','screening','interview','offer','rejected','accepted')),
+    next_action TEXT,
+    next_action_at TEXT,
+    contact TEXT,
+    link TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
 ];
 
 function connect(): Database.Database {

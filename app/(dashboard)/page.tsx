@@ -1,4 +1,5 @@
 import {
+  Briefcase,
   Calendar,
   Code2,
   Dumbbell,
@@ -9,6 +10,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { getDb } from "@/lib/db";
+import { followUpsDue } from "@/lib/career";
 import { listHabits } from "@/lib/habits";
 import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
@@ -114,6 +116,9 @@ export default function TodayPage() {
     return { label: d.slice(5), value: spendByDay.get(d) ?? 0 };
   });
 
+  // Career: follow-ups due
+  const dueFollowUps = followUpsDue();
+
   // Habits: done today + best streak
   const habits = listHabits();
   const habitsDoneToday = habits.filter((h) => h.doneToday).length;
@@ -203,6 +208,18 @@ export default function TodayPage() {
           }
           sub={wentToday ? "logged today ✓" : "not logged today"}
           range="Past 7 days"
+        />
+        <MetricCard
+          href="/career"
+          label="Follow-ups"
+          icon={<Briefcase />}
+          hero={dueFollowUps.length}
+          unit="due"
+          sub={
+            dueFollowUps[0]
+              ? `next: ${dueFollowUps[0].company} — ${dueFollowUps[0].next_action ?? "follow up"}`
+              : "nothing due"
+          }
         />
         {habits.length > 0 && (
           <MetricCard
