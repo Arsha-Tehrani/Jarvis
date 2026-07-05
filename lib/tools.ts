@@ -5,6 +5,7 @@ import { createCalendarEvent } from "@/lib/google";
 import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
 import { logHabitByName } from "@/lib/habits";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
+import { logContactByName } from "@/lib/people";
 import { READING_KINDS, addReadingItem } from "@/lib/reading";
 import { appendNote } from "@/lib/notes";
 import type { LlmToolDef } from "@/lib/llm";
@@ -347,6 +348,26 @@ const addToReadingListTool: Tool<typeof addToReadingListSchema> = {
   },
 };
 
+const logContactSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("The person's name (matched case-insensitively against the people list)"),
+  date: dateField,
+  notes: z.string().max(2000).optional().describe("What you talked about, if mentioned"),
+});
+
+const logContactTool: Tool<typeof logContactSchema> = {
+  name: "log_contact",
+  description:
+    "Record that the user talked to / caught up with a person on their keep-in-touch list (defaults to today). Fails with the known-people list if the name doesn't match.",
+  schema: logContactSchema,
+  requiresConfirm: false,
+  handler: (args) => logContactByName(args.name, args.date, args.notes),
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -360,6 +381,7 @@ export const tools: Tool[] = [
   addApplicationTool as Tool,
   advanceApplicationTool as Tool,
   addToReadingListTool as Tool,
+  logContactTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

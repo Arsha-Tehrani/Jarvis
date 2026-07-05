@@ -13,6 +13,7 @@ import {
   ListChecks,
   Repeat,
   TrendingUp,
+  Users,
   Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ export const NAV_ITEMS = [
   { href: "/habits", label: "Habits", icon: Repeat },
   { href: "/career", label: "Career", icon: Briefcase },
   { href: "/reading", label: "Reading", icon: BookOpen },
+  { href: "/people", label: "People", icon: Users },
   { href: "/finance", label: "Finance", icon: Wallet },
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
   { href: "/notes", label: "Notes", icon: FileText },

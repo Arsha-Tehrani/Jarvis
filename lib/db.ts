@@ -111,6 +111,16 @@ const MIGRATIONS: string[] = [
     date TEXT NOT NULL,
     UNIQUE(habit_id, date)
   )`,
+  // Phase 6e — people / keep-in-touch
+  `CREATE TABLE IF NOT EXISTS people (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    cadence_days INTEGER,
+    last_contacted TEXT,
+    birthday TEXT,
+    gift_ideas TEXT,
+    notes TEXT
+  )`,
   // Phase 6d — reading & learning
   `CREATE TABLE IF NOT EXISTS reading (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
