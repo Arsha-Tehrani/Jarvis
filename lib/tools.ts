@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
+import { createCalendarEvent } from "@/lib/google";
+import { appendNote } from "@/lib/notes";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -159,11 +161,88 @@ const setGoal: Tool<typeof setGoalSchema> = {
   },
 };
 
+const appendNoteSchema = z.object({
+  path: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Note path relative to the vault root, e.g. 'Projects/jarvis.md'. Omit to append to today's daily note."
+    ),
+  text: z.string().min(1).max(10_000).describe("Markdown text to append"),
+});
+
+// Additive only (never overwrites), so no confirm gate per the rules.
+const appendNoteTool: Tool<typeof appendNoteSchema> = {
+  name: "append_note",
+  description:
+    "Append markdown text to a note in the user's Obsidian vault (defaults to today's daily note). Use when the user asks to note something down.",
+  schema: appendNoteSchema,
+  requiresConfirm: false,
+  handler: (args) => {
+    const written = appendNote(args.path, args.text);
+    return `Appended to note "${written}".`;
+  },
+};
+
+const isoDatetime = (label: string) =>
+  z
+    .string()
+    .min(1)
+    .describe(`${label} as ISO 8601 datetime, e.g. 2026-07-10T15:00:00. Resolve relative times yourself.`);
+
+const createEventSchema = z.object({
+  title: z.string().min(1).max(300).describe("Event title"),
+  start: isoDatetime("Start time"),
+  end: isoDatetime("End time").optional().describe("End time; omit for one hour after start"),
+  notes: z.string().max(2000).optional().describe("Optional event description"),
+});
+
+const createEventTool: Tool<typeof createEventSchema> = {
+  name: "create_calendar_event",
+  description:
+    "Create an event on the user's Google Calendar. Use for meetings, appointments, or anything with a start time.",
+  schema: createEventSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    await createCalendarEvent(args);
+    return `Created event "${args.title}" at ${args.start}.`;
+  },
+};
+
+const setReminderSchema = z.object({
+  text: z.string().min(1).max(300).describe("What to remind the user about"),
+  when: isoDatetime("Reminder time"),
+});
+
+// Implemented as a calendar event (free phone notifications via Google).
+const setReminderTool: Tool<typeof setReminderSchema> = {
+  name: "set_reminder",
+  description:
+    "Set a reminder for the user at a specific time. Creates a short Google Calendar event so their phone notifies them.",
+  schema: setReminderSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const startMs = Date.parse(args.when);
+    if (Number.isNaN(startMs)) throw new Error(`Unparseable reminder time: "${args.when}"`);
+    await createCalendarEvent({
+      title: `⏰ ${args.text}`,
+      start: new Date(startMs).toISOString(),
+      end: new Date(startMs + 15 * 60 * 1000).toISOString(),
+    });
+    return `Reminder set for ${args.when}: ${args.text}.`;
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
   logLeetcode as Tool,
   setGoal as Tool,
+  appendNoteTool as Tool,
+  createEventTool as Tool,
+  setReminderTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

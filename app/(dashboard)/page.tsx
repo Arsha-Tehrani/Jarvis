@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDb } from "@/lib/db";
+import { getCachedQuote } from "@/lib/stocks";
 import { AgentChat } from "@/components/agent-chat";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,9 +39,90 @@ export default function TodayPage() {
     )
     .get() as { date: string; total_solved: number; streak: number } | undefined;
 
+  // Today's events from the poll cache (Google is the source of truth; we
+  // only read back). Covers timed events today and all-day events.
+  const todaysEvents = db
+    .prepare(
+      `SELECT google_event_id, title, start FROM calendar_cache
+       WHERE substr(start, 1, 10) = ? ORDER BY start ASC LIMIT 8`
+    )
+    .all(today) as { google_event_id: string; title: string; start: string }[];
+
+  // Portfolio day change from the in-memory quote cache only — no network
+  // in a server render. Cron warms it at launch and every 15 minutes.
+  const holdings = db
+    .prepare("SELECT ticker, shares FROM holdings")
+    .all() as { ticker: string; shares: number }[];
+  let dayMove: number | null = null;
+  if (holdings.length > 0) {
+    let sum = 0;
+    let covered = false;
+    for (const h of holdings) {
+      const q = getCachedQuote(h.ticker);
+      if (q) {
+        sum += q.change * h.shares;
+        covered = true;
+      }
+    }
+    dayMove = covered ? sum : null;
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <AgentChat />
+      {(todaysEvents.length > 0 || holdings.length > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              <Link href="/calendar" className="hover:underline">
+                Today
+              </Link>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 text-sm">
+            {todaysEvents.length > 0 ? (
+              <ul className="flex flex-col gap-1">
+                {todaysEvents.map((e) => (
+                  <li key={e.google_event_id} className="flex items-baseline gap-2">
+                    <span className="w-16 shrink-0 text-muted-foreground">
+                      {/^\d{4}-\d{2}-\d{2}$/.test(e.start)
+                        ? "all day"
+                        : new Date(e.start).toLocaleTimeString("en-US", {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                    </span>
+                    <span>{e.title}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted-foreground">No events today.</p>
+            )}
+            {holdings.length > 0 && (
+              <p className="text-muted-foreground">
+                Portfolio day move:{" "}
+                {dayMove == null ? (
+                  <span>— (quotes not loaded yet)</span>
+                ) : (
+                  <span
+                    className={
+                      dayMove >= 0
+                        ? "text-emerald-600 dark:text-emerald-500"
+                        : "text-destructive"
+                    }
+                  >
+                    {dayMove >= 0 ? "▲" : "▼"} $
+                    {Math.abs(dayMove).toLocaleString("en-US", {
+                      maximumFractionDigits: 2,
+                    })}
+                  </span>
+                )}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>
