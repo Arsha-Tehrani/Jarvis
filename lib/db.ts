@@ -61,6 +61,31 @@ const MIGRATIONS: string[] = [
     target REAL NOT NULL,
     period TEXT NOT NULL DEFAULT 'month'
   )`,
+  // Phase 4
+  `CREATE TABLE IF NOT EXISTS holdings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL UNIQUE,
+    shares REAL NOT NULL,
+    cost_basis REAL NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL UNIQUE
+  )`,
+  `CREATE TABLE IF NOT EXISTS calendar_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    google_event_id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    start TEXT NOT NULL,
+    end TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS oauth_tokens (
+    provider TEXT PRIMARY KEY,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at TEXT NOT NULL
+  )`,
 ];
 
 function connect(): Database.Database {
