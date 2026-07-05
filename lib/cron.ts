@@ -3,6 +3,7 @@ import { weeklyDigestJob } from "@/lib/digest";
 import { pollCalendarJob } from "@/lib/google";
 import { pullLeetCodeJob } from "@/lib/leetcode";
 import { netWorthSnapshotJob } from "@/lib/networth";
+import { slackCheckinJob } from "@/lib/slack";
 import { refreshStocksJob } from "@/lib/stocks";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
@@ -20,6 +21,7 @@ const JOBS: Job[] = [
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
   { name: "weekly-digest", schedule: "0 21 * * 0", run: weeklyDigestJob },
+  { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
 ];
 
 const globalForCron = globalThis as unknown as { __jarvisCronStarted?: boolean };
