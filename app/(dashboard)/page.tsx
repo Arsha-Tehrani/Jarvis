@@ -5,6 +5,7 @@ import {
   Code2,
   Dumbbell,
   HeartPulse,
+  Landmark,
   ListChecks,
   Repeat,
   TrendingUp,
@@ -14,6 +15,7 @@ import {
 import { getDb } from "@/lib/db";
 import { followUpsDue } from "@/lib/career";
 import { listHabits } from "@/lib/habits";
+import { computeNetWorth, weeklyDelta } from "@/lib/networth";
 import { birthdaysThisWeek, overduePeople } from "@/lib/people";
 import { currentReads } from "@/lib/reading";
 import { formatBedtime, latestMetric } from "@/lib/health";
@@ -151,6 +153,13 @@ export default function TodayPage() {
     .reverse()
     .map<SparkPoint>((r) => ({ label: r.date.slice(5), value: r.value }));
   const bedtime = latestMetric("bedtime");
+
+  // Net worth (accounts + holdings; cached quotes or cost basis)
+  const hasNetWorthData = !!db
+    .prepare("SELECT 1 FROM accounts LIMIT 1")
+    .get() || !!db.prepare("SELECT 1 FROM holdings LIMIT 1").get();
+  const netWorth = hasNetWorthData ? computeNetWorth() : null;
+  const nwDelta = hasNetWorthData ? weeklyDelta() : null;
 
   // Portfolio from the quote cache only (no network in render)
   const holdings = db
@@ -317,6 +326,29 @@ export default function TodayPage() {
             />
           )}
         </MetricCard>
+        <MetricCard
+          href="/networth"
+          label="Net worth"
+          icon={<Landmark />}
+          hero={netWorth ? usd(netWorth.total) : "—"}
+          sub={
+            !netWorth ? (
+              "add accounts or holdings"
+            ) : nwDelta == null ? (
+              "delta appears after a week of snapshots"
+            ) : (
+              <span
+                className={
+                  nwDelta >= 0
+                    ? "text-emerald-600 dark:text-emerald-500"
+                    : "text-destructive"
+                }
+              >
+                {nwDelta >= 0 ? "▲" : "▼"} {usd(Math.abs(nwDelta))} this week
+              </span>
+            )
+          }
+        />
         <MetricCard
           href="/stocks"
           label="Portfolio"

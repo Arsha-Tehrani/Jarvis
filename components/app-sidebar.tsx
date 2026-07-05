@@ -10,6 +10,7 @@ import {
   FileText,
   HeartPulse,
   Home,
+  Landmark,
   ListChecks,
   Repeat,
   TrendingUp,
@@ -29,6 +30,7 @@ export const NAV_ITEMS = [
   { href: "/people", label: "People", icon: Users },
   { href: "/finance", label: "Finance", icon: Wallet },
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
+  { href: "/networth", label: "Net worth", icon: Landmark },
   { href: "/notes", label: "Notes", icon: FileText },
   { href: "/calendar", label: "Calendar", icon: Calendar },
 ];

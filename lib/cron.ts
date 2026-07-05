@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { pollCalendarJob } from "@/lib/google";
 import { pullLeetCodeJob } from "@/lib/leetcode";
+import { netWorthSnapshotJob } from "@/lib/networth";
 import { refreshStocksJob } from "@/lib/stocks";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
@@ -16,6 +17,7 @@ const JOBS: Job[] = [
   { name: "leetcode-daily-pull", schedule: "0 8 * * *", run: pullLeetCodeJob },
   { name: "stocks-refresh", schedule: "*/15 * * * *", run: refreshStocksJob },
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
+  { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
 ];
 
 const globalForCron = globalThis as unknown as { __jarvisCronStarted?: boolean };
