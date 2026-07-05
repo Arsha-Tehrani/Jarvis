@@ -1,9 +1,9 @@
-# HANDOFF — autonomous run, 2026-07-04 → 07-05
+# HANDOFF — updated after Phase 4 (2026-07-05)
 
-Phases 1–3 are **built, verified (non-LLM paths), and committed**. Stopped before
-Phase 4 as instructed (Google OAuth needs your decision + secrets). Ollama was not
-running during this run, so everything that needs a live model is deferred — the
-checklist below is exactly what to test when you're back.
+All four phases are **built, verified as far as possible without live
+credentials/models, and committed**. The app is feature-complete per
+`jarvis-plan-final.md` §6. What remains is filling in your keys and running the
+deferred-tests checklist below.
 
 ## Commits
 
@@ -12,94 +12,101 @@ checklist below is exactly what to test when you're back.
 | `d073f60` | Phase 1: spine — Next.js + SQLite, Tasks CRUD, agent with validated `add_task` |
 | `fcfda2c` | Phase 2: trackers — gym heatmap, LeetCode pull + fallback, cron worker |
 | `f361964` | Phase 3: finance — statement ingest, categorization, views, goals |
-| (this file) | HANDOFF |
+| `deaa6e9` | HANDOFF (phase 1–3 version) |
+| `5526d55` | Phase 4: notes, stocks, calendar + backup export |
+| (this file) | HANDOFF update |
 
 Every phase finished on a green `npm run build` + `npm run typecheck`.
+`jarvis.db` and the temp test env were deleted after verification — first boot
+starts clean and recreates the schema.
 
-## What exists
+## What Phase 4 added
 
-- **Spine**: Next.js 16 (App Router, TS) + Tailwind v4 + shadcn/ui at repo root.
-  `lib/db.ts` (better-sqlite3, WAL, idempotent startup migrations — all 7 tables for
-  phases 1–3), `lib/llm.ts` (`chat()` routed by `LLM_PROVIDER`: ollama default,
-  anthropic behind key), `lib/tools.ts` (registry: `add_task`, `log_gym`,
-  `log_leetcode`, `set_goal`). `jarvis.db` was deleted after testing — the app
-  starts with a clean DB and recreates it on first boot.
-- **Agent** (`/api/agent`): every tool call is zod-validated before execution
-  (garbled → rejected with the zod error; unknown tool → refused). `set_goal` has
-  `requiresConfirm=true` → returned as a pending payload; the chat UI shows
-  Confirm/Cancel and the confirm leg re-validates before executing. Every turn
-  (including errors) is written to `agent_log`.
-- **Tasks**: full CRUD API + UI, persists across restarts, feeds the Today view.
-- **Trackers**: gym "I went today" toggle + GitHub-style heatmap; LeetCode card
-  with refresh-from-leetcode.com (defensive, unofficial API), manual-entry
-  fallback that always works, and a daily cron pull at 08:00 with
-  **catch-up-on-launch** (verified firing on restart via `instrumentation.ts`).
-- **Finance**: drop CSV/PDF in `statements/` → Import button ingests new files,
-  redacts account numbers (verified: `NETFLIX.COM ••••7890`), categorizes via
-  `lib/llm.chat` with a **keyword-rule fallback** (so import works with no model),
-  detects recurring charges (same merchant + similar amount + 21–38-day cadence —
-  caught rent + Netflix, ignored one-offs in the synthetic test), and renders
-  spend-by-category (this vs last month, chart + table), income/spend/invested
-  tiles, subscriptions list, and a goals editor whose `savings_rate` goal drives
-  cut-back suggestions (verified: 70% target → concrete cut list; 30% → on track).
+- **Google Calendar (Testing mode, as you decided)**: Connect button on the
+  Calendar tab → Google OAuth (CSRF state cookie) → redirect
+  `http://localhost:3000/api/google/callback` → tokens in `oauth_tokens`
+  (server-side only). Polls on app open + hourly (`lib/cron.ts`), read-back
+  into `calendar_cache` — Google is the single source of truth, no webhooks.
+  Access tokens auto-refresh; when the ~weekly testing-mode refresh token dies
+  you get a clear "reconnect from the Calendar tab" error, not a crash.
+- **Stocks**: holdings + watchlist with value / P&L / day move. Finnhub
+  preferred, Alpha Vantage fallback; 15-minute in-memory quote cache + 15-min
+  cron refresh (+ launch catch-up) keeps free tiers happy. No key → tab still
+  works for tracking, quotes show a clear error.
+- **Obsidian Notes**: today's daily note (found wherever it lives in the
+  vault), recently edited list, content search with snippets, note viewer.
+  Appends are additive-only and path-traversal-guarded.
+- **Agent tools**: `append_note` (defaults to today's daily note),
+  `create_calendar_event`, `set_reminder` (15-min calendar event → free phone
+  notification). All zod-validated like everything else.
+- **Today view**: today's events (from the poll cache) + portfolio day move
+  (from the quote cache — no network during render).
+- **Backup**: "Backup ↓" button in the header downloads a JSON dump of all 10
+  tables and writes a copy to `backups/`; `npm run backup` does the same from
+  the CLI. `oauth_tokens` is deliberately excluded from dumps.
 
-## Verification results
+## Env vars you still need to fill in (.env.local)
 
-Passed: tasks CRUD + persistence; agent validation/refusal/error-logging paths;
-gym log/unlog + date validation; LeetCode manual entry; cron schedule + catch-up
-on restart; statement import (16 synthetic transactions, correct month
-attribution); redaction; rule-based categories; recurring detection;
-goals CRUD + cutback math; all pages 200; builds green.
+```
+cp .env.example .env.local   # then fill in:
+```
 
-Nothing failed. Skipped (not failures): live-LLM paths below, and a visual
-eyeball of the heatmap/chart (pages render, but I couldn't look at pixels —
-glance at Trackers and Finance tabs when you first open them).
+| Var | Needed for | Where to get it |
+|---|---|---|
+| `LLM_MODEL` (+ Ollama running) | agent chat, finance categorization | `ollama pull` a tool-capable model |
+| `LEETCODE_USERNAME` | daily LeetCode pull | your leetcode.com username |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar | Google Cloud Console → OAuth client (Web), **redirect URI exactly** `http://localhost:3000/api/google/callback`, app in *Testing* mode, add yourself as a test user |
+| `FINNHUB_API_KEY` (preferred) or `ALPHAVANTAGE_API_KEY` | stock quotes | finnhub.io / alphavantage.co free signup |
+| `OBSIDIAN_VAULT_PATH` | Notes tab | absolute path to your vault folder |
 
-## Deferred tests — run these when you're back
+`LLM_PROVIDER`/`LLM_BASE_URL` defaults already point at local Ollama;
+`ANTHROPIC_API_KEY` only if you flip `LLM_PROVIDER=anthropic`.
 
-Setup: install Ollama, `ollama pull` a tool-capable model sized to your RAM,
-`cp .env.example .env.local` and set `LLM_MODEL` (+ `LEETCODE_USERNAME`), then
-`npm run dev`.
+## Deferred tests — the full checklist
 
-1. **Live agent turn**: chat "add a task to review my budget Friday" → task
-   appears in Tasks with Friday's date, turn in `agent_log`.
-2. **Confirm gate live**: chat "set my savings goal to 30%" → should return a
-   pending confirmation (NOT execute); Confirm button commits it.
-3. **Live LeetCode pull**: set `LEETCODE_USERNAME`, click Refresh on Trackers
-   (or restart the app — catch-up runs it) → real stats land.
-4. **LLM categorization**: copy `samples/*.csv` into `statements/`, click Import
-   on the Finance tab → results should say "categorized by llm" instead of
-   "rules". Then try a real bank CSV; if its columns aren't recognized the error
-   names the headers it saw.
-5. **PDF ingest** (best-effort parser): drop a real statement PDF; if no rows are
-   recognized you'll get a clear "export as CSV" error rather than bad data.
+LLM-dependent (from phases 1–3):
+1. Live agent turn: "add a task to review my budget Friday" → task lands with
+   Friday's date; turn in `agent_log`.
+2. Confirm gate live: "set my savings goal to 30%" → pending confirmation
+   appears (must NOT auto-execute); Confirm commits it.
+3. LLM categorization: copy `samples/*.csv` into `statements/`, Import on the
+   Finance tab → "categorized by llm" instead of "rules".
+
+Credential-dependent (new in Phase 4):
+4. Real Google login: Calendar tab → Connect → sign in → lands back on
+   /calendar?google=connected with upcoming events listed; `oauth_tokens` has
+   a row; restart the app → catch-up poll logs `[google] calendar poll ok`.
+5. Agent event + reminder: "put lunch with Sam on my calendar Friday at noon"
+   and "remind me to submit the form at 5pm" → both appear in Google Calendar
+   (reminder as a 15-min ⏰ event) and in the Calendar tab after the read-back.
+6. Weekly-expiry path (whenever it happens): after ~7 days the Calendar tab
+   should show the "reconnect" error and Connect should fix it.
+7. Real quotes: add FINNHUB_API_KEY, add a holding → price/value/P&L/day move
+   fill in; Today view shows portfolio day move after the next cron tick (or
+   restart); `[stocks] refreshed N quotes` in the log every 15 min.
+8. Real vault: set OBSIDIAN_VAULT_PATH → Notes tab shows your actual daily
+   note and search works on your notes; "note down X" via the agent appends to
+   today's daily note.
+9. LeetCode live pull (from Phase 2): set LEETCODE_USERNAME → Refresh.
+
+Verified this run (no credentials needed): all tabs render with graceful
+unconfigured states; notes daily-note/search/append on a dummy vault incl.
+default-append finding the existing daily note; path traversal rejected;
+agent `append_note` executes, calendar tools fail cleanly when unconnected and
+reject invalid args; stocks CRUD + no-key error state; google endpoints return
+actionable 409s; OAuth callback rejects a bad CSRF state; backup button and
+`npm run backup` both dump all 10 tables; all three new cron jobs schedule and
+catch-up-skip cleanly at launch.
 
 ## Known limitations / notes
 
-- Amount convention: negative = money out. If your bank exports charges as
-  positive with a separate debit/credit column, both layouts are handled; a
-  single all-positive "Amount" column would import spend as income — check the
-  first import.
-- `log_leetcode` (manual agent tool) adds `count` to the last known total and
-  carries the streak; the daily pull is the authoritative source.
-- pdf-parse v2 (`2.4.5`) is installed but untested against a real bank PDF.
-- Dark mode: chart/heatmap colors have validated dark variants keyed off the
-  shadcn `.dark` class, but the app has no theme toggle yet (always light).
-
-## Phase 4 — your decision needed before building (per CLAUDE.md)
-
-**Google OAuth path** (pick one, then Phase 4 can start):
-1. **Testing mode** — zero setup beyond OAuth client, but refresh tokens die
-   every ~7 days → weekly re-login. Fine to start.
-2. **Publish the app** (Calendar scopes are doable) — one-time verification
-   hassle, tokens persist. Best long-term for a personal Gmail account.
-3. **Google Workspace "Internal"** — no expiry, but only if you have a Workspace
-   account (not plain Gmail).
-
-If you're on a regular @gmail.com account (arshatehrani06@gmail.com), the real
-choice is 1 (accept weekly re-auth) vs 2 (publish once). Recommendation: start
-with 1 to get building, publish later if the weekly re-auth annoys you.
-
-Also needed for Phase 4: `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (create an
-OAuth client, redirect `http://localhost:3000/api/google/callback`), a
-`FINNHUB_API_KEY` or `ALPHAVANTAGE_API_KEY` (free tier), and `OBSIDIAN_VAULT_PATH`.
+- Statement amount convention: negative = money out (debit/credit column
+  layouts handled; an all-positive single-amount CSV would read as income).
+- PDF statement parsing is best-effort (pdf-parse v2); clear "export as CSV"
+  error when nothing parses.
+- The Notes/Calendar/Stocks tabs assume one user on localhost — no auth on the
+  API routes (same as the rest of the app, by design).
+- `npm run backup` prints a harmless Node module-type warning.
+- Dark mode styles exist but there's no theme toggle yet (app renders light).
+- Deferred by plan (§7 — do not build yet): Slack capture, push sync, 24/7
+  host, email triage, command palette, weekly digest.
