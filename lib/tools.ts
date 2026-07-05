@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
 import { createCalendarEvent } from "@/lib/google";
+import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { appendNote } from "@/lib/notes";
 import type { LlmToolDef } from "@/lib/llm";
 
@@ -235,6 +236,29 @@ const setReminderTool: Tool<typeof setReminderSchema> = {
   },
 };
 
+const logMetricSchema = z.object({
+  kind: z
+    .enum(HEALTH_KINDS)
+    .describe(
+      "Which metric: sleep_hours (hours slept), bedtime (decimal hour of day, 23.5 = 11:30pm), weight, or mood (1-5)"
+    ),
+  value: z.number().describe("The value in that metric's unit"),
+  date: dateField,
+  notes: z.string().max(2000).optional().describe("Optional context"),
+});
+
+const logMetricTool: Tool<typeof logMetricSchema> = {
+  name: "log_metric",
+  description:
+    "Log a health metric (sleep hours, bedtime, weight, or mood 1-5) for a date (defaults to today). Use when the user reports sleep, weight, or how they feel.",
+  schema: logMetricSchema,
+  requiresConfirm: false,
+  handler: (args) => {
+    const date = logMetric(args.kind, args.value, args.date, args.notes);
+    return `Logged ${args.kind} = ${args.value} for ${date}.`;
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -243,6 +267,7 @@ export const tools: Tool[] = [
   appendNoteTool as Tool,
   createEventTool as Tool,
   setReminderTool as Tool,
+  logMetricTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

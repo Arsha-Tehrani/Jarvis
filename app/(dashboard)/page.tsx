@@ -1,5 +1,14 @@
-import { Calendar, Code2, Dumbbell, ListChecks, TrendingUp, Wallet } from "lucide-react";
+import {
+  Calendar,
+  Code2,
+  Dumbbell,
+  HeartPulse,
+  ListChecks,
+  TrendingUp,
+  Wallet,
+} from "lucide-react";
 import { getDb } from "@/lib/db";
+import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
 import { AgentChat } from "@/components/agent-chat";
 import { MetricCard } from "@/components/metric-card";
@@ -103,6 +112,20 @@ export default function TodayPage() {
     return { label: d.slice(5), value: spendByDay.get(d) ?? 0 };
   });
 
+  // Health: last night's sleep + latest mood
+  const sleep = latestMetric("sleep_hours");
+  const mood = latestMetric("mood");
+  const sleepTrend = (
+    db
+      .prepare(
+        "SELECT date, value FROM health_logs WHERE kind = 'sleep_hours' ORDER BY date DESC LIMIT 14"
+      )
+      .all() as { date: string; value: number }[]
+  )
+    .reverse()
+    .map<SparkPoint>((r) => ({ label: r.date.slice(5), value: r.value }));
+  const bedtime = latestMetric("bedtime");
+
   // Portfolio from the quote cache only (no network in render)
   const holdings = db
     .prepare("SELECT ticker, shares FROM holdings")
@@ -171,6 +194,22 @@ export default function TodayPage() {
           sub={wentToday ? "logged today ✓" : "not logged today"}
           range="Past 7 days"
         />
+        <MetricCard
+          href="/health"
+          label="Sleep"
+          icon={<HeartPulse />}
+          hero={sleep ? sleep.value : "—"}
+          unit={sleep ? "hours" : undefined}
+          sub={
+            sleep
+              ? `${sleep.date === today ? "last night" : `as of ${sleep.date}`}${
+                  bedtime ? ` · bed ${formatBedtime(bedtime.value)}` : ""
+                }${mood ? ` · mood ${mood.value}/5` : ""}`
+              : "not logged yet"
+          }
+        >
+          {sleepTrend.length > 1 && <Sparkline data={sleepTrend} />}
+        </MetricCard>
         <MetricCard
           href="/trackers"
           label="LeetCode"
