@@ -111,6 +111,11 @@ const MIGRATIONS: string[] = [
     date TEXT NOT NULL,
     UNIQUE(habit_id, date)
   )`,
+  // Phase 6g — tiny key/value store (digest markers, Slack config, …)
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
   // Phase 6f — net worth rollup
   `CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
