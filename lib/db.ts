@@ -111,6 +111,20 @@ const MIGRATIONS: string[] = [
     date TEXT NOT NULL,
     UNIQUE(habit_id, date)
   )`,
+  // Phase 6d — reading & learning
+  `CREATE TABLE IF NOT EXISTS reading (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'book'
+      CHECK (kind IN ('book','article','course','paper','video')),
+    title TEXT NOT NULL,
+    author TEXT,
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK (status IN ('queued','reading','done','abandoned')),
+    link TEXT,
+    notes TEXT,
+    note_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
