@@ -13,8 +13,10 @@ import {
   Users,
   Wallet,
 } from "lucide-react";
+import { Repeat2 } from "lucide-react";
 import { getDb } from "@/lib/db";
 import { followUpsDue } from "@/lib/career";
+import { billRadar } from "@/lib/finance/radar";
 import { listHabits } from "@/lib/habits";
 import { computeNetWorth, weeklyDelta } from "@/lib/networth";
 import { birthdaysThisWeek, overduePeople } from "@/lib/people";
@@ -154,6 +156,11 @@ export default function TodayPage() {
     .reverse()
     .map<SparkPoint>((r) => ({ label: r.date.slice(5), value: r.value }));
   const bedtime = latestMetric("bedtime");
+
+  // Bill radar: upcoming renewals + price jumps
+  const radar = billRadar();
+  const renewingSoon = radar.filter((r) => r.renewsSoon);
+  const priceJumps = radar.filter((r) => r.jumpPercent != null);
 
   // Mail: important unread across linked inboxes
   const mailLinked = !!db.prepare("SELECT 1 FROM mail_accounts LIMIT 1").get();
@@ -330,6 +337,22 @@ export default function TodayPage() {
             hero={reads.length}
             unit={reads.length === 1 ? "in progress" : "in progress"}
             sub={`now: ${reads[0].title}${reads[0].author ? ` — ${reads[0].author}` : ""}`}
+          />
+        )}
+        {radar.length > 0 && (
+          <MetricCard
+            href="/finance"
+            label="Bills"
+            icon={<Repeat2 />}
+            hero={renewingSoon.length}
+            unit="renewing soon"
+            sub={
+              priceJumps[0]
+                ? `⚠ ${priceJumps[0].merchant} +${priceJumps[0].jumpPercent}%`
+                : renewingSoon[0]
+                  ? `next: ${renewingSoon[0].merchant} ≈ ${renewingSoon[0].nextRenewal}`
+                  : `${radar.length} tracked subscriptions`
+            }
           />
         )}
         <MetricCard

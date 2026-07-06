@@ -171,7 +171,9 @@ export function detectRecurring(): void {
     const amounts = group.map((g) => Math.abs(g.amount));
     const maxAmt = Math.max(...amounts);
     const minAmt = Math.min(...amounts);
-    const similarAmounts = maxAmt - minAmt <= Math.max(2, maxAmt * 0.15);
+    // 25% band (was 15%): a subscription that raised its price is still
+    // the same subscription — the bill radar flags the jump separately.
+    const similarAmounts = maxAmt - minAmt <= Math.max(2, maxAmt * 0.25);
     if (!similarAmounts) continue;
     const gaps: number[] = [];
     for (let i = 1; i < group.length; i++) {
