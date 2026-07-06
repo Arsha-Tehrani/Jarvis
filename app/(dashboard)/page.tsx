@@ -28,7 +28,9 @@ import { getCachedQuote } from "@/lib/stocks";
 import { AgentChat } from "@/components/agent-chat";
 import { MetricCard } from "@/components/metric-card";
 import { RingGauge } from "@/components/ring-gauge";
+import { ScreenTime } from "@/components/screen-time";
 import { Sparkline, type SparkPoint } from "@/components/sparkline";
+import { SystemMonitor } from "@/components/system-monitor";
 
 export const dynamic = "force-dynamic";
 
@@ -455,6 +457,8 @@ export default function TodayPage() {
             )
           }
         />
+        <ScreenTime />
+        <SystemMonitor />
       </div>
     </div>
   );

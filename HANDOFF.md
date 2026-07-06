@@ -1,4 +1,38 @@
-# HANDOFF — updated after Phases 16–18 (2026-07-06)
+# HANDOFF — updated after Phase 19 (2026-07-06, second run; P16–18 notes below)
+
+## Phase 19 (this run): GoodNotes sync, system monitor, screen time
+
+Built on the macOS box (first run on this machine — Node 24 was present,
+sidecar venvs were not).
+
+- **GoodNotes → RAG (Drive)**: `lib/goodnotes.ts` polls the Drive folder
+  named by `GOODNOTES_DRIVE_FOLDER` (default "GoodNotes Backup") hourly at
+  :15 (+ launch catch-up), diffs each PDF's `modifiedTime` against the new
+  `goodnotes_sync_state` table, downloads changed files to the gitignored
+  `/temp_notes`, and posts the path to the RAG sidecar's **new
+  `POST /ingest` endpoint** (added to `rag/server.py`, same pipeline as the
+  CLI; 5 new pytest cases). Sync state commits only after a successful
+  ingest, so failures retry. **`drive.readonly` was added to the Google
+  SCOPES — existing connections must reconnect once from the Calendar tab**
+  (a 403 surfaces exactly that message). `getAccessToken` is now exported
+  as `getGoogleAccessToken`.
+- **System monitor**: `GET /api/system` (via `systeminformation@5.31.13`,
+  pinned at install) returns CPU load/cores, active vs total memory, and
+  the OS-drive usage; `<SystemMonitor />` on the Today grid polls it every
+  8 s and cleans up on unmount.
+- **Screen time**: `lib/activitywatch.ts` reads the local ActivityWatch
+  API (`AW_BASE_URL`, default :5600) — AFK bucket for active time (window
+  time as fallback), window bucket by app, web bucket by domain; pure
+  aggregation helpers have 3 node tests. `GET /api/activity` always
+  answers 200 with an `available` flag; `<ScreenTime />` refreshes every
+  60 s and shows a quiet hint when AW is offline.
+
+Deferred to a live session: reconnect Google (new scope) and watch a real
+GoodNotes PDF flow Drive → `/temp_notes` → sidecar → `ask_textbook`;
+install/run ActivityWatch and eyeball the Screen time card against its own
+UI; confirm the Windows box reports `C:` in the System card.
+
+# Previous handoff — Phases 16–18 (2026-07-06)
 
 Phases 1–18 are built and committed. Phases 16–18 are **Python sidecars**
 under `sidecars/` — standalone services with their own venvs that talk to

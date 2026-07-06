@@ -9,6 +9,10 @@ import { getDb } from "@/lib/db";
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/calendar.events",
+  // Read-only Drive access for the GoodNotes backup sync (lib/goodnotes.ts).
+  // Tokens granted before this scope was added get a 403 there — reconnect
+  // from the Calendar tab to re-consent.
+  "https://www.googleapis.com/auth/drive.readonly",
 ].join(" ");
 
 export const GOOGLE_REDIRECT_URI = "http://localhost:3000/api/google/callback";
@@ -104,7 +108,8 @@ export function disconnectGoogle(): void {
   db.prepare("DELETE FROM calendar_cache").run();
 }
 
-async function getAccessToken(): Promise<string> {
+// Exported for other Google APIs on the same consent (Drive in goodnotes.ts).
+export async function getGoogleAccessToken(): Promise<string> {
   const row = getDb()
     .prepare(
       "SELECT access_token, refresh_token, expires_at FROM oauth_tokens WHERE provider = 'google'"
@@ -152,7 +157,7 @@ type GoogleEvent = {
 
 // Poll: fetch upcoming events and replace the cache (read-back only).
 export async function pollCalendar(): Promise<number> {
-  const token = await getAccessToken();
+  const token = await getGoogleAccessToken();
   const params = new URLSearchParams({
     timeMin: new Date().toISOString(),
     maxResults: "50",
@@ -201,7 +206,7 @@ export async function createCalendarEvent({
   end?: string;
   notes?: string;
 }): Promise<string> {
-  const token = await getAccessToken();
+  const token = await getGoogleAccessToken();
   const startMs = Date.parse(start);
   if (Number.isNaN(startMs)) throw new Error(`Unparseable start time: "${start}"`);
   const endIso = end ?? new Date(startMs + 60 * 60 * 1000).toISOString();

@@ -22,6 +22,9 @@ Jarvis is a personal dashboard and natural-language agent that runs entirely on 
 - **Slack check-in & morning brief** — a morning DM asking about sleep/gym/LeetCode, and a daily brief of events, tasks, follow-ups, unread mail, and goals at risk.
 - **Weekly digest** — Sunday-night life + finance summary appended to your Obsidian vault.
 - **Textbook Q&A (RAG sidecar)** — ingest math textbooks (PDF → Markdown → equation-safe chunks → local embeddings) and ask conceptual questions; answers cite sections.
+- **GoodNotes ingestion** — handwritten notes that GoodNotes backs up to Google Drive are pulled down hourly and fed into the same RAG store, so `ask_textbook` searches your own notes too.
+- **System monitor** — a live dashboard card with CPU load, memory, and disk usage for the machine Jarvis is running on.
+- **Screen time** — total active time today and top apps/sites, read from a local ActivityWatch instance.
 - **Voice bridge (sidecar)** — hold F9, talk, release; local Whisper transcribes and sends the text to the agent exactly as if typed.
 - **Backups** — one command exports every table to JSON (OAuth tokens deliberately excluded). Never locked in.
 
@@ -60,6 +63,8 @@ Configure `.env.local` (all optional except the LLM if you want the agent):
 | `OBSIDIAN_VAULT_PATH` | notes + weekly digest |
 | `SLACK_BOT_TOKEN` / `SLACK_USER_ID` / `SLACK_SIGNING_SECRET` | check-in, brief |
 | `TEXTBOOK_RAG_URL` | textbook sidecar (default `http://localhost:8016`) |
+| `GOODNOTES_DRIVE_FOLDER` | Drive folder GoodNotes backs up to (default `GoodNotes Backup`) |
+| `AW_BASE_URL` | ActivityWatch API (default `http://localhost:5600`) |
 
 Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runner), `npm run backup`.
 
@@ -92,6 +97,7 @@ Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`,
 | Slack morning check-in | 08:30 daily |
 | Stocks refresh | every 15 min |
 | Calendar poll | hourly |
+| GoodNotes → RAG sync | hourly (:15) |
 | Net-worth snapshot | 18:00 daily |
 | Mail poll | every 30 min |
 | Weekly digest | Sunday 21:00 |
@@ -184,6 +190,26 @@ Local study Q&A over your own math textbooks:
 2. **Store**: chunks embed via Ollama `nomic-embed-text` into a persistent ChromaDB keyed `source::index` — re-ingesting a book replaces rather than duplicates, and shrinking re-ingests drop stale chunks.
 3. **Ask**: `POST /ask {"question", "top_k"}` retrieves top-k chunks and has the primary Ollama model answer with numbered section citations. The app exposes this as the read-only `ask_textbook` agent tool, so "explain Green's theorem" in the chat box goes through your actual books.
 
+Besides the CLI, the sidecar accepts `POST /ingest {"path"}` for a local file — same pipeline, same idempotent upsert. That's the endpoint the GoodNotes sync (below) feeds, and it works because the app and sidecar share a filesystem.
+
+### GoodNotes ingestion (Drive → RAG)
+
+GoodNotes auto-backs-up notebooks as PDFs to a Google Drive folder. `lib/goodnotes.ts` polls that folder hourly (offset to :15, plus launch catch-up):
+
+1. **Find & diff** — locates the folder by name (`GOODNOTES_DRIVE_FOLDER`, default "GoodNotes Backup") using the same server-side OAuth tokens as Calendar, and compares each PDF's Drive `modifiedTime` against the `goodnotes_sync_state` table, so only new or edited notebooks are touched.
+2. **Download** — changed PDFs land in the gitignored `/temp_notes` directory.
+3. **Ingest** — each path is handed to the RAG sidecar's `POST /ingest`; because chunks are keyed by source, a re-exported notebook replaces its old chunks instead of duplicating them.
+
+Sync state is written only after a successful ingest — if the sidecar or Ollama is down, the file simply retries next hour. Requires the `drive.readonly` scope, which was added to the Google OAuth consent: existing connections need a one-time reconnect from the Calendar tab (surfaced as a clear error, not a crash).
+
+### System monitor
+
+`GET /api/system` probes the host with the `systeminformation` package — CPU load and core count, memory used vs. total ("active" memory, matching what Activity Monitor/Task Manager report), and the OS disk (mount `/` on macOS, `C:` on Windows). The `<SystemMonitor />` client card polls it every 8 seconds with progress bars (red past 90%), clears its interval on unmount, and degrades to a quiet "stats unavailable" if the probe fails. Cross-platform by construction — the same code runs on the M3 MacBook and the Windows box.
+
+### Screen time (ActivityWatch)
+
+[ActivityWatch](https://activitywatch.net) tracks window and browser activity locally on `:5600`. `lib/activitywatch.ts` reads three bucket types since local midnight: the AFK watcher for **total active time** (sum of `not-afk` spans, falling back to window-focus time if no AFK watcher runs), the window watcher aggregated by app, and the web watcher aggregated by domain (www-stripped). The aggregation is pure and unit-tested. `GET /api/activity` proxies it and always answers 200 with an `available` flag — ActivityWatch not running is a normal state, and the `<ScreenTime />` card (refreshes every 60s) just shows a hint instead of an error.
+
 ### Voice bridge sidecar (`sidecars/voice`)
 
 `python -m voice.push_to_talk`: hold **F9** (configurable via `PTT_KEY`) to record 16 kHz mono audio, release to transcribe with **faster-whisper `large-v3-turbo`**, then POST the transcript to `/api/agent` exactly as the chat box does — printing the transcript and the agent's reply, including pending-confirmation notices. The compute path is a pure, unit-tested decision matrix over probed hardware: NVIDIA → CUDA fp16; AMD → CPU int8 with an explicit log that faster-whisper has no clean native AMD GPU path; Apple Silicon → CPU int8; everything overridable with `WHISPER_DEVICE` / `WHISPER_COMPUTE` / `WHISPER_MODEL`.
@@ -198,4 +224,4 @@ All state lives in `jarvis.db` (better-sqlite3, migrations run idempotently on s
 
 ## Testing
 
-`npm test` runs the node test suite (finance query building, brokerage/Slack/mail parsing, nutrition schema). Each sidecar has its own pytest suite run from its venv (`.venv/bin/python -m pytest`), with all model, mic, and network calls stubbed. See [HANDOFF.md](HANDOFF.md) for the live-model tests still deferred and current known limitations.
+`npm test` runs the node test suite (finance query building, brokerage/Slack/mail parsing, nutrition schema, ActivityWatch aggregation). Each sidecar has its own pytest suite run from its venv (`.venv/bin/python -m pytest`), with all model, mic, and network calls stubbed. See [HANDOFF.md](HANDOFF.md) for the live-model tests still deferred and current known limitations.
