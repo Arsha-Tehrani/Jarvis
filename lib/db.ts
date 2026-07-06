@@ -189,6 +189,14 @@ const MIGRATIONS: string[] = [
     source TEXT NOT NULL DEFAULT 'text' CHECK (source IN ('photo','text')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
+  // Phase 19 — GoodNotes → RAG sync: one row per Drive file already
+  // ingested; a file is re-downloaded only when its modifiedTime moves.
+  `CREATE TABLE IF NOT EXISTS goodnotes_sync_state (
+    file_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    modified_time TEXT NOT NULL,
+    ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -76,3 +76,47 @@ def test_health_reports_chunk_count(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "chunks": 2}
+
+
+def test_ingest_endpoint_adds_a_source(client, tmp_path, stub_embedder, monkeypatch):
+    # Same chroma dir the fixture ingested "calc" into (2 chunks).
+    chroma_dir = str(tmp_path / "chroma")
+    notes = tmp_path / "goodnotes-week1.md"
+    notes.write_text(MATH_MD, encoding="utf-8")
+    monkeypatch.setattr(
+        server,
+        "run_ingest",
+        lambda path: ingest_file(path, embedder=stub_embedder, chroma_dir=chroma_dir),
+    )
+    response = client.post("/ingest", json={"path": str(notes)})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "goodnotes-week1"
+    assert data["engine"] == "passthrough"
+    assert data["chunks"] == 2
+    assert data["collection_total"] == 4
+
+
+def test_ingest_missing_file_is_404(client):
+    response = client.post("/ingest", json={"path": "/nowhere/notes.pdf"})
+    assert response.status_code == 404
+
+
+def test_ingest_unsupported_type_is_415(client, tmp_path):
+    doc = tmp_path / "notes.docx"
+    doc.write_text("not ingestable", encoding="utf-8")
+    response = client.post("/ingest", json={"path": str(doc)})
+    assert response.status_code == 415
+
+
+def test_ingest_embed_failure_maps_to_502(client, tmp_path, monkeypatch):
+    notes = tmp_path / "week2.md"
+    notes.write_text(MATH_MD, encoding="utf-8")
+
+    def broken_ingest(path):
+        raise RuntimeError("Could not reach Ollama for embeddings")
+
+    monkeypatch.setattr(server, "run_ingest", broken_ingest)
+    response = client.post("/ingest", json={"path": str(notes)})
+    assert response.status_code == 502
+    assert "Ollama" in response.json()["detail"]

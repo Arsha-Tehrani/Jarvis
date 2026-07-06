@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { morningBriefJob } from "@/lib/brief";
 import { weeklyDigestJob } from "@/lib/digest";
+import { syncGoodNotesJob } from "@/lib/goodnotes";
 import { pollCalendarJob } from "@/lib/google";
 import { pullLeetCodeJob } from "@/lib/leetcode";
 import { pollMailJob } from "@/lib/mail";
@@ -21,6 +22,8 @@ const JOBS: Job[] = [
   { name: "leetcode-daily-pull", schedule: "0 8 * * *", run: pullLeetCodeJob },
   { name: "stocks-refresh", schedule: "*/15 * * * *", run: refreshStocksJob },
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
+  // Offset from the calendar poll so the two Google calls don't stack.
+  { name: "goodnotes-sync", schedule: "15 * * * *", run: syncGoodNotesJob },
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
   {
     name: "weekly-digest",

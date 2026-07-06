@@ -35,8 +35,16 @@ ollama pull nomic-embed-text
 ```
 POST /ask  {"question": "state Green's theorem", "top_k": 4}
 → {"answer": "...", "sources": [{"source", "section", "snippet", "distance"}]}
+POST /ingest  {"path": "/abs/path/to/file.pdf"}      # same pipeline as the CLI
+→ {"source", "engine", "chunks", "collection_total"}
 GET /health → {"status": "ok", "chunks": N}
 ```
+
+`/ingest` exists for the app's GoodNotes sync (`lib/goodnotes.ts`): Jarvis
+downloads a Drive PDF to `/temp_notes` and posts the local path here — valid
+because the app and this sidecar share a filesystem. Unsupported types get a
+415, missing files a 404, and an unreachable Ollama a 502 (the file is
+retried on the next sync).
 
 Config via env: `OLLAMA_BASE_URL` (default `http://localhost:11434`),
 `EMBED_MODEL` (`nomic-embed-text`), `LLM_MODEL` (chat model, default

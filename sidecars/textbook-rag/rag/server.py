@@ -4,11 +4,18 @@
 
 POST /ask {"question": "...", "top_k": 4} →
   {"answer": "...", "sources": [{"source", "section", "snippet", "distance"}]}
+POST /ingest {"path": "/abs/path/to/file.pdf"} →
+  {"source", "engine", "chunks", "collection_total"}
 
-Read-only: retrieves top-k chunks from Chroma and asks the primary Ollama
-model to explain, citing the numbered excerpts. The embedder, collection,
-and chat call are module-level factories so tests can stub them.
+/ask retrieves top-k chunks from Chroma and asks the primary Ollama model
+to explain, citing the numbered excerpts. /ingest runs the same pipeline
+as `python -m rag.ingest` for a local file path — the app's GoodNotes sync
+(lib/goodnotes.ts) calls it after downloading a PDF, which works because
+the app and this sidecar share a filesystem. The embedder, collection,
+chat, and ingest calls are module-level seams so tests can stub them.
 """
+
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -16,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import config, store
 from .embeddings import OllamaEmbedder
+from .ingest import ingest_file
 
 app = FastAPI(title="Jarvis textbook RAG sidecar")
 
@@ -28,6 +36,10 @@ def get_embedder() -> store.Embedder:
 
 def get_collection():
     return store.get_collection()
+
+
+def run_ingest(path: str) -> dict:
+    return ingest_file(path, embedder=get_embedder())
 
 
 def chat(messages: list[dict]) -> str:
@@ -81,6 +93,37 @@ def build_messages(question: str, hits: list[store.Retrieved]) -> list[dict]:
         {"role": "system", "content": system},
         {"role": "user", "content": question},
     ]
+
+
+INGESTABLE_SUFFIXES = {".pdf", ".md", ".markdown", ".txt"}
+
+
+class IngestRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class IngestResponse(BaseModel):
+    source: str
+    engine: str
+    chunks: int
+    collection_total: int
+
+
+@app.post("/ingest", response_model=IngestResponse)
+def ingest(request: IngestRequest) -> IngestResponse:
+    file = Path(request.path)
+    if file.suffix.lower() not in INGESTABLE_SUFFIXES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type {file.suffix!r} (pdf, md, txt)",
+        )
+    if not file.is_file():
+        raise HTTPException(status_code=404, detail=f"No such file on this machine: {file}")
+    try:
+        summary = run_ingest(str(file))
+    except RuntimeError as err:  # embedding/Ollama failure
+        raise HTTPException(status_code=502, detail=str(err)) from err
+    return IngestResponse(**summary)
 
 
 @app.get("/health")
