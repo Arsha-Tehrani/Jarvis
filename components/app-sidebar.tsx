@@ -13,6 +13,7 @@ import {
   Landmark,
   ListChecks,
   Mail,
+  Menu,
   Repeat,
   Search,
   Target,
@@ -41,58 +42,101 @@ export const NAV_ITEMS = [
   { href: "/calendar", label: "Calendar", icon: Calendar },
 ];
 
-function NavIcon({
+function NavItem({
   href,
   label,
   icon: Icon,
   active,
+  expanded,
 }: {
   href: string;
   label: string;
   icon: typeof Home;
   active: boolean;
+  expanded: boolean;
 }) {
   return (
     <Link
       href={href}
-      title={label}
+      title={expanded ? undefined : label}
       aria-label={label}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex size-10 items-center justify-center rounded-xl transition-colors",
+        "flex h-10 items-center rounded-xl transition-colors",
+        expanded ? "w-full gap-3 px-3" : "w-10 justify-center",
         active
           ? "bg-accent text-accent-foreground"
           : "text-muted-foreground hover:bg-muted hover:text-foreground"
       )}
     >
-      <Icon className="size-5" strokeWidth={1.75} />
+      <Icon className="size-5 shrink-0" strokeWidth={1.75} />
+      {expanded && <span className="truncate text-sm font-medium">{label}</span>}
     </Link>
   );
 }
 
-// Slim icon-only rail: fixed left on desktop, fixed bottom bar on phones.
-export function AppSidebar() {
+// Desktop: collapsible sidebar — a slim icon rail that expands to show
+// labels when the hamburger at the top is clicked. Phones keep the fixed
+// bottom bar (no hover there, and no room for a persistent sidebar).
+export function AppSidebar({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle: () => void;
+}) {
   const pathname = usePathname();
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
     <>
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-16 flex-col items-center gap-2 border-r border-sidebar-border bg-sidebar py-4 md:flex">
-        <Link
-          href="/"
-          className="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary text-lg font-semibold text-primary-foreground"
-          aria-label="Jarvis home"
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-20 hidden flex-col gap-2 border-r border-sidebar-border bg-sidebar py-4 transition-[width] duration-200 md:flex",
+          open ? "w-60 px-3" : "w-16 items-center"
+        )}
+      >
+        <div className={cn("mb-2 flex items-center gap-2", !open && "justify-center")}>
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={open ? "Collapse sidebar" : "Expand sidebar"}
+            aria-expanded={open}
+            className="flex size-10 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Menu className="size-5" strokeWidth={1.75} />
+          </button>
+          {open && (
+            <Link href="/" className="truncate text-lg font-semibold tracking-tight">
+              Jarvis
+            </Link>
+          )}
+        </div>
+        <nav
+          className={cn(
+            "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto",
+            !open && "items-center"
+          )}
         >
-          J
-        </Link>
-        {NAV_ITEMS.map((item) => (
-          <NavIcon key={item.href} {...item} active={isActive(item.href)} />
-        ))}
+          {NAV_ITEMS.map((item) => (
+            <NavItem
+              key={item.href}
+              {...item}
+              active={isActive(item.href)}
+              expanded={open}
+            />
+          ))}
+        </nav>
       </aside>
       <nav className="fixed inset-x-0 bottom-0 z-20 flex items-center justify-around border-t border-sidebar-border bg-sidebar px-2 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] md:hidden">
         {NAV_ITEMS.map((item) => (
-          <NavIcon key={item.href} {...item} active={isActive(item.href)} />
+          <NavItem
+            key={item.href}
+            {...item}
+            active={isActive(item.href)}
+            expanded={false}
+          />
         ))}
       </nav>
     </>
