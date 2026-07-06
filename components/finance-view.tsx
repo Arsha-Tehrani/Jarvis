@@ -21,6 +21,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import type {
   CategorySpend,
   CutbackSuggestion,
@@ -28,6 +30,7 @@ import type {
   MonthSummary,
   RecurringCharge,
 } from "@/lib/finance/analyze";
+import type { RadarItem } from "@/lib/finance/radar";
 
 type Statement = { id: number; month: string | null; file_path: string; imported_at: string };
 type ImportResult = {
@@ -44,6 +47,7 @@ type FinanceData = {
   transactionCount: number;
   spendByCategory: CategorySpend[];
   recurring: RecurringCharge[];
+  radar: RadarItem[];
   summaries: MonthSummary[];
   goals: Goal[];
   cutbacks: CutbackSuggestion[];
@@ -65,6 +69,8 @@ export function FinanceView() {
   const [importResults, setImportResults] = useState<ImportResult[] | null>(null);
   const [goalKind, setGoalKind] = useState("savings_rate");
   const [goalTarget, setGoalTarget] = useState("");
+  const [selectedRenewals, setSelectedRenewals] = useState<Set<string>>(new Set());
+  const [renewalResult, setRenewalResult] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -126,6 +132,48 @@ export function FinanceView() {
   async function deleteGoal(id: number) {
     await fetch(`/api/finance/goals?id=${id}`, { method: "DELETE" });
     await load();
+  }
+
+  function toggleRenewal(merchant: string) {
+    setSelectedRenewals((prev) => {
+      const next = new Set(prev);
+      if (next.has(merchant)) next.delete(merchant);
+      else next.add(merchant);
+      return next;
+    });
+  }
+
+  // Confirm leg: only the user's explicit click creates calendar events.
+  async function createRenewalEvents() {
+    if (!data) return;
+    const chosen = data.radar.filter((r) => selectedRenewals.has(r.merchant));
+    if (chosen.length === 0) return;
+    setBusy(true);
+    setRenewalResult(null);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create_renewal_events",
+          events: chosen.map((r) => ({
+            title: `Renewal: ${r.merchant} (~${usd(r.usualAmount)})`,
+            start: `${r.nextRenewal}T09:00:00`,
+          })),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setRenewalResult(body.error ?? "Failed to create events");
+      } else {
+        setRenewalResult(
+          [...(body.created ?? []), ...(body.failed ?? [])].join(" ") || "Done."
+        );
+        setSelectedRenewals(new Set());
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (error && !data) return <p className="text-sm text-destructive">{error}</p>;
@@ -305,6 +353,63 @@ export function FinanceView() {
           )}
         </CardContent>
       </Card>
+
+      {data.radar.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Bill radar</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 text-sm">
+            <ul className="flex flex-col divide-y">
+              {data.radar.map((r) => (
+                <li key={r.merchant} className="flex flex-wrap items-center gap-2 py-2">
+                  <Checkbox
+                    checked={selectedRenewals.has(r.merchant)}
+                    onCheckedChange={() => toggleRenewal(r.merchant)}
+                    aria-label={`Select ${r.merchant} renewal`}
+                  />
+                  <span className="font-medium">{r.merchant}</span>
+                  <span className="text-muted-foreground">
+                    ~{usd(r.usualAmount)} every ~{r.medianGapDays}d
+                  </span>
+                  <span className="ml-auto flex items-center gap-2">
+                    {r.jumpPercent != null && (
+                      <Badge variant="destructive">+{r.jumpPercent}% jump</Badge>
+                    )}
+                    {r.renewsSoon && (
+                      <Badge variant="secondary">
+                        {r.daysUntil <= 0
+                          ? "renews about now"
+                          : `renews in ~${r.daysUntil}d`}
+                      </Badge>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      next ≈ {r.nextRenewal}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={createRenewalEvents}
+                disabled={busy || selectedRenewals.size === 0}
+                variant="outline"
+              >
+                Add {selectedRenewals.size || ""} selected renewal
+                {selectedRenewals.size === 1 ? "" : "s"} to calendar
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Nothing is created until you click — bulk calendar writes are
+                confirm-gated.
+              </span>
+            </div>
+            {renewalResult && (
+              <p className="whitespace-pre-wrap text-muted-foreground">{renewalResult}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
