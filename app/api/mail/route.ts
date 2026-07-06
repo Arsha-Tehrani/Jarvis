@@ -10,6 +10,7 @@ import {
   disconnectGmailAccount,
   isGmailConfigured,
   listMailAccounts,
+  makeTaskFromMessage,
   pollAccount,
   triagePending,
 } from "@/lib/mail";
@@ -19,6 +20,11 @@ const postSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("poll") }),
   z.object({
     action: z.literal("draft"),
+    account: z.string().min(1),
+    gmail_id: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("make_task"),
     account: z.string().min(1),
     gmail_id: z.string().min(1),
   }),
@@ -80,6 +86,10 @@ export async function POST(req: NextRequest) {
       }
       case "draft": {
         const message = await createDraftReply(body.account, body.gmail_id);
+        return NextResponse.json({ ok: true, message });
+      }
+      case "make_task": {
+        const message = await makeTaskFromMessage(body.account, body.gmail_id);
         return NextResponse.json({ ok: true, message });
       }
       case "disconnect": {

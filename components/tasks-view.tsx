@@ -159,7 +159,7 @@ export function TasksView() {
                     {task.priority}
                   </Badge>
                 )}
-                {task.source === "agent" && <Badge variant="outline">agent</Badge>}
+                {task.source !== "manual" && <Badge variant="outline">{task.source}</Badge>}
               </div>
               <Button
                 variant="ghost"

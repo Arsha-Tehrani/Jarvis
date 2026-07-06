@@ -339,6 +339,86 @@ export async function pollMailJob(): Promise<void> {
   }
 }
 
+// ---- Flag → one-click task (writes ONLY to the local tasks table) ----
+
+// "Make task" from a triaged message. Reuses the add_task tool handler so
+// task creation has exactly one code path; the only Gmail involvement is
+// reading the cached metadata — nothing is sent or modified. The LLM may
+// suggest a due date; with no model running the task simply has none.
+export async function makeTaskFromMessage(
+  account: string,
+  gmailId: string
+): Promise<string> {
+  const db = getDb();
+  const message = db
+    .prepare(
+      "SELECT sender, subject, snippet FROM mail_messages WHERE account = ? AND gmail_id = ?"
+    )
+    .get(account, gmailId) as
+    | { sender: string; subject: string; snippet: string | null }
+    | undefined;
+  if (!message) throw new Error("Message not found — poll first");
+
+  const senderName = message.sender.replace(/<[^>]*>/g, "").trim() || message.sender;
+  const title = `Reply: ${message.subject} — ${senderName}`.slice(0, 500);
+
+  const existing = db
+    .prepare("SELECT 1 FROM tasks WHERE title = ? AND status = 'open'")
+    .get(title);
+  if (existing) return `A task for this message is already open: "${title}"`;
+
+  const due = await suggestDueDate(message.sender, message.subject, message.snippet);
+
+  const { getTool } = await import("@/lib/tools"); // lazy: avoids an import cycle
+  const tool = getTool("add_task");
+  if (!tool) throw new Error("add_task tool not registered");
+  const args = due ? { title, due } : { title };
+  const parsed = tool.schema.safeParse(args);
+  if (!parsed.success) {
+    throw new Error(`Invalid task args: ${z.prettifyError(parsed.error)}`);
+  }
+  const result = await tool.handler(parsed.data);
+
+  // Mark provenance: this task came from mail, not an agent turn.
+  db.prepare(
+    "UPDATE tasks SET source = 'mail' WHERE id = (SELECT MAX(id) FROM tasks WHERE title = ?)"
+  ).run(title);
+
+  return result;
+}
+
+// Optional nicety, never a dependency: with no model running this quietly
+// returns undefined and the task gets no due date.
+async function suggestDueDate(
+  sender: string,
+  subject: string,
+  snippet: string | null
+): Promise<string | undefined> {
+  try {
+    const result = await chat({
+      messages: [
+        {
+          role: "system",
+          content: `Today is ${new Date().toISOString().slice(0, 10)}. Given an email, suggest a reasonable due date for a "reply to this" task. Respond with ONLY a date as YYYY-MM-DD, or the word "none" if no deadline is implied.`,
+        },
+        { role: "user", content: `From: ${sender}\nSubject: ${subject}\n${snippet ?? ""}` },
+      ],
+    });
+    const match = result.text?.match(/\d{4}-\d{2}-\d{2}/);
+    if (!match) return undefined;
+    const due = match[0];
+    // Sanity: within the next year, not in the past.
+    const ms = Date.parse(due);
+    const now = Date.now();
+    if (Number.isNaN(ms) || ms < now - 86400_000 || ms > now + 366 * 86400_000) {
+      return undefined;
+    }
+    return due;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---- On-demand draft (gmail.compose; NEVER send, never automatic) ----
 
 export async function createDraftReply(account: string, gmailId: string): Promise<string> {
