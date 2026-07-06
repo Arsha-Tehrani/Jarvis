@@ -4,6 +4,7 @@ export const GOAL_KINDS = [
   "savings_rate",
   "gym_days_per_week",
   "leetcode_per_week",
+  "sleep_hours",
 ] as const;
 
 export type GoalKind = (typeof GOAL_KINDS)[number];
@@ -12,6 +13,7 @@ export const DEFAULT_PERIOD: Record<GoalKind, "week" | "month"> = {
   savings_rate: "month",
   gym_days_per_week: "week",
   leetcode_per_week: "week",
+  sleep_hours: "week", // target = average hours/night over the past week
 };
 
 export function upsertGoal(kind: GoalKind, target: number, period?: "week" | "month"): void {
