@@ -1,0 +1,9 @@
+# Optional heavy extra: Marker, the default (and much better) PDF→Markdown
+# engine for math textbooks. Pulls PyTorch — expect a multi-GB install plus
+# ~3 GB of model weights downloaded on first conversion. Without it, ingest
+# falls back to MarkItDown automatically.
+#
+#   .venv/Scripts/pip install -r requirements-marker.txt
+#
+# Pinned to the current stable at the time of writing (2026-07-06).
+marker-pdf==1.10.2

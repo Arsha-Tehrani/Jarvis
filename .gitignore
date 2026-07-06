@@ -49,3 +49,9 @@ jarvis.db-shm
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python sidecars: venvs, caches, vector-db data
+sidecars/**/.venv/
+sidecars/**/__pycache__/
+sidecars/**/.pytest_cache/
+sidecars/textbook-rag/data/
