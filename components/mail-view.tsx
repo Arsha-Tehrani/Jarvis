@@ -80,7 +80,9 @@ export function MailView() {
         window.location.href = data.authUrl;
         return;
       }
-      if (body.action === "draft") setNotice(data.message);
+      if (body.action === "draft" || body.action === "make_task") {
+        setNotice(data.message);
+      }
       if (body.action === "poll" && data.triageError) {
         setNotice(`Polled. Triage pending: ${data.triageError}`);
       }
@@ -196,17 +198,33 @@ export function MailView() {
                               {m.received_at.slice(0, 10)}
                             </span>
                           )}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="ml-auto"
-                            onClick={() =>
-                              act({ action: "draft", account: m.account, gmail_id: m.gmail_id })
-                            }
-                            disabled={busy}
-                          >
-                            Draft reply
-                          </Button>
+                          <span className="ml-auto flex gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                act({
+                                  action: "make_task",
+                                  account: m.account,
+                                  gmail_id: m.gmail_id,
+                                })
+                              }
+                              disabled={busy}
+                              title="Create a local task from this message (writes only to Tasks)"
+                            >
+                              Make task
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                act({ action: "draft", account: m.account, gmail_id: m.gmail_id })
+                              }
+                              disabled={busy}
+                            >
+                              Draft reply
+                            </Button>
+                          </span>
                         </div>
                         <p>{m.subject}</p>
                         {m.importance_reason && (
