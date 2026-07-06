@@ -9,6 +9,7 @@ import {
   ListChecks,
   Mail,
   Repeat,
+  Target,
   TrendingUp,
   Users,
   Wallet,
@@ -17,6 +18,7 @@ import { Repeat2 } from "lucide-react";
 import { getDb } from "@/lib/db";
 import { followUpsDue } from "@/lib/career";
 import { billRadar } from "@/lib/finance/radar";
+import { computeGoalsProgress } from "@/lib/goals-progress";
 import { listHabits } from "@/lib/habits";
 import { computeNetWorth, weeklyDelta } from "@/lib/networth";
 import { birthdaysThisWeek, overduePeople } from "@/lib/people";
@@ -156,6 +158,11 @@ export default function TodayPage() {
     .reverse()
     .map<SparkPoint>((r) => ({ label: r.date.slice(5), value: r.value }));
   const bedtime = latestMetric("bedtime");
+
+  // Goals: on-track summary
+  const goalsProgress = computeGoalsProgress();
+  const goalsOnTrack = goalsProgress.filter((g) => g.onTrack).length;
+  const lagging = goalsProgress.find((g) => !g.onTrack);
 
   // Bill radar: upcoming renewals + price jumps
   const radar = billRadar();
@@ -337,6 +344,20 @@ export default function TodayPage() {
             hero={reads.length}
             unit={reads.length === 1 ? "in progress" : "in progress"}
             sub={`now: ${reads[0].title}${reads[0].author ? ` — ${reads[0].author}` : ""}`}
+          />
+        )}
+        {goalsProgress.length > 0 && (
+          <MetricCard
+            href="/goals"
+            label="Goals"
+            icon={<Target />}
+            hero={`${goalsOnTrack}/${goalsProgress.length}`}
+            unit="on track"
+            sub={
+              lagging
+                ? `behind: ${lagging.label} (${lagging.displayActual} of ${lagging.target})`
+                : "everything on track"
+            }
           />
         )}
         {radar.length > 0 && (

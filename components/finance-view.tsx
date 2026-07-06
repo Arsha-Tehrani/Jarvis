@@ -60,6 +60,7 @@ const GOAL_LABELS: Record<string, string> = {
   savings_rate: "Savings rate (% of income)",
   gym_days_per_week: "Gym days per week",
   leetcode_per_week: "LeetCode problems per week",
+  sleep_hours: "Average sleep (hours/night)",
 };
 
 export function FinanceView() {
