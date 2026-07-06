@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { morningBriefJob } from "@/lib/brief";
 import { weeklyDigestJob } from "@/lib/digest";
 import { pollCalendarJob } from "@/lib/google";
 import { pullLeetCodeJob } from "@/lib/leetcode";
@@ -23,6 +24,7 @@ const JOBS: Job[] = [
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
   { name: "weekly-digest", schedule: "0 21 * * 0", run: weeklyDigestJob },
   { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
+  { name: "slack-morning-brief", schedule: "0 8 * * *", run: morningBriefJob },
   { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
 ];
 

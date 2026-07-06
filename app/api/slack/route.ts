@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { briefText, } from "@/lib/brief";
 import {
   QUESTION_IDS,
   enabledQuestions,
   isSlackConfigured,
+  sendDm,
   sendMorningCheckin,
   setEnabledQuestions,
 } from "@/lib/slack";
@@ -18,6 +20,7 @@ const postSchema = z.discriminatedUnion("action", [
     }),
   }),
   z.object({ action: z.literal("send_now") }),
+  z.object({ action: z.literal("send_brief") }),
 ]);
 
 export async function GET() {
@@ -44,11 +47,15 @@ export async function POST(req: NextRequest) {
     );
   }
   try {
+    if (parsed.data.action === "send_brief") {
+      await sendDm(await briefText());
+      return NextResponse.json({ ok: true, result: "Brief sent." });
+    }
     const result = await sendMorningCheckin(true);
     return NextResponse.json({ ok: true, result });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Slack send failed";
-    console.error("[slack] send_now failed:", err);
+    console.error("[slack] send failed:", err);
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
