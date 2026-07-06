@@ -404,6 +404,58 @@ const queryFinanceTool: Tool<typeof queryFinanceSchema> = {
   handler: (args) => formatFinanceAnswer(args, runFinanceQuery(args)),
 };
 
+const askTextbookSchema = z.object({
+  question: z
+    .string()
+    .min(1)
+    .max(2000)
+    .describe("The math question to answer from the ingested textbooks"),
+});
+
+// Read-only proxy to the local textbook-RAG sidecar (sidecars/textbook-rag),
+// which retrieves chunks from ChromaDB and explains via the local Ollama
+// model. No confirm gate needed; errors surface as clear messages.
+const askTextbookTool: Tool<typeof askTextbookSchema> = {
+  name: "ask_textbook",
+  description:
+    "Answer a math question using the user's ingested textbooks (vector search over vector calculus / differential equations books, answer cites sections). Use for conceptual math questions like 'explain Green's theorem'. Read-only.",
+  schema: askTextbookSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const base = process.env.TEXTBOOK_RAG_URL ?? "http://localhost:8016";
+    let res: Response;
+    try {
+      res = await fetch(`${base}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: args.question }),
+      });
+    } catch {
+      throw new Error(
+        `Textbook sidecar is not running at ${base}. Start it: sidecars/textbook-rag/.venv/Scripts/python -m rag.server`
+      );
+    }
+    const data = (await res.json().catch(() => null)) as {
+      answer?: string;
+      sources?: Array<{ source: string; section: string }>;
+      detail?: string;
+    } | null;
+    if (!res.ok || !data?.answer) {
+      throw new Error(
+        typeof data?.detail === "string"
+          ? data.detail
+          : `Textbook sidecar error (${res.status})`
+      );
+    }
+    const cited = [
+      ...new Set((data.sources ?? []).map((s) => `${s.source} — ${s.section}`)),
+    ];
+    return cited.length > 0
+      ? `${data.answer}\n\nSources: ${cited.join("; ")}`
+      : data.answer;
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -419,6 +471,7 @@ export const tools: Tool[] = [
   addToReadingListTool as Tool,
   logContactTool as Tool,
   queryFinanceTool as Tool,
+  askTextbookTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {
