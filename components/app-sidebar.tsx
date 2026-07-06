@@ -14,6 +14,7 @@ import {
   ListChecks,
   Mail,
   Repeat,
+  Search,
   Target,
   TrendingUp,
   Users,
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 
 export const NAV_ITEMS = [
   { href: "/", label: "Today", icon: Home },
+  { href: "/search", label: "Search", icon: Search },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/trackers", label: "Trackers", icon: Activity },
   { href: "/health", label: "Health", icon: HeartPulse },

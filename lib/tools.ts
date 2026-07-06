@@ -3,6 +3,8 @@ import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
 import { createCalendarEvent } from "@/lib/google";
 import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
+import { CATEGORIES } from "@/lib/finance/categorize";
+import { formatFinanceAnswer, runFinanceQuery } from "@/lib/finance/query";
 import { logHabitByName } from "@/lib/habits";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { logContactByName } from "@/lib/people";
@@ -368,6 +370,40 @@ const logContactTool: Tool<typeof logContactSchema> = {
   handler: (args) => logContactByName(args.name, args.date, args.notes),
 };
 
+const queryFinanceSchema = z.object({
+  metric: z
+    .enum(["spend", "income", "net"])
+    .describe("What to total: spend (money out), income (money in), or net"),
+  category: z
+    .enum(CATEGORIES)
+    .optional()
+    .describe("Restrict to one category, e.g. Dining for food questions"),
+  merchant_contains: z
+    .string()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Restrict to merchants/descriptions containing this text"),
+  month: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/, "must be YYYY-MM")
+    .optional()
+    .describe("One calendar month as YYYY-MM, e.g. 2026-06 for June"),
+  start_date: dateField,
+  end_date: dateField,
+});
+
+// Read-only: the model fills these args and a vetted parameterized query
+// builder does the rest — it can never emit SQL (non-negotiable #1 spirit).
+const queryFinanceTool: Tool<typeof queryFinanceSchema> = {
+  name: "query_finance",
+  description:
+    "Answer questions about the user's transactions: how much was spent/earned, filtered by category, merchant text, a month (YYYY-MM), or a date range. Returns a total plus a small category breakdown. Read-only.",
+  schema: queryFinanceSchema,
+  requiresConfirm: false,
+  handler: (args) => formatFinanceAnswer(args, runFinanceQuery(args)),
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -382,6 +418,7 @@ export const tools: Tool[] = [
   advanceApplicationTool as Tool,
   addToReadingListTool as Tool,
   logContactTool as Tool,
+  queryFinanceTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {
