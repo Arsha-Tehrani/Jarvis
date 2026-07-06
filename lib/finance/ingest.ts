@@ -1,6 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { getDb } from "@/lib/db";
+import {
+  importBrokerageHoldings,
+  looksLikeBrokerageCsv,
+  parseBrokerageCsv,
+} from "@/lib/finance/brokerage";
 import { categorizeTransactions } from "@/lib/finance/categorize";
 import {
   parseCsvStatement,
@@ -16,6 +21,7 @@ export type ImportResult = {
   file: string;
   imported: number;
   categorizedBy: string;
+  kind?: "statement" | "brokerage";
   llmError?: string;
   error?: string;
 };
@@ -58,6 +64,16 @@ export async function importNewStatements(): Promise<ImportResult[]> {
 
 async function importOne(dir: string, file: string): Promise<ImportResult> {
   const fullPath = path.join(dir, file);
+
+  // Brokerage exports (Fidelity positions/history) share the drop folder;
+  // sniff the header and route them to holdings instead of transactions.
+  if (/\.csv$/i.test(file)) {
+    const content = fs.readFileSync(fullPath, "utf8");
+    if (looksLikeBrokerageCsv(content)) {
+      return importBrokerageFile(file, content);
+    }
+  }
+
   let rows: ParsedTransaction[];
   if (/\.pdf$/i.test(file)) {
     rows = await parsePdfStatement(fs.readFileSync(fullPath));
@@ -113,6 +129,22 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
     imported: rows.length,
     categorizedBy: outcome.source,
     llmError: outcome.llmError,
+  };
+}
+
+// Brokerage CSV → holdings upserts. Recorded in the statements table so
+// the same file isn't re-processed; account numbers are never persisted.
+function importBrokerageFile(file: string, content: string): ImportResult {
+  const { holdings, source } = parseBrokerageCsv(content);
+  const result = importBrokerageHoldings(holdings, source);
+  getDb()
+    .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
+    .run(new Date().toISOString().slice(0, 7), file);
+  return {
+    file,
+    imported: result.upserted,
+    categorizedBy: `brokerage ${source}`,
+    kind: "brokerage",
   };
 }
 
