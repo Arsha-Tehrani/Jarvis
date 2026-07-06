@@ -1,0 +1,10 @@
+"Positions for account ending 1234 as of 07/05/2026"
+
+Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Percent Of Account,Cost Basis Total,Average Cost Basis,Type
+X12345678,Individual,VOO,VANGUARD S&P 500 ETF,10.000,530.10,+1.20,5301.00,+12.00,+0.23%,+1096.00,+26.07%,60.1%,4205.00,420.50,Cash
+X12345678,Individual,AAPL,APPLE INC,15.500,212.30,-0.85,3290.65,-13.18,-0.40%,+540.65,+19.66%,37.3%,2750.00,177.42,Cash
+X12345678,Individual,SPAXX**,FIDELITY GOVERNMENT MONEY MARKET,231.470,1.00,0.00,231.47,0.00,0.00%,0.00,0.00%,2.6%,231.47,1.00,Cash
+X12345678,Individual,Pending Activity,,,,,12.34,,,,,,,,
+
+"The data and information in this spreadsheet is synthetic sample data for testing."
+"Date downloaded 07/05/2026"

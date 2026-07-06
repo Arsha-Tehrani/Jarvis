@@ -143,9 +143,12 @@ export function FinanceView() {
         </CardHeader>
         <CardContent className="flex flex-col gap-3 text-sm">
           <p className="text-muted-foreground">
-            Drop CSV (or PDF) statements into{" "}
+            Drop bank statements (CSV/PDF) or Fidelity brokerage exports (Positions or
+            Accounts-history CSV) into{" "}
             <code className="rounded bg-muted px-1">{data.statementsDir}</code>, then
-            import. Account numbers are redacted on ingest; nothing leaves this machine.
+            import. Statements become transactions; brokerage files update holdings on
+            the Stocks tab. Account numbers are never stored; nothing leaves this
+            machine.
           </p>
           <div className="flex items-center gap-3">
             <Button onClick={runImport} disabled={busy}>

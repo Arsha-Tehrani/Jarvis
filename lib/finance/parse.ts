@@ -127,7 +127,8 @@ function findCol(header: string[], names: string[]): number {
 }
 
 // Minimal RFC-4180-ish parser: quoted fields, escaped quotes, CR/LF.
-function parseCsv(content: string): string[][] {
+// Exported for the brokerage importer, which shares the same muscle.
+export function parseCsv(content: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
