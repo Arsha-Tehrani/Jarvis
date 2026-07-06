@@ -25,7 +25,11 @@ const GOAL_LABELS: Record<string, string> = {
   gym_days_per_week: "Gym days",
   leetcode_per_week: "LeetCode problems",
   sleep_hours: "Avg sleep",
+  calories_per_day: "Calories today",
 };
+
+// For most goals more is better; calories is a ceiling.
+const LOWER_IS_BETTER = new Set(["calories_per_day"]);
 
 function isoDaysAgo(n: number): string {
   return new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
@@ -111,6 +115,20 @@ export function computeGoalsProgress(): GoalProgress[] {
         href = "/health";
         break;
       }
+      case "calories_per_day": {
+        const today = new Date().toISOString().slice(0, 10);
+        actual = (
+          db
+            .prepare(
+              "SELECT COALESCE(SUM(calories), 0) AS total FROM nutrition_logs WHERE date = ?"
+            )
+            .get(today) as { total: number }
+        ).total;
+        unit = "kcal";
+        displayActual = `${actual} kcal`;
+        href = "/trackers";
+        break;
+      }
       default:
         continue; // unknown kind — skip rather than mislead
     }
@@ -124,7 +142,9 @@ export function computeGoalsProgress(): GoalProgress[] {
       actual,
       unit,
       fraction: goal.target > 0 ? clamp01(actual / goal.target) : 0,
-      onTrack: actual >= goal.target,
+      onTrack: LOWER_IS_BETTER.has(goal.kind)
+        ? actual <= goal.target
+        : actual >= goal.target,
       displayActual: displayActual || `${actual}`,
       href,
     });

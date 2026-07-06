@@ -176,6 +176,19 @@ const MIGRATIONS: string[] = [
     note_path TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
+  // Phase 17 — nutrition / macros (entries come from the macro sidecar or
+  // the log_meal agent tool; both are schema-validated before insert)
+  `CREATE TABLE IF NOT EXISTS nutrition_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    item TEXT NOT NULL,
+    calories INTEGER NOT NULL,
+    protein INTEGER NOT NULL,
+    carbs INTEGER NOT NULL,
+    fat INTEGER NOT NULL,
+    source TEXT NOT NULL DEFAULT 'text' CHECK (source IN ('photo','text')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

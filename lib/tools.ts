@@ -10,6 +10,7 @@ import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { logContactByName } from "@/lib/people";
 import { READING_KINDS, addReadingItem } from "@/lib/reading";
 import { appendNote } from "@/lib/notes";
+import { addMeals } from "@/lib/nutrition";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -145,7 +146,9 @@ const logLeetcode: Tool<typeof logLeetcodeSchema> = {
 const setGoalSchema = z.object({
   kind: z
     .enum(GOAL_KINDS)
-    .describe("Which goal to set: savings_rate (percent of income), gym_days_per_week, or leetcode_per_week"),
+    .describe(
+      "Which goal to set: savings_rate (percent of income), gym_days_per_week, leetcode_per_week, sleep_hours, or calories_per_day"
+    ),
   target: z
     .number()
     .positive()
@@ -404,6 +407,30 @@ const queryFinanceTool: Tool<typeof queryFinanceSchema> = {
   handler: (args) => formatFinanceAnswer(args, runFinanceQuery(args)),
 };
 
+const logMealSchema = z.object({
+  item: z.string().trim().min(1).max(200).describe("What was eaten, e.g. 'chicken burrito'"),
+  calories: z.number().int().min(0).max(10_000).describe("Estimated calories"),
+  protein: z.number().int().min(0).max(1_000).describe("Protein in grams"),
+  carbs: z.number().int().min(0).max(1_000).describe("Carbs in grams"),
+  fat: z.number().int().min(0).max(1_000).describe("Fat in grams"),
+  date: dateField,
+});
+
+// Same validated insert path the macro sidecar's /api/nutrition uses; the
+// zod gate above is what stands between model output and the table.
+const logMealTool: Tool<typeof logMealSchema> = {
+  name: "log_meal",
+  description:
+    "Log a meal with its macros (calories, protein/carbs/fat in grams) for a date (defaults to today). Estimate sensible integer macros from the user's description if they don't give exact numbers.",
+  schema: logMealSchema,
+  requiresConfirm: false,
+  handler: (args) => {
+    const { date, ...entry } = args;
+    addMeals({ entries: [entry], source: "text", date });
+    return `Logged ${entry.item}: ${entry.calories} kcal (P${entry.protein}/C${entry.carbs}/F${entry.fat}).`;
+  },
+};
+
 const askTextbookSchema = z.object({
   question: z
     .string()
@@ -472,6 +499,7 @@ export const tools: Tool[] = [
   logContactTool as Tool,
   queryFinanceTool as Tool,
   askTextbookTool as Tool,
+  logMealTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

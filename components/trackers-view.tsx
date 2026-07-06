@@ -8,6 +8,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type GymLog = { id: number; date: string; notes: string | null };
+type NutritionEntry = {
+  id: number;
+  item: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  source: "photo" | "text";
+};
+type DayNutrition = {
+  entries: NutritionEntry[];
+  totals: { calories: number; protein: number; carbs: number; fat: number };
+  calorieGoal: number | null;
+};
 type RecentProblem = { title: string; titleSlug: string; timestamp: string };
 type LeetCodeLatest = {
   date: string;
@@ -19,6 +33,7 @@ type LeetCodeLatest = {
 export function TrackersView() {
   const [gymLogs, setGymLogs] = useState<GymLog[]>([]);
   const [leetcode, setLeetcode] = useState<LeetCodeLatest | null>(null);
+  const [nutrition, setNutrition] = useState<DayNutrition | null>(null);
   const [gymError, setGymError] = useState<string | null>(null);
   const [lcError, setLcError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,6 +58,13 @@ export function TrackersView() {
       setLcError(null);
     } catch (err) {
       setLcError(err instanceof Error ? err.message : "Failed to load LeetCode stats");
+    }
+    try {
+      const res = await fetch("/api/nutrition");
+      const data = await res.json();
+      if (res.ok) setNutrition(data);
+    } catch {
+      // card just shows the empty state
     }
   }, []);
 
@@ -132,6 +154,79 @@ export function TrackersView() {
           </div>
           {gymError && <p className="text-sm text-destructive">{gymError}</p>}
           <ContributionHeatmap loggedDates={gymLogs.map((l) => l.date)} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Macros today</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {nutrition && nutrition.entries.length > 0 ? (
+            <>
+              <div className="flex flex-wrap gap-6 text-sm">
+                <div>
+                  <p className="text-2xl font-semibold">
+                    {nutrition.totals.calories}
+                    {nutrition.calorieGoal != null && (
+                      <span className="text-base font-normal text-muted-foreground">
+                        {" "}
+                        / {nutrition.calorieGoal}
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-muted-foreground">kcal</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-semibold">{nutrition.totals.protein}g</p>
+                  <p className="text-muted-foreground">protein</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-semibold">{nutrition.totals.carbs}g</p>
+                  <p className="text-muted-foreground">carbs</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-semibold">{nutrition.totals.fat}g</p>
+                  <p className="text-muted-foreground">fat</p>
+                </div>
+              </div>
+              {nutrition.calorieGoal != null &&
+                nutrition.totals.calories > nutrition.calorieGoal && (
+                  <p className="text-sm text-destructive">
+                    {nutrition.totals.calories - nutrition.calorieGoal} kcal over today&apos;s goal
+                  </p>
+                )}
+              <ul className="text-sm text-muted-foreground">
+                {nutrition.entries.map((e) => (
+                  <li key={e.id} className="flex items-center gap-2">
+                    <span>
+                      {e.item} — {e.calories} kcal (P{e.protein}/C{e.carbs}/F{e.fat})
+                    </span>
+                    {e.source === "photo" && (
+                      <span title="Photo estimates are rough approximations" className="rounded bg-muted px-1 text-xs">
+                        photo ≈
+                      </span>
+                    )}
+                    <button
+                      className="text-xs underline-offset-2 hover:underline"
+                      onClick={async () => {
+                        await fetch(`/api/nutrition?id=${e.id}`, { method: "DELETE" });
+                        await load();
+                      }}
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Nothing logged today. Tell the agent what you ate (&quot;log a chicken burrito,
+              ~700 calories&quot;) or send a photo/text to the macro sidecar. Set a{" "}
+              <code>calories_per_day</code> goal on the Goals page to track against a target.
+            </p>
+          )}
         </CardContent>
       </Card>
 
