@@ -22,7 +22,13 @@ const JOBS: Job[] = [
   { name: "stocks-refresh", schedule: "*/15 * * * *", run: refreshStocksJob },
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
-  { name: "weekly-digest", schedule: "0 21 * * 0", run: weeklyDigestJob },
+  {
+    name: "weekly-digest",
+    schedule: "0 21 * * 0",
+    run: async () => {
+      await weeklyDigestJob();
+    },
+  },
   { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
   { name: "slack-morning-brief", schedule: "0 8 * * *", run: morningBriefJob },
   { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
