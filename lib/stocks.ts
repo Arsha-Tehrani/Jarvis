@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { loggedFetch } from "@/lib/network-log";
 
 // Quotes via Finnhub (preferred: 60 req/min free) or Alpha Vantage
 // (fallback: ~25 req/day free). A 15-minute in-memory cache keeps us far
@@ -71,7 +72,10 @@ async function fetchFinnhub(ticker: string): Promise<Quote> {
     symbol: ticker,
     token: process.env.FINNHUB_API_KEY as string,
   });
-  const res = await fetch(`https://finnhub.io/api/v1/quote?${params}`);
+  const res = await loggedFetch(`https://finnhub.io/api/v1/quote?${params}`, undefined, {
+    feature: "stocks-refresh",
+    purpose: "fetch quote",
+  });
   if (!res.ok) throw new Error(`Finnhub responded ${res.status} for ${ticker}`);
   const data = (await res.json()) as { c?: number; d?: number | null; dp?: number | null };
   if (!data.c) throw new Error(`No quote for ${ticker} (unknown symbol?)`);
@@ -90,7 +94,10 @@ async function fetchAlphaVantage(ticker: string): Promise<Quote> {
     symbol: ticker,
     apikey: process.env.ALPHAVANTAGE_API_KEY as string,
   });
-  const res = await fetch(`https://www.alphavantage.co/query?${params}`);
+  const res = await loggedFetch(`https://www.alphavantage.co/query?${params}`, undefined, {
+    feature: "stocks-refresh",
+    purpose: "fetch quote",
+  });
   if (!res.ok) throw new Error(`Alpha Vantage responded ${res.status} for ${ticker}`);
   const data = (await res.json()) as {
     "Global Quote"?: Record<string, string>;

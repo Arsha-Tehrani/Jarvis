@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { chat } from "@/lib/llm";
 import { getTool } from "@/lib/tools";
+import { loggedFetch } from "@/lib/network-log";
 import { getSetting, setSetting } from "@/lib/settings";
+import { queueSyncPush } from "@/lib/sync/client";
 import {
   parseLeetCodeAnswer,
   parseSleepAnswer,
@@ -53,14 +55,14 @@ async function slackApi(
 ): Promise<Record<string, unknown>> {
   const token = process.env.SLACK_BOT_TOKEN;
   if (!token) throw new Error("SLACK_BOT_TOKEN is not set");
-  const res = await fetch(`https://slack.com/api/${method}`, {
+  const res = await loggedFetch(`https://slack.com/api/${method}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(body),
-  });
+  }, { feature: "slack", purpose: `call ${method}` });
   const data = (await res.json()) as { ok: boolean; error?: string } & Record<
     string,
     unknown
@@ -161,6 +163,7 @@ export async function handleCheckinReply(text: string): Promise<string> {
   }
 
   setSetting(PENDING_KEY, JSON.stringify({ date: pending.date, remaining: rest }));
+  queueSyncPush(); // the answer wrote a tracker table; debounced, no-op unless client
   const next = rest[0];
   return next ? `${result}\nNext: ${QUESTIONS[next]}` : `${result}\nThat's everything — have a good one!`;
 }

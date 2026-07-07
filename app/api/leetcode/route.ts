@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
+import { queueSyncPush } from "@/lib/sync/client";
 import {
   fetchLeetCodeStats,
   latestLeetCodeRow,
@@ -55,6 +56,7 @@ export async function POST(req: NextRequest) {
     try {
       const stats = await fetchLeetCodeStats(username);
       saveLeetCodeStats(new Date().toISOString().slice(0, 10), stats);
+      queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
       return NextResponse.json({ ok: true, stats });
     } catch (err) {
       const message = err instanceof Error ? err.message : "LeetCode pull failed";
@@ -75,6 +77,7 @@ export async function POST(req: NextRequest) {
       streak: manual.data.streak ?? previous?.streak ?? 0,
       recent: manual.data.recent ?? [],
     });
+    queueSyncPush();
     return NextResponse.json({ ok: true }, { status: 201 });
   }
 

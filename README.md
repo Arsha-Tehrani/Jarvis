@@ -13,7 +13,7 @@ npm run dev        # starts the app AND the in-process cron worker
 
 Open `http://localhost:3000`. With no configuration you get tasks, trackers, notes-free features, and the dashboard; add a local Ollama model for the agent, and API keys per feature as you need them (see [Configuration](#configuration)).
 
-Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runner), `npm run backup`, `npm run restore`.
+Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runner), `npm run backup`, `npm run restore`, and `npm run doctor` — a one-shot pre-flight report that checks Ollama and the configured models are pulled, sidecar venvs exist, and paths/keys point at real things (exit code 0 unless something *configured* is broken, so it works as a CI gate).
 
 ## Table of contents
 
@@ -68,9 +68,13 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 - **Mail triage** — read-only Gmail polling (multi-account) with LLM triage into categories; drafts are created only on explicit click, and nothing can ever send mail.
 - **Slack check-in & morning brief** — a morning DM asking about sleep/gym/LeetCode, and a daily brief of events, tasks, follow-ups, unread mail, budget overages, and goals at risk.
 - **Weekly digest** — Sunday-night life + finance summary appended to your Obsidian vault.
+- **System status** — the `/status` page probes every optional integration (Ollama, sidecars, ActivityWatch, vault, Google Calendar/Gmail/Drive, Slack, LeetCode, quote APIs) and shows ok / degraded / down / not-configured per check; a compact "10/12 healthy" card sits on the Today view. Backed by `GET /api/status` with a ~20s server-side cache.
+- **Network audit log** — the `/network-log` page lists every outbound network call Jarvis has made: destination host, which feature triggered it, outcome, and latency — **never** request contents, URLs, or headers. Calls to localhost (Ollama, sidecars) don't leave the machine and aren't logged. This makes "sensitive data never leaves the laptop except calls you configured" provable rather than asserted.
 - **System monitor** — a live dashboard card with CPU load, memory, and disk usage for the machine Jarvis is running on.
 - **Screen time** — total active time today and top apps/sites, read from a local ActivityWatch instance.
 - **PWA & remote access** — installable on a phone (manifest + service worker), with optional bearer-token auth (`JARVIS_AUTH_TOKEN`) so the app can be served over Tailscale or a local mesh without being wide open.
+- **Device sync (optional)** — run Jarvis on two machines and keep the derived tracker tables (tasks, gym, habits, goals, LeetCode stats, net-worth snapshots) in sync through one always-on "host" over Tailscale. Strictly allowlist-based: finance transactions, mail, notes, and OAuth tokens never leave the machine they live on, by construction.
+- **Sidecar setup & start/stop** — the `/status` page has Set up / Start / Stop buttons and a live log panel for the macro and textbook-RAG sidecars; "Set up" creates the venv and installs requirements right from the browser, so a from-scratch install or a missing-dependency crash is recoverable with no terminal at all. ActivityWatch gets the same card with best-effort launch/quit (it's a third-party tray app — Jarvis detects it, points at the installer when missing, and never pretends a quit landed when it didn't).
 - **Backups & restore** — one command exports every table to JSON (OAuth tokens deliberately excluded); a matching restore command loads an export back into `jarvis.db`. Never locked in.
 
 ## Architecture at a glance
@@ -85,11 +89,11 @@ Next.js app (localhost:3000)          Python sidecars (optional)
 └─ lib/cron.ts    scheduler + catch-up         └─ chat, vision, embedding models
 ```
 
-Everything runs from `npm run dev`. The sidecars are standalone Python services with their own venvs that talk to the app and Ollama over HTTP — nothing Python is in the Next.js build.
+Everything runs from `npm run dev`. The sidecars are standalone Python services with their own venvs that talk to the app and Ollama over HTTP — nothing Python is in the Next.js build. They are fully managed from the `/status` page: **Set up** creates `sidecars/<name>/.venv` and pip-installs `requirements.txt` (confined to that folder, idempotent, output streamed to the in-app log panel), and **Start/Stop** spawn the venv's own python (`.venv/bin/python -m rag.server` / `macro.server`, `Scripts\python.exe` on Windows) with logs captured to the same panel. The status card distinguishes *no environment*, *environment missing packages* (named specifically), and *ready*; common crashes get a plain-language hint (missing dependency → re-offer Set up, port already taken). Any sidecar Jarvis started is shut down with the server so nothing gets orphaned. Manual setup/run from a terminal still works exactly as before and is the fallback: `cd sidecars/<name> && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, then `.venv/bin/python -m <module>`. ActivityWatch gets the same card as best-effort control — it's a third-party tray app, so Jarvis launches/quits the installed app per-OS, links to [activitywatch.net](https://activitywatch.net/downloads/) when it isn't installed, and reports "couldn't confirm it stopped" rather than pretending.
 
 ## Configuration
 
-Configure `.env.local` (all optional except the LLM if you want the agent):
+Configure `.env.local` (all optional except the LLM if you want the agent). For which Ollama model to pull for each job — chat/tool-calling, vision, embeddings — see **[docs/MODELS.md](docs/MODELS.md)**; `npm run doctor` verifies what's actually installed.
 
 | Variable | Purpose |
 |---|---|
@@ -104,10 +108,15 @@ Configure `.env.local` (all optional except the LLM if you want the agent):
 | `OBSIDIAN_VAULT_PATH` | notes + weekly digest |
 | `SLACK_BOT_TOKEN` / `SLACK_USER_ID` / `SLACK_SIGNING_SECRET` | check-in, brief |
 | `TEXTBOOK_RAG_URL` | textbook sidecar (default `http://localhost:8016`) |
+| `MACRO_SIDECAR_URL` | macro sidecar, for the status probe (default `http://localhost:8017`) |
 | `GOODNOTES_DRIVE_FOLDER` | Drive folder GoodNotes backs up to (default `GoodNotes Backup`) |
 | `AW_BASE_URL` | ActivityWatch API (default `http://localhost:5600`) |
 | `VOICE_SIDECAR_URL` | voice transcription server for the mic button (default `http://localhost:8018`) |
 | `JARVIS_AUTH_TOKEN` | if set, every page/API request must present this bearer token |
+| `SYNC_ROLE` | `host` or `client`; unset = device sync disabled (default) |
+| `SYNC_HOST_URL` | client only — the host's Tailscale address, e.g. `http://home-pc:3000` |
+| `SYNC_AUTH_TOKEN` | shared sync secret, required on both sides (a secret like any other: env-only, never backed up) |
+| `DEVICE_ID` | optional stable machine id; auto-generated and persisted on first run if unset |
 
 ---
 
@@ -121,13 +130,15 @@ Configure `.env.local` (all optional except the LLM if you want the agent):
 2. **Confirm money/destructive actions.** Tools flagged `requiresConfirm` (e.g. `set_goal`, `revert_action`) are not executed — the route returns a *pending confirmation* payload showing exactly what would run. The UI displays it; `POST /api/agent { confirmedCalls, originalText }` re-validates and executes only on your confirm.
 3. **Everything logs.** Every turn — user text, tool calls as JSON, result — is written to the `agent_log` table.
 
-Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `log_meal`, `ask_textbook`, `revert_action`.
+Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `log_meal`, `ask_textbook`, `revert_action`. Adding a new one is a ~30-line recipe — see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
+
+Each turn also records **cost/latency telemetry** on its `agent_log` row: provider, model, latency, token counts (when the API reports them — never estimated), and dollar cost. With local Ollama the cost is always $0; point `LLM_PROVIDER` at a hosted model and fill in `lib/pricing.ts` (rates change — the shipped table is deliberately empty) to see tokens and running monthly cost on the `/status` page.
 
 **Undo** (`revert_action`): because every executed tool call is logged with its validated arguments, a deterministic mapper (`lib/revert-plan.ts`) translates a logged action into its inverse SQL — `add_task` → delete that task, `log_gym` → delete that day's row, `log_meal` → delete that meal, and so on. Only cleanly invertible tools are revertible; anything else (calendar events, notes appends, stage changes that lose prior state) is refused with an explanation. Reverts are tracked in a `reverted_actions` table so the same action can't be undone twice, and the tool always requires confirmation.
 
 ### LLM abstraction
 
-`lib/llm.ts` exports `chat({ messages, tools })` and routes by `LLM_PROVIDER`: Ollama's OpenAI-compatible `/v1/chat/completions` by default, or the Anthropic API if configured. Callers never know which provider ran, so moving to a hosted model later is a config change, not a refactor. It also exports `embed(texts)` for the semantic search index, which always talks to the local Ollama embeddings endpoint (`EMBED_MODEL`, default `nomic-embed-text`) — Anthropic has no embeddings API, and embeddings of personal data should stay local anyway.
+`lib/llm.ts` exports `chat({ messages, tools })` and routes by `LLM_PROVIDER`: Ollama's OpenAI-compatible `/v1/chat/completions` by default, or the Anthropic API if configured (model recommendations per job live in [docs/MODELS.md](docs/MODELS.md)). Callers never know which provider ran, so moving to a hosted model later is a config change, not a refactor. It also exports `embed(texts)` for the semantic search index, which always talks to the local Ollama embeddings endpoint (`EMBED_MODEL`, default `nomic-embed-text`) — Anthropic has no embeddings API, and embeddings of personal data should stay local anyway.
 
 ### Scheduling: cron + catch-up-on-launch
 
@@ -257,6 +268,28 @@ GoodNotes auto-backs-up notebooks as PDFs to a Google Drive folder. `lib/goodnot
 
 Sync state is written only after a successful ingest — if the sidecar or Ollama is down, the file simply retries next hour. Requires the `drive.readonly` scope, which was added to the Google OAuth consent: existing connections need a one-time reconnect from the Calendar tab (surfaced as a clear error, not a crash).
 
+### System status & network audit
+
+`lib/status.ts` runs twelve independent probes (each try/caught — one failing integration never hides another) and caches the result ~20s. `/status` polls it every 30s with a manual-refresh button and also hosts the agent cost/latency panel, the sidecar Start/Stop controls, and the Sync section; the Today view shows the compact summary card. Probes are deliberately cheap: presence checks for rate-limited APIs (a missing Finnhub key is "unconfigured", a live quote failure surfaces in the Stocks UI), the last stored cron result for LeetCode, and one small request where liveness matters (Ollama, sidecars, Slack `auth.test`, Drive scope).
+
+`lib/network-log.ts` wraps the handful of genuinely outbound `fetch` call sites in `loggedFetch`, which records **metadata only** — host, feature, purpose, outcome, latency — to the `network_log` table (30-day / 10k-row retention, pruned amortized on write). Bodies, query params, and headers are never stored, so the audit log can't become the leak it exists to rule out. `/network-log` renders it filterable by feature and day. `npm run doctor` is the CLI cousin for first-time setup.
+
+### Device sync (selective, host/client)
+
+Jarvis instances on multiple machines can sync a small **allowlist** of derived tables — `tasks`, `gym_logs`, `habits`, `habit_logs`, `goals`, `leetcode_stats`, `networth_snapshots` — defined in one place (`lib/sync/tables.ts`) with the exclusion rule commented above it. Raw imports never sync: transactions, statements, mail, notes, and `oauth_tokens` are rejected by both endpoints even if explicitly requested (there's a test for exactly that).
+
+Setup:
+
+1. **Host** (the always-on machine): set `SYNC_ROLE=host` and `SYNC_AUTH_TOKEN=<shared secret>` in its `.env.local`. It serves `POST /api/sync/push` and `GET /api/sync/pull` — and refuses both unless the role and token check out.
+2. **Client** (each other machine): set `SYNC_ROLE=client`, the same `SYNC_AUTH_TOKEN`, and `SYNC_HOST_URL=http://<host-tailscale-name>:3000`.
+3. That's it — a cron tick every 5 minutes (plus launch catch-up, plus a debounced push right after writes) pushes local changes and pulls everyone else's. Sync traffic shows up in `/network-log`, and `/status` has a Sync section with per-table push/pull times and pending counts.
+
+How conflicts resolve: every row carries a `sync_id` (cross-device identity; the local autoincrement id stays internal) and an `updated_at` that the **host stamps with its own clock at receipt time**. Device clocks are never trusted for ordering — the last write to *reach the host* wins, deterministically. A locally-edited row is never overwritten by a pull until its own push has landed. Deletes are not propagated (sync is additive), and two devices logging the same thing independently (same gym date, same goal kind) merge by natural key instead of duplicating.
+
+> ⚠ The sync endpoints are designed to sit **behind Tailscale only**. The shared token is the entire auth story — do not port-forward `/api/sync/*` to the open internet.
+
+The host needs no push worker for its own writes: clients pulling from it read its live `jarvis.db` directly. `sync_state` (cursors) is included in backups; `device_meta` (this machine's identity) deliberately is not, so restoring a backup onto a second machine can't clone identities — and `SYNC_AUTH_TOKEN` lives only in `.env.local`, never in any table or export.
+
 ### System monitor
 
 `GET /api/system` probes the host with the `systeminformation` package — CPU load and core count, memory used vs. total ("active" memory, matching what Activity Monitor/Task Manager report), and the OS disk (mount `/` on macOS, `C:` on Windows). The `<SystemMonitor />` client card polls it every 8 seconds with progress bars (red past 90%), clears its interval on unmount, and degrades to a quiet "stats unavailable" if the probe fails. Cross-platform by construction — the same code runs on the M3 MacBook and the Windows box.
@@ -279,7 +312,7 @@ Two entry points share one lazily-loaded local **faster-whisper `large-v3-turbo`
 
 ### Backup & restore
 
-- `npm run backup` exports every table to one JSON file in `/backups` — with `oauth_tokens` deliberately excluded so backups are storable without leaking live Google credentials.
+- `npm run backup` exports every table to one JSON file in `/backups` — with `oauth_tokens` deliberately excluded so backups are storable without leaking live Google credentials. (`network_log`, the `agent_log` telemetry columns, and the sync cursors in `sync_state` are included — hosts and counts, no secrets. `device_meta` is excluded so a restore can't clone another machine's sync identity, and `SYNC_AUTH_TOKEN` lives only in `.env.local`, like every secret.)
 - `npm run restore` loads an export back: `npm run restore -- backups/jarvis-backup-<stamp>.json` (or with no argument, the newest file in `/backups`). It truncates each table present in the JSON (never `oauth_tokens`) and bulk-inserts the rows inside a single transaction — either the whole restore lands or none of it does. Your data is a plain SQLite file plus JSON exports; you are never locked in.
 
 ### Data model & privacy

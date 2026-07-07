@@ -16,6 +16,7 @@ import {
   Menu,
   Repeat,
   Search,
+  ShieldCheck,
   Target,
   TrendingUp,
   Users,
@@ -40,6 +41,7 @@ export const NAV_ITEMS = [
   { href: "/notes", label: "Notes", icon: FileText },
   { href: "/mail", label: "Mail", icon: Mail },
   { href: "/calendar", label: "Calendar", icon: Calendar },
+  { href: "/status", label: "Status", icon: ShieldCheck },
 ];
 
 function NavItem({

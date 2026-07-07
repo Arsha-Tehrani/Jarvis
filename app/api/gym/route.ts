@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
+import { queueSyncPush } from "@/lib/sync/client";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest) {
     )
     .run(date, parsed.data.notes ?? null);
   const log = getDb().prepare("SELECT id, date, notes FROM gym_logs WHERE date = ?").get(date);
+  queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
   return NextResponse.json({ log }, { status: 201 });
 }
 

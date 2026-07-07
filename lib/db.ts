@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import path from "path";
+import { syncColumnMigrations, syncTriggerSql } from "@/lib/sync/tables";
 
 // One connection per process. Next.js dev hot-reload re-evaluates modules,
 // so stash the handle on globalThis to avoid leaking connections.
@@ -226,6 +227,37 @@ const MIGRATIONS: string[] = [
     reverted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (log_id, call_index)
   )`,
+  // Phase 22 — privacy audit: one row per OUTBOUND network call (metadata
+  // only — host + feature + outcome, never bodies/params/headers, which
+  // could contain tokens or PII). Written by lib/network-log.ts loggedFetch;
+  // localhost calls (Ollama, sidecars) are deliberately not logged.
+  `CREATE TABLE IF NOT EXISTS network_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    feature TEXT NOT NULL,
+    host TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('ok','error')),
+    status_code INTEGER,
+    latency_ms INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_network_log_timestamp ON network_log(timestamp)`,
+  // Phase 23 — selective sync: per-table pull cursors + push/pull marks.
+  // Machine-specific but harmless to back up (restore lands on the same
+  // machine in the normal case).
+  `CREATE TABLE IF NOT EXISTS sync_state (
+    table_name TEXT PRIMARY KEY,
+    pull_cursor TEXT,
+    last_pull_at TEXT,
+    last_push_at TEXT
+  )`,
+  // Phase 23 — stable per-machine identity (DEVICE_ID env overrides).
+  // Deliberately NOT in BACKUP_TABLES: restoring a backup onto a second
+  // machine must not clone the first machine's device identity.
+  `CREATE TABLE IF NOT EXISTS device_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,23 +274,57 @@ const MIGRATIONS: string[] = [
   )`,
 ];
 
+// Column adds on existing tables. SQLite has no ADD COLUMN IF NOT EXISTS,
+// so idempotency comes from checking pragma table_info first.
+const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+  // Phase 22 — agent cost/latency per turn (filled by /api/agent from
+  // lib/llm.ts chat() meta; cost_usd is 0 for local Ollama, null when the
+  // pricing table has no entry for the model).
+  { table: "agent_log", column: "provider", ddl: "provider TEXT" },
+  { table: "agent_log", column: "model", ddl: "model TEXT" },
+  { table: "agent_log", column: "latency_ms", ddl: "latency_ms INTEGER" },
+  { table: "agent_log", column: "input_tokens", ddl: "input_tokens INTEGER" },
+  { table: "agent_log", column: "output_tokens", ddl: "output_tokens INTEGER" },
+  { table: "agent_log", column: "cost_usd", ddl: "cost_usd REAL" },
+  // Phase 23 — sync bookkeeping columns on every allowlisted table,
+  // generated from the allowlist itself (lib/sync/tables.ts).
+  ...syncColumnMigrations(),
+];
+
+// Runs AFTER the column adds (indexes/triggers reference sync columns).
+const POST_MIGRATIONS: string[] = [...syncTriggerSql()];
+
+const MIGRATION_COUNT =
+  MIGRATIONS.length + COLUMN_MIGRATIONS.length + POST_MIGRATIONS.length;
+
+function applyMigrations(db: Database.Database): void {
+  for (const sql of MIGRATIONS) db.exec(sql);
+  for (const m of COLUMN_MIGRATIONS) {
+    const cols = db.prepare(`PRAGMA table_info(${m.table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === m.column)) {
+      db.exec(`ALTER TABLE ${m.table} ADD COLUMN ${m.ddl}`);
+    }
+  }
+  for (const sql of POST_MIGRATIONS) db.exec(sql);
+}
+
 function connect(): Database.Database {
   const db = new Database(path.join(process.cwd(), "jarvis.db"));
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  for (const sql of MIGRATIONS) db.exec(sql);
+  applyMigrations(db);
   return db;
 }
 
 export function getDb(): Database.Database {
   if (!globalForDb.__jarvisDb) {
     globalForDb.__jarvisDb = connect();
-    globalForDb.__jarvisMigrationCount = MIGRATIONS.length;
-  } else if (globalForDb.__jarvisMigrationCount !== MIGRATIONS.length) {
+    globalForDb.__jarvisMigrationCount = MIGRATION_COUNT;
+  } else if (globalForDb.__jarvisMigrationCount !== MIGRATION_COUNT) {
     // Dev hot-reload added migrations since this connection opened —
     // re-run the (idempotent) list so new tables exist without a restart.
-    for (const sql of MIGRATIONS) globalForDb.__jarvisDb.exec(sql);
-    globalForDb.__jarvisMigrationCount = MIGRATIONS.length;
+    applyMigrations(globalForDb.__jarvisDb);
+    globalForDb.__jarvisMigrationCount = MIGRATION_COUNT;
   }
   return globalForDb.__jarvisDb;
 }
