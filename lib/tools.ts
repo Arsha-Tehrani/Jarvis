@@ -11,6 +11,8 @@ import { logContactByName } from "@/lib/people";
 import { READING_KINDS, addReadingItem } from "@/lib/reading";
 import { appendNote } from "@/lib/notes";
 import { addMeals } from "@/lib/nutrition";
+import { REVERTIBLE_TOOLS } from "@/lib/revert-plan";
+import { executeRevert, findRevertTarget } from "@/lib/revert";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -483,6 +485,38 @@ const askTextbookTool: Tool<typeof askTextbookSchema> = {
   },
 };
 
+const revertActionSchema = z.object({
+  tool: z
+    .enum(REVERTIBLE_TOOLS as [string, ...string[]])
+    .optional()
+    .describe(
+      "Restrict the undo to this action type, e.g. 'add_task' if the user says 'remove that task'. Omit to undo the most recent revertible action."
+    ),
+});
+
+// Undo: maps a logged action to its inverse SQL (lib/revert-plan.ts).
+// Deletes data → requiresConfirm (non-negotiable #2). The target is resolved
+// at execution time (after the user confirms) from agent_log, skipping
+// actions already in reverted_actions so nothing is undone twice.
+const revertActionTool: Tool<typeof revertActionSchema> = {
+  name: "revert_action",
+  description:
+    "Undo the most recent agent action (added task, logged gym/LeetCode/metric/habit/meal, tracked application, reading-list add). Use when the user says 'undo that', 'I didn't mean that', or 'remove what you just added'. Requires user confirmation.",
+  schema: revertActionSchema,
+  requiresConfirm: true,
+  handler: (args) => {
+    const target = findRevertTarget(args.tool);
+    if (!target) {
+      throw new Error(
+        args.tool
+          ? `No recent un-reverted ${args.tool} action found in the log.`
+          : "No recent revertible action found in the log."
+      );
+    }
+    return executeRevert(target);
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
   logGym as Tool,
@@ -500,6 +534,7 @@ export const tools: Tool[] = [
   queryFinanceTool as Tool,
   askTextbookTool as Tool,
   logMealTool as Tool,
+  revertActionTool as Tool,
 ];
 
 export function getTool(name: string): Tool | undefined {

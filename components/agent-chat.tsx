@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Mic, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,14 +15,88 @@ type Entry =
   | { kind: "error"; text: string }
   | { kind: "pending"; originalText: string; calls: PendingCall[]; resolved?: string };
 
+type MicState = "idle" | "recording" | "transcribing";
+
 export function AgentChat() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mic, setMic] = useState<MicState>("idle");
+  const recorderRef = useRef<MediaRecorder | null>(null);
   const router = useRouter();
 
-  async function send() {
-    const text = input.trim();
+  // If the card unmounts mid-recording, release the mic.
+  useEffect(() => {
+    return () => {
+      recorderRef.current?.stream.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  function pushError(text: string) {
+    setEntries((prev) => [...prev, { kind: "error", text }]);
+  }
+
+  // Record → /api/transcribe (voice sidecar) → the transcript goes through
+  // send(), i.e. the exact same agent path as typing. Mic/sidecar problems
+  // surface as chat errors, never crashes.
+  async function toggleRecording() {
+    if (mic === "recording") {
+      recorderRef.current?.stop(); // onstop handles the rest
+      return;
+    }
+    if (mic !== "idle" || busy) return;
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      pushError("Microphone unavailable — check the browser's mic permission for this site.");
+      return;
+    }
+    const mimeType = ["audio/webm", "audio/mp4", ""].find(
+      (t) => t === "" || MediaRecorder.isTypeSupported(t)
+    );
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      recorderRef.current = null;
+      void transcribe(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+    };
+    recorderRef.current = recorder;
+    recorder.start();
+    setMic("recording");
+  }
+
+  async function transcribe(blob: Blob) {
+    setMic("transcribing");
+    try {
+      const form = new FormData();
+      form.append("audio", blob, "clip.webm");
+      const res = await fetch("/api/transcribe", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) {
+        pushError(data.error ?? "Transcription failed");
+        return;
+      }
+      if (!data.text) {
+        pushError("Didn't catch that — the recording came back empty.");
+        return;
+      }
+      // Same routing as typing: the agent tool-calls it into the right section.
+      await send(data.text);
+    } catch {
+      pushError("Could not reach the transcription API.");
+    } finally {
+      setMic("idle");
+    }
+  }
+
+  async function send(spoken?: string) {
+    const text = (spoken ?? input).trim();
     if (!text || busy) return;
     setInput("");
     setEntries((prev) => [...prev, { kind: "user", text }]);
@@ -166,11 +241,26 @@ export function AgentChat() {
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder='Try: "add a task to review my budget Friday"'
-            disabled={busy}
+            placeholder={
+              mic === "recording"
+                ? "Listening… click ■ when done"
+                : 'Try: "add a task to review my budget Friday"'
+            }
+            disabled={busy || mic !== "idle"}
           />
-          <Button type="submit" disabled={busy || !input.trim()}>
-            {busy ? "…" : "Send"}
+          <Button
+            type="button"
+            variant={mic === "recording" ? "destructive" : "outline"}
+            size="icon"
+            onClick={() => void toggleRecording()}
+            disabled={busy || mic === "transcribing"}
+            aria-label={mic === "recording" ? "Stop recording" : "Record a voice message"}
+            className={mic === "recording" ? "animate-pulse" : undefined}
+          >
+            {mic === "recording" ? <Square className="size-4" /> : <Mic className="size-4" />}
+          </Button>
+          <Button type="submit" disabled={busy || mic !== "idle" || !input.trim()}>
+            {busy || mic === "transcribing" ? "…" : "Send"}
           </Button>
         </form>
       </CardContent>

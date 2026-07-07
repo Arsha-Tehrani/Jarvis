@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { recentTranscript } from "@/lib/agent-memory";
 import { getDb } from "@/lib/db";
 import { chat } from "@/lib/llm";
 import { getTool, toolDefsForLlm } from "@/lib/tools";
@@ -37,12 +38,21 @@ export async function POST(req: NextRequest) {
 
 async function handleTurn(text: string) {
   const today = new Date();
+  // Rolling-window memory: the last few logged turns, injected into the
+  // system prompt so follow-ups like "make that high priority" resolve.
+  const transcript = recentTranscript();
   const systemPrompt = [
-    "You are Jarvis, the user's personal dashboard assistant.",
-    `Today is ${today.toISOString().slice(0, 10)} (${today.toLocaleDateString("en-US", { weekday: "long" })}).`,
-    "When the user asks you to do something a tool covers, call the tool. Resolve relative dates ('Friday', 'tomorrow') to concrete ISO dates yourself.",
-    "If no tool applies, answer briefly in plain text.",
-  ].join(" ");
+    [
+      "You are Jarvis, the user's personal dashboard assistant.",
+      `Today is ${today.toISOString().slice(0, 10)} (${today.toLocaleDateString("en-US", { weekday: "long" })}).`,
+      "When the user asks you to do something a tool covers, call the tool. Resolve relative dates ('Friday', 'tomorrow') to concrete ISO dates yourself.",
+      "If the user asks to undo/revert something, call the revert_action tool.",
+      "If no tool applies, answer briefly in plain text.",
+    ].join(" "),
+    transcript,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   let llmResult;
   try {

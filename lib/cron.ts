@@ -7,6 +7,7 @@ import { pullLeetCodeJob } from "@/lib/leetcode";
 import { pollMailJob } from "@/lib/mail";
 import { netWorthSnapshotJob } from "@/lib/networth";
 import { slackCheckinJob } from "@/lib/slack";
+import { refreshSearchIndexJob } from "@/lib/search-index";
 import { refreshStocksJob } from "@/lib/stocks";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
@@ -35,6 +36,8 @@ const JOBS: Job[] = [
   { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
   { name: "slack-morning-brief", schedule: "0 8 * * *", run: morningBriefJob },
   { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
+  // Offset from the mail poll so new subjects usually index right after it.
+  { name: "search-index-refresh", schedule: "5,35 * * * *", run: refreshSearchIndexJob },
 ];
 
 const globalForCron = globalThis as unknown as { __jarvisCronStarted?: boolean };

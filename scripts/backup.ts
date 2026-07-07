@@ -3,19 +3,7 @@
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
-
-const TABLES = [
-  "tasks",
-  "agent_log",
-  "gym_logs",
-  "leetcode_stats",
-  "transactions",
-  "statements",
-  "goals",
-  "holdings",
-  "watchlist",
-  "calendar_cache",
-];
+import { BACKUP_TABLES } from "../lib/backup-tables.ts";
 
 const dbPath = path.join(process.cwd(), "jarvis.db");
 if (!fs.existsSync(dbPath)) {
@@ -25,7 +13,7 @@ if (!fs.existsSync(dbPath)) {
 const db = new Database(dbPath, { readonly: true });
 
 const tables: Record<string, unknown[]> = {};
-for (const table of TABLES) {
+for (const table of BACKUP_TABLES) {
   try {
     tables[table] = db.prepare(`SELECT * FROM ${table}`).all();
   } catch {

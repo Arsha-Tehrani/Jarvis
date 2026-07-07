@@ -21,3 +21,7 @@ SAMPLE_RATE = 16_000
 
 # The Jarvis app; transcripts POST to /api/agent exactly as if typed.
 JARVIS_URL = os.environ.get("JARVIS_URL", "http://localhost:3000")
+
+# HTTP transcription server (voice.server) for the in-browser mic button.
+HOST = os.environ.get("VOICE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("VOICE_PORT", "8018"))

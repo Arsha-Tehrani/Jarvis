@@ -1,16 +1,25 @@
-# voice sidecar — push-to-talk STT bridge
+# voice sidecar — local speech-to-text (push-to-talk + HTTP)
 
-Hold a key, speak, release: the audio is transcribed **locally** with
-faster-whisper and the text is POSTed to Jarvis `/api/agent` exactly as if
-typed into the chat box — so "log the gym" or "I ate two eggs and toast"
-triggers the same tools. Transcript and agent reply print to the console.
-Standalone Python script — no server, not part of the Next.js build.
+Two ways in, one local faster-whisper model:
+
+1. **Push-to-talk** (`voice.push_to_talk`): hold a key, speak, release —
+   the transcript POSTs to Jarvis `/api/agent` exactly as if typed into
+   the chat box, so "log the gym" or "I ate two eggs and toast" triggers
+   the same tools. Transcript and agent reply print to the console.
+2. **HTTP server** (`voice.server`, **:8018**): `POST /transcribe` with a
+   multipart `audio=` file → `{"text": ...}`. This is what the mic button
+   on the dashboard's Ask Jarvis card uses (the app proxies browser audio
+   through `/api/transcribe`). Accepts whatever MediaRecorder produces
+   (webm/opus, mp4/aac, wav, aiff) — decoding goes through
+   faster-whisper's own PyAV path.
+
+Not part of the Next.js build; audio never leaves the machine.
 
 ## Setup (one-time)
 
 ```powershell
 cd sidecars/voice
-py -3.13 -m venv .venv
+py -3.13 -m venv .venv          # macOS box: python3.11 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 ```
 
@@ -22,6 +31,9 @@ first transcription.
 ```powershell
 .venv\Scripts\python -m voice.push_to_talk
 # hold F9 (PTT_KEY) to record, release to send; Ctrl+C to quit
+
+.venv\Scripts\python -m voice.server        # macOS: .venv/bin/python -m voice.server
+# HTTP transcription on http://127.0.0.1:8018 (VOICE_HOST / VOICE_PORT)
 ```
 
 ## Hardware / compute path (auto-detected, logged at startup)

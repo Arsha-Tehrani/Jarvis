@@ -197,6 +197,35 @@ const MIGRATIONS: string[] = [
     modified_time TEXT NOT NULL,
     ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`,
+  // Phase 21 — semantic search index: one embedding per indexed row
+  // (task title / note path / mail subject). text is what was embedded —
+  // the refresh job compares it to decide whether to re-embed, and search
+  // renders it. embedding is a little-endian float32 BLOB.
+  `CREATE TABLE IF NOT EXISTS search_embeddings (
+    source TEXT NOT NULL CHECK (source IN ('task','note','mail')),
+    ref_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (source, ref_id)
+  )`,
+  // Phase 21 — per-category monthly spending budgets. category values are
+  // validated against the fixed CATEGORIES list (lib/finance/categorize.ts)
+  // at the API/tool layer; SQLite just stores them.
+  `CREATE TABLE IF NOT EXISTS category_budgets (
+    category TEXT PRIMARY KEY,
+    monthly_limit REAL NOT NULL CHECK (monthly_limit > 0)
+  )`,
+  // Phase 21 — undo: which executed agent_log calls were already reverted,
+  // so the same action can never be undone twice. call_index is the position
+  // of the executed call inside the log row's tool_calls JSON.
+  `CREATE TABLE IF NOT EXISTS reverted_actions (
+    log_id INTEGER NOT NULL,
+    call_index INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    reverted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (log_id, call_index)
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

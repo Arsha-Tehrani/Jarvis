@@ -9,5 +9,5 @@ export async function GET(req: NextRequest) {
   if (q.length > 200) {
     return NextResponse.json({ error: "Query too long" }, { status: 400 });
   }
-  return NextResponse.json({ groups: globalSearch(q) });
+  return NextResponse.json({ groups: await globalSearch(q) });
 }
