@@ -47,6 +47,52 @@ export async function chat({
   return chatOllama(messages, tools);
 }
 
+// Embeddings for the semantic search index. Always the local Ollama
+// OpenAI-compatible endpoint regardless of LLM_PROVIDER — Anthropic has no
+// embeddings API, and embeddings of personal data should stay local anyway.
+// Callers treat failure as normal (search degrades to its exact tier).
+export async function embed(texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  const baseUrl = process.env.LLM_BASE_URL ?? "http://localhost:11434/v1";
+  const model = process.env.EMBED_MODEL ?? "nomic-embed-text";
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: texts }),
+    });
+  } catch {
+    throw new Error(
+      `Could not reach the embedding endpoint at ${baseUrl}. Is Ollama running? (ollama serve)`
+    );
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Embedding request failed (${res.status}): ${detail.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as {
+    data?: Array<{ index?: number; embedding?: number[] }>;
+  };
+  const rows = data.data ?? [];
+  if (rows.length !== texts.length) {
+    throw new Error(
+      `Embedding response mismatch: sent ${texts.length} texts, got ${rows.length} vectors`
+    );
+  }
+  // OpenAI-compatible responses carry an index; honor it rather than assume order.
+  const out: number[][] = new Array(texts.length);
+  rows.forEach((row, i) => {
+    if (!Array.isArray(row.embedding)) {
+      throw new Error("Embedding response missing a vector");
+    }
+    out[row.index ?? i] = row.embedding;
+  });
+  return out;
+}
+
 function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema) as Record<string, unknown>;
 }

@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { followUpsDue } from "@/lib/career";
+import { budgetAlerts } from "@/lib/finance/budgets";
 import { computeGoalsProgress } from "@/lib/goals-progress";
 import { chat } from "@/lib/llm";
 import { getSetting, setSetting } from "@/lib/settings";
@@ -27,6 +28,7 @@ type BriefFacts = {
   followUps: Array<{ company: string; next_action: string | null }>;
   importantUnread: number;
   risks: StreakRisk[];
+  budgetAlerts: string[];
 };
 
 // Days left in the calendar week including today (Mon=start, Sun=end).
@@ -106,6 +108,8 @@ export function assembleBriefFacts(): BriefFacts {
     })),
     importantUnread,
     risks: computeStreakRisks(),
+    // Deterministic month-to-date spend vs. category_budgets (budget-math.ts).
+    budgetAlerts: budgetAlerts(),
   };
 }
 
@@ -147,6 +151,10 @@ export function renderPlainBrief(facts: BriefFacts): string {
 
   if (facts.importantUnread > 0) {
     lines.push(`📬 ${facts.importantUnread} important unread email${facts.importantUnread === 1 ? "" : "s"}.`);
+  }
+
+  for (const alert of facts.budgetAlerts) {
+    lines.push(`💸 ${alert}`);
   }
 
   for (const risk of facts.risks) {

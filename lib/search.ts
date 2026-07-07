@@ -1,16 +1,57 @@
 import { getDb } from "@/lib/db";
 import { escapeLike } from "@/lib/finance/query-builder";
 import { searchNotes } from "@/lib/notes";
+import { semanticSearch } from "@/lib/search-index";
+import { RankedHit, dedupeAgainstExact } from "@/lib/search-rank";
 
-// Global search: deterministic LIKE matching across every local source,
-// grouped, each hit linking to its page. No model involved.
+// Global search, two tiers:
+//   1. exact  — deterministic LIKE matching across every local source
+//      (this function); instant, no model involved, always works.
+//   2. semantic — embedding index over tasks/notes/mail subjects catches
+//      fuzzy queries the exact tier misses. Garnish: if Ollama or the
+//      embedding model is down, results are simply exact-only.
 
 export type SearchHit = { title: string; sub: string; href: string };
 export type SearchGroup = { source: string; hits: SearchHit[] };
 
 const LIMIT_PER_SOURCE = 8;
 
-export function globalSearch(query: string): SearchGroup[] {
+export async function globalSearch(query: string): Promise<SearchGroup[]> {
+  const groups = exactSearch(query);
+  try {
+    mergeSemanticHits(groups, await semanticSearch(query));
+  } catch {
+    // embedding model not running — exact tier already answered
+  }
+  return groups;
+}
+
+// Where each semantic source's hits render.
+const SEMANTIC_GROUPS: Record<string, { source: string; href: (refId: string) => string }> = {
+  task: { source: "Tasks", href: () => "/tasks" },
+  mail: { source: "Mail", href: () => "/mail" },
+  note: { source: "Notes", href: (refId) => `/notes?path=${encodeURIComponent(refId)}` },
+};
+
+function mergeSemanticHits(groups: SearchGroup[], ranked: RankedHit[]): void {
+  for (const [sourceKey, target] of Object.entries(SEMANTIC_GROUPS)) {
+    const group = groups.find((g) => g.source === target.source);
+    const fuzzy = dedupeAgainstExact(
+      ranked.filter((h) => h.source === sourceKey),
+      group?.hits.map((h) => h.title) ?? []
+    );
+    if (fuzzy.length === 0) continue;
+    const hits: SearchHit[] = fuzzy.map((h) => ({
+      title: h.text,
+      sub: `similar match · ${Math.round(h.score * 100)}%`,
+      href: target.href(h.refId),
+    }));
+    if (group) group.hits.push(...hits.slice(0, Math.max(0, LIMIT_PER_SOURCE - group.hits.length)));
+    else groups.push({ source: target.source, hits });
+  }
+}
+
+function exactSearch(query: string): SearchGroup[] {
   const db = getDb();
   const like = `%${escapeLike(query)}%`;
   const groups: SearchGroup[] = [];

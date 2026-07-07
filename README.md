@@ -2,31 +2,76 @@
 
 Jarvis is a personal dashboard and natural-language agent that runs entirely on your own machine. One Next.js app at `localhost:3000` is both the UI and the backend; a single SQLite file (`jarvis.db`) is the database; a local LLM (Ollama) is the brain. It costs $0 to run, and sensitive data — finances, notes, health logs — never leaves the laptop.
 
+![Jarvis Today View](./public/demo.gif)
+
+## Quickstart
+
+```bash
+npm install
+npm run dev        # starts the app AND the in-process cron worker
+```
+
+Open `http://localhost:3000`. With no configuration you get tasks, trackers, notes-free features, and the dashboard; add a local Ollama model for the agent, and API keys per feature as you need them (see [Configuration](#configuration)).
+
+Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runner), `npm run backup`, `npm run restore`.
+
+## Table of contents
+
+- [What Jarvis does](#what-jarvis-does)
+  - [Agent](#agent)
+  - [Life tracking](#life-tracking)
+  - [Money](#money)
+  - [Knowledge](#knowledge)
+  - [System & automation](#system--automation)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Configuration](#configuration)
+- [How each piece works](#how-each-piece-works)
+- [Scheduler caveat](#scheduler-caveat)
+- [Testing](#testing)
+
 ## What Jarvis does
 
+### Agent
+
 - **Natural-language agent** — type (or speak) "remind me to call the bank Friday" or "I ate two eggs and toast" and the agent calls the right tool. Every tool call is zod-validated before it executes; money/destructive actions require explicit confirmation; every turn is logged.
+- **Conversation memory** — each turn sees a rolling window of the recent conversation (from the `agent_log` table), so "make that high priority" works without re-explaining what "that" is.
+- **Undo** — "undo that" invokes the `revert_action` tool, which maps a logged action (added task, logged workout, logged meal, …) to its inverse database operation and asks for confirmation before running it.
+- **Voice input** — two paths, one local Whisper model: a 🎤 button on the Ask Jarvis card records in the browser and auto-sends the transcript through the agent, and a push-to-talk sidecar (hold F9, talk, release) does the same from anywhere on the desktop. Either way, "remind me to call the bank Friday" spoken aloud is routed by the agent to the right section, exactly like typing it.
+
+### Life tracking
+
 - **Tasks** — a task list with due dates and priorities, fed by hand or by the agent.
 - **Trackers** — gym visits, LeetCode progress (auto-pulled daily), sleep/bedtime/weight/mood, generic habits with streaks and heatmaps, and daily macros.
 - **Nutrition / macros** — log a meal by text, through the agent, or by **photo**: a local vision model estimates portions and a JSON-mode extraction produces validated calories/protein/carbs/fat.
 - **Goals** — savings rate, gym days per week, LeetCode per week, average sleep, calories per day — each with on-track math on the Goals page and in the morning brief.
-- **Finance** — drop bank statement CSVs/PDFs into `/statements`, hit Import: parsing (with account-number redaction), LLM categorization with keyword fallback, recurring-charge detection, a renewal "radar", and a read-only agent tool for questions like "how much did I spend on dining in May?".
-- **Stocks & watchlist** — live quotes via Finnhub or Alpha Vantage free tiers, cached to stay inside rate limits; holdings imported from brokerage CSV exports.
-- **Net worth** — manual account balances plus market-priced holdings, snapshotted daily into an over-time chart.
 - **Google Calendar** — OAuth-connected, read back hourly into a local cache; the agent can create events and phone-notifying reminders. Google stays the single source of truth.
-- **Mail triage** — read-only Gmail polling (multi-account) with LLM triage into categories; drafts are created only on explicit click, and nothing can ever send mail.
-- **Notes** — read and append to your Obsidian vault straight off disk, with a path-traversal guard.
 - **People** — a keep-in-touch list with contact cadences, overdue flags, and upcoming birthdays.
 - **Career** — job-application pipeline (wishlist → applied → … → offer) with next actions and follow-up nudges.
+
+### Money
+
+- **Finance** — drop bank statement CSVs/PDFs into `/statements`, hit Import: parsing (with account-number redaction), LLM categorization with keyword fallback, recurring-charge detection, a renewal "radar", and a read-only agent tool for questions like "how much did I spend on dining in May?".
+- **Category budgets** — set a monthly limit per spending category; month-to-date spend is checked against it deterministically and overages surface in the morning brief.
+- **Stocks & watchlist** — live quotes via Finnhub or Alpha Vantage free tiers, cached to stay inside rate limits; holdings imported from brokerage CSV exports.
+- **Net worth** — manual account balances plus market-priced holdings, snapshotted daily into an over-time chart.
+
+### Knowledge
+
+- **Notes** — read and append to your Obsidian vault straight off disk, with a path-traversal guard.
 - **Reading list** — books, articles, courses, papers, videos with statuses.
-- **Global search** — one search box across every local source, no model involved.
-- **Slack check-in & morning brief** — a morning DM asking about sleep/gym/LeetCode, and a daily brief of events, tasks, follow-ups, unread mail, and goals at risk.
-- **Weekly digest** — Sunday-night life + finance summary appended to your Obsidian vault.
+- **Global search** — one search box across every local source. Exact `LIKE` matching answers first; a local embedding index (Ollama `nomic-embed-text`) catches fuzzy queries the exact match misses. No cloud calls.
 - **Textbook Q&A (RAG sidecar)** — ingest math textbooks (PDF → Markdown → equation-safe chunks → local embeddings) and ask conceptual questions; answers cite sections.
 - **GoodNotes ingestion** — handwritten notes that GoodNotes backs up to Google Drive are pulled down hourly and fed into the same RAG store, so `ask_textbook` searches your own notes too.
+
+### System & automation
+
+- **Mail triage** — read-only Gmail polling (multi-account) with LLM triage into categories; drafts are created only on explicit click, and nothing can ever send mail.
+- **Slack check-in & morning brief** — a morning DM asking about sleep/gym/LeetCode, and a daily brief of events, tasks, follow-ups, unread mail, budget overages, and goals at risk.
+- **Weekly digest** — Sunday-night life + finance summary appended to your Obsidian vault.
 - **System monitor** — a live dashboard card with CPU load, memory, and disk usage for the machine Jarvis is running on.
 - **Screen time** — total active time today and top apps/sites, read from a local ActivityWatch instance.
-- **Voice bridge (sidecar)** — hold F9, talk, release; local Whisper transcribes and sends the text to the agent exactly as if typed.
-- **Backups** — one command exports every table to JSON (OAuth tokens deliberately excluded). Never locked in.
+- **PWA & remote access** — installable on a phone (manifest + service worker), with optional bearer-token auth (`JARVIS_AUTH_TOKEN`) so the app can be served over Tailscale or a local mesh without being wide open.
+- **Backups & restore** — one command exports every table to JSON (OAuth tokens deliberately excluded); a matching restore command loads an export back into `jarvis.db`. Never locked in.
 
 ## Architecture at a glance
 
@@ -40,14 +85,9 @@ Next.js app (localhost:3000)          Python sidecars (optional)
 └─ lib/cron.ts    scheduler + catch-up         └─ chat, vision, embedding models
 ```
 
-Everything below runs from `npm run dev`. The sidecars are standalone Python services with their own venvs that talk to the app and Ollama over HTTP — nothing Python is in the Next.js build.
+Everything runs from `npm run dev`. The sidecars are standalone Python services with their own venvs that talk to the app and Ollama over HTTP — nothing Python is in the Next.js build.
 
-## Getting started
-
-```bash
-npm install
-npm run dev        # starts the app AND the in-process cron worker
-```
+## Configuration
 
 Configure `.env.local` (all optional except the LLM if you want the agent):
 
@@ -56,6 +96,7 @@ Configure `.env.local` (all optional except the LLM if you want the agent):
 | `LLM_PROVIDER` | `ollama` (default) or `anthropic` |
 | `LLM_BASE_URL` | Ollama OpenAI-compatible endpoint (default `http://localhost:11434/v1`) |
 | `LLM_MODEL` | chat model name |
+| `EMBED_MODEL` | embedding model for semantic search (default `nomic-embed-text`) |
 | `ANTHROPIC_API_KEY` | only if `LLM_PROVIDER=anthropic` |
 | `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY` | stock quotes |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar + Gmail OAuth |
@@ -65,8 +106,8 @@ Configure `.env.local` (all optional except the LLM if you want the agent):
 | `TEXTBOOK_RAG_URL` | textbook sidecar (default `http://localhost:8016`) |
 | `GOODNOTES_DRIVE_FOLDER` | Drive folder GoodNotes backs up to (default `GoodNotes Backup`) |
 | `AW_BASE_URL` | ActivityWatch API (default `http://localhost:5600`) |
-
-Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runner), `npm run backup`.
+| `VOICE_SIDECAR_URL` | voice transcription server for the mic button (default `http://localhost:8018`) |
+| `JARVIS_AUTH_TOKEN` | if set, every page/API request must present this bearer token |
 
 ---
 
@@ -74,17 +115,19 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 
 ### The agent
 
-`POST /api/agent { text }` is one agent turn. The route builds a system prompt with today's date, calls `lib/llm.ts` `chat()` with the full tool registry from `lib/tools.ts`, and then processes each tool call the model returns under three hard rules:
+`POST /api/agent { text }` is one agent turn. The route builds a system prompt with today's date plus a compact transcript of the last few turns (pulled from `agent_log`, large tool-call JSON excluded), calls `lib/llm.ts` `chat()` with the full tool registry from `lib/tools.ts`, and then processes each tool call the model returns under three hard rules:
 
 1. **Validate before execute.** Arguments are parsed against the tool's zod schema; anything unknown or invalid is refused with a clear error instead of guessed at.
-2. **Confirm money/destructive actions.** Tools flagged `requiresConfirm` (e.g. `set_goal`) are not executed — the route returns a *pending confirmation* payload showing exactly what would run. The UI displays it; `POST /api/agent { confirmedCalls, originalText }` re-validates and executes only on your confirm.
+2. **Confirm money/destructive actions.** Tools flagged `requiresConfirm` (e.g. `set_goal`, `revert_action`) are not executed — the route returns a *pending confirmation* payload showing exactly what would run. The UI displays it; `POST /api/agent { confirmedCalls, originalText }` re-validates and executes only on your confirm.
 3. **Everything logs.** Every turn — user text, tool calls as JSON, result — is written to the `agent_log` table.
 
-Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `log_meal`, `ask_textbook`.
+Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `log_meal`, `ask_textbook`, `revert_action`.
+
+**Undo** (`revert_action`): because every executed tool call is logged with its validated arguments, a deterministic mapper (`lib/revert-plan.ts`) translates a logged action into its inverse SQL — `add_task` → delete that task, `log_gym` → delete that day's row, `log_meal` → delete that meal, and so on. Only cleanly invertible tools are revertible; anything else (calendar events, notes appends, stage changes that lose prior state) is refused with an explanation. Reverts are tracked in a `reverted_actions` table so the same action can't be undone twice, and the tool always requires confirmation.
 
 ### LLM abstraction
 
-`lib/llm.ts` exports one function, `chat({ messages, tools })`, and routes by `LLM_PROVIDER`: Ollama's OpenAI-compatible `/v1/chat/completions` by default, or the Anthropic API if configured. Callers never know which provider ran, so moving to a hosted model later is a config change, not a refactor.
+`lib/llm.ts` exports `chat({ messages, tools })` and routes by `LLM_PROVIDER`: Ollama's OpenAI-compatible `/v1/chat/completions` by default, or the Anthropic API if configured. Callers never know which provider ran, so moving to a hosted model later is a config change, not a refactor. It also exports `embed(texts)` for the semantic search index, which always talks to the local Ollama embeddings endpoint (`EMBED_MODEL`, default `nomic-embed-text`) — Anthropic has no embeddings API, and embeddings of personal data should stay local anyway.
 
 ### Scheduling: cron + catch-up-on-launch
 
@@ -98,9 +141,12 @@ Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`,
 | Stocks refresh | every 15 min |
 | Calendar poll | hourly |
 | GoodNotes → RAG sync | hourly (:15) |
+| Search embedding index refresh | every 30 min (:05/:35) |
 | Net-worth snapshot | 18:00 daily |
 | Mail poll | every 30 min |
 | Weekly digest | Sunday 21:00 |
+
+See the [Scheduler caveat](#scheduler-caveat) below — the scheduler only runs while the app process runs.
 
 ### Tasks
 
@@ -137,6 +183,10 @@ Drop CSV or PDF bank statements into the gitignored `/statements` folder and hit
 4. **Brokerage CSVs** — Fidelity has no free personal API, so holdings come in the same way: a positions/history CSV in `/statements` is shape-detected and upserted by ticker (never deleted, so a second account's export can't clobber manual holdings). Account-number columns are never persisted.
 5. **Agent queries** — the read-only `query_finance` tool answers spend/earn questions filtered by category, merchant text, month, or date range, returning a total plus a small category breakdown.
 
+### Category budgets
+
+The `category_budgets` table maps each of the 15 fixed transaction categories to an optional monthly limit (`GET`/`PUT /api/finance/budgets`, zod-validated). `lib/finance/budgets.ts` computes month-to-date spend per category and compares it to the limit with plain arithmetic — no LLM anywhere. Categories at ≥80% of budget warn, categories over budget flag an overage, and both lines feed the deterministic part of the Slack morning brief.
+
 ### Stocks & watchlist
 
 Quotes come from Finnhub (preferred, 60 req/min free) or Alpha Vantage (fallback, ~25 req/day free). A 15-minute in-memory cache plus the 15-minute cron re-warm keep usage far inside both free tiers. No API key means a clear error state in the UI, never a crash.
@@ -169,14 +219,19 @@ Applications move through fixed stages (`wishlist → applied → screening → 
 
 Items of kind `book | article | course | paper | video` with statuses `queued | reading | done | abandoned`, sorted reading-first. Added from the UI or the agent (`add_to_reading_list`).
 
-### Global search
+### Global search (hybrid)
 
-`lib/search.ts` runs deterministic `LIKE` matching across every local source — tasks, transactions, notes, people, and more — grouped by source with each hit linking to its page. No model involved, so it's instant and exact.
+`lib/search.ts` runs in two tiers:
+
+1. **Exact tier** — deterministic `LIKE` matching across every local source — tasks, transactions, mail, notes, people, and more — grouped by source with each hit linking to its page. Instant, exact, and works with nothing else running.
+2. **Semantic tier** — a local embedding index (`search_embeddings` table, vectors from Ollama `nomic-embed-text` via `lib/llm.ts embed()`) over tasks, note titles, and mail subjects. Cosine similarity catches fuzzy queries ("that email about the flight" when the subject says "itinerary"). Results the exact tier already found are not duplicated; fuzzy hits are appended per source.
+
+The index refreshes on a 30-minute cron (plus launch catch-up) and only re-embeds rows whose text changed. If Ollama or the embedding model is down, search silently degrades to the exact tier — semantic is garnish, never a dependency.
 
 ### Slack check-in & morning brief
 
 - **Check-in** (08:30): an outbound DM asks the enabled questions — sleep time, gym yes/no, LeetCode yes/no/count — idempotent per day. Replies are handled by deterministic parsers first, LLM only as fallback, and every answer writes through the *existing agent tool handlers* — one code path per tracker. (Inbound replies need a tunnel; the outbound DM works with just a bot token.)
-- **Morning brief** (08:00): today's events, top tasks, overdue career follow-ups, important-unread mail count, and any goal/streak at risk. The brief is assembled deterministically; the LLM only rephrases it, with the plain rendering as the always-working fallback.
+- **Morning brief** (08:00): today's events, top tasks, overdue career follow-ups, important-unread mail count, category-budget warnings, and any goal/streak at risk. The brief is assembled deterministically; the LLM only rephrases it, with the plain rendering as the always-working fallback.
 
 ### Weekly digest
 
@@ -210,18 +265,50 @@ Sync state is written only after a successful ingest — if the sidecar or Ollam
 
 [ActivityWatch](https://activitywatch.net) tracks window and browser activity locally on `:5600`. `lib/activitywatch.ts` reads three bucket types since local midnight: the AFK watcher for **total active time** (sum of `not-afk` spans, falling back to window-focus time if no AFK watcher runs), the window watcher aggregated by app, and the web watcher aggregated by domain (www-stripped). The aggregation is pure and unit-tested. `GET /api/activity` proxies it and always answers 200 with an `available` flag — ActivityWatch not running is a normal state, and the `<ScreenTime />` card (refreshes every 60s) just shows a hint instead of an error.
 
-### Voice bridge sidecar (`sidecars/voice`)
+### Voice input (`sidecars/voice`)
 
-`python -m voice.push_to_talk`: hold **F9** (configurable via `PTT_KEY`) to record 16 kHz mono audio, release to transcribe with **faster-whisper `large-v3-turbo`**, then POST the transcript to `/api/agent` exactly as the chat box does — printing the transcript and the agent's reply, including pending-confirmation notices. The compute path is a pure, unit-tested decision matrix over probed hardware: NVIDIA → CUDA fp16; AMD → CPU int8 with an explicit log that faster-whisper has no clean native AMD GPU path; Apple Silicon → CPU int8; everything overridable with `WHISPER_DEVICE` / `WHISPER_COMPUTE` / `WHISPER_MODEL`.
+Two entry points share one lazily-loaded local **faster-whisper `large-v3-turbo`** model:
 
-### Backup
+- **Mic button** — the 🎤 on the Ask Jarvis card records with the browser's MediaRecorder, POSTs the clip to `/api/transcribe`, which proxies it to the sidecar's HTTP server (`python -m voice.server`, `:8018`, `POST /transcribe`). The transcript is auto-sent through the agent — same routing as typing. Sidecar down, mic denied, or undecodable audio all surface as clear chat errors, never crashes.
+- **Push-to-talk** — `python -m voice.push_to_talk`: hold **F9** (configurable via `PTT_KEY`) to record 16 kHz mono audio, release to transcribe, then POST the transcript to `/api/agent` exactly as the chat box does — printing the transcript and the agent's reply, including pending-confirmation notices. The compute path is a pure, unit-tested decision matrix over probed hardware: NVIDIA → CUDA fp16; AMD → CPU int8 with an explicit log that faster-whisper has no clean native AMD GPU path; Apple Silicon → CPU int8; everything overridable with `WHISPER_DEVICE` / `WHISPER_COMPUTE` / `WHISPER_MODEL`.
 
-`npm run backup` exports every table to one JSON object — with `oauth_tokens` deliberately excluded so backups are storable without leaking live Google credentials. Your data is a plain SQLite file plus JSON exports; you are never locked in.
+### PWA & remote access
+
+- **Installable** — `app/manifest.ts` serves the web-app manifest (icons in `public/icons`) and `public/sw.js` is a minimal service worker (network-first, no aggressive caching of API responses — the data is live and local). On a phone, "Add to Home Screen" gives a standalone full-screen app.
+- **Bearer-token auth** — set `JARVIS_AUTH_TOKEN` and `middleware.ts` requires every page and API request to present it: `Authorization: Bearer <token>` for API clients, or open `https://your-host/?token=<token>` once in a browser and a cookie keeps the session. Unset, the middleware is a no-op and localhost behaves exactly as before. This is what makes serving Jarvis over a Tailscale funnel or LAN reasonable — it is *not* internet-grade multi-user auth.
+
+### Backup & restore
+
+- `npm run backup` exports every table to one JSON file in `/backups` — with `oauth_tokens` deliberately excluded so backups are storable without leaking live Google credentials.
+- `npm run restore` loads an export back: `npm run restore -- backups/jarvis-backup-<stamp>.json` (or with no argument, the newest file in `/backups`). It truncates each table present in the JSON (never `oauth_tokens`) and bulk-inserts the rows inside a single transaction — either the whole restore lands or none of it does. Your data is a plain SQLite file plus JSON exports; you are never locked in.
 
 ### Data model & privacy
 
 All state lives in `jarvis.db` (better-sqlite3, migrations run idempotently on startup in `lib/db.ts`). Secrets stay in server-side env vars or the `oauth_tokens` table and never reach a client component. `.env*`, `jarvis.db`, `/statements`, and the vault path are gitignored. The only network calls are the ones you configure: your chosen LLM endpoint, quote APIs, Google OAuth, Slack, and the unofficial LeetCode API — finances, notes, health, and mail content are processed locally.
 
+## Scheduler caveat
+
+The `node-cron` scheduler lives **in the Next.js process** — when `npm run dev` (or `npm start`) stops, every scheduled job stops with it. Catch-up-on-launch heals the gaps for daily/weekly jobs the next time you start the app, but nothing runs while it's down. If you want the briefs, polls, and snapshots to fire without a terminal open, keep the app alive under a process manager:
+
+```bash
+npm install -g pm2
+npm run build
+pm2 start npm --name jarvis -- start   # runs `next start` on :3000
+pm2 save && pm2 startup                # restart on reboot (follow the printed command)
+
+pm2 logs jarvis                        # tail the cron/job logs
+pm2 restart jarvis                     # after pulling changes + rebuild
+```
+
+`pm2` restarts the process if it crashes and brings it back after a reboot, which is all the "server" this project needs — it's still one local process on your own machine.
+
 ## Testing
 
-`npm test` runs the node test suite (finance query building, brokerage/Slack/mail parsing, nutrition schema, ActivityWatch aggregation). Each sidecar has its own pytest suite run from its venv (`.venv/bin/python -m pytest`), with all model, mic, and network calls stubbed. See [HANDOFF.md](HANDOFF.md) for the live-model tests still deferred and current known limitations.
+`npm test` runs the node test suite; each Python sidecar has its own pytest suite run from its venv (`.venv/bin/python -m pytest`), with all model, mic, and network calls stubbed.
+
+The testing philosophy follows the architecture's deterministic-first rule:
+
+- **Deterministic logic gets real unit tests.** Anything that computes without a model — finance query building, brokerage/Slack/mail parsing, nutrition schema validation, ActivityWatch aggregation, the revert-action inverse mapper, budget overage math, semantic-search ranking/merging — lives in pure modules with no database or network imports, and is tested directly with `node --test` over exact inputs and expected outputs. If a parser or mapper is wrong, a test fails; we never rely on an LLM behaving well to make these paths correct.
+- **LLM calls are never tested live — their fallbacks are.** Every LLM integration point (categorization, triage, brief phrasing, semantic search) is written as *deterministic result first, model as garnish*, so tests exercise the fallback path explicitly: categorization falls back to keyword rules, the brief falls back to its plain rendering, hybrid search falls back to `LIKE`. What gets asserted is that the system produces a correct, useful answer **with no model running at all**.
+- **Model output is validated, not trusted.** Where a model's output does enter the system (tool-call args, JSON-mode extraction), the tests target the validation gate — zod/pydantic schemas reject malformed payloads — rather than the model itself. The contract under test is "unvalidated output never executes", which holds regardless of which model is behind `lib/llm.ts`.
+- **Sidecar suites stub the world.** The RAG, macro, and voice pytest suites fake Ollama, the microphone, and the Jarvis HTTP endpoint, so they run green on a machine with no GPU and no models pulled. Live-model verification passes are tracked separately in [HANDOFF.md](HANDOFF.md).

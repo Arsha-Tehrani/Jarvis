@@ -1,7 +1,12 @@
-# Pinned at install time (2026-07-06), Python 3.13.
+# Pinned at install time (2026-07-06). Works on Python 3.11 (macOS box)
+# and 3.13 (Windows box) — numpy is pinned to 2.4.6 because 2.5.x dropped
+# Python 3.11. fastapi/uvicorn/python-multipart pins match sidecars/macro.
+fastapi==0.139.0
 faster-whisper==1.2.1
 httpx==0.28.1
 keyboard==0.13.5
-numpy==2.5.1
+numpy==2.4.6
 pytest==9.1.1
+python-multipart==0.0.32
 sounddevice==0.5.5
+uvicorn[standard]==0.50.0

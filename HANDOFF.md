@@ -1,6 +1,101 @@
-# HANDOFF — updated after Phase 19 (2026-07-06, second run; P16–18 notes below)
+# HANDOFF — updated after Phase 21 (2026-07-06, third run; P19 and P16–18 notes below)
 
-## Phase 19 (this run): GoodNotes sync, system monitor, screen time
+## Phase 21 (this run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
+
+Four upgrade phases, each closed on green `npm test` (**49** node tests, up
+from 36), `npm run typecheck`, and `npm run build`. Ollama was **not**
+running on this box, so every LLM-dependent path was verified through its
+fallback (which is the architecture's contract anyway); live-model passes
+are deferred below.
+
+- **README** rewritten: pitch + screenshot placeholder (`public/demo.gif`
+  does not exist yet — drop a real capture there), quickstart up top, TOC,
+  feature bullets clustered (Agent / Life tracking / Money / Knowledge /
+  System & automation), a real Testing-philosophy section, and a
+  "Scheduler caveat" section with a pm2 recipe (recipe not exercised).
+- **Agent memory** (`lib/agent-memory.ts`): `POST /api/agent` now injects
+  the last 8 turns from `agent_log` (user_text + result only, clipped to
+  300 chars each; `tool_calls` JSON deliberately excluded) into the system
+  prompt. Memory-read failure logs and continues — never blocks a turn.
+- **Undo** (`revert_action`, `requiresConfirm: true`): pure inverse-SQL
+  mapper in `lib/revert-plan.ts` (add_task, log_gym, log_leetcode,
+  log_metric, log_habit, log_meal, add_application, add_to_reading_list;
+  everything else refused with a reason — calendar/notes/overwrites have no
+  clean inverse). `lib/revert.ts` scans `agent_log` for the newest
+  un-reverted executed call, runs the inverse + a marker row in the new
+  `reverted_actions` table in one transaction. Verified end-to-end via the
+  confirm leg: add → revert (row deleted, marker written) → second revert
+  correctly refused; date defaults resolve to the **log row's** date, not
+  revert-day.
+- **Category budgets**: `category_budgets` table, `GET/PUT
+  /api/finance/budgets` (zod: fixed category enum, positive limit, null
+  clears), pure math in `lib/finance/budget-math.ts` (≥80% warns, >100%
+  over), and 💸 lines in the deterministic morning brief. Verified with a
+  seeded July transaction: overage line rendered in `/api/brief`, bad PUT
+  rejected 400.
+- **Restore** (`npm run restore [-- file] [--yes]`): loads a backup JSON,
+  truncates each known table present in it (never `oauth_tokens`), bulk
+  inserts in ONE transaction, asks for the literal word "restore" unless
+  `--yes`. Note: package.json uses `node scripts/restore.ts` (repo
+  convention, Node 24 native TS) rather than tsx. Both backup scripts now
+  share `lib/backup-tables.ts` — the old 10-table list was missing 15
+  newer tables. Round-trip (backup → restore → identical counts) and the
+  abort path verified live.
+- **Hybrid search**: `lib/llm.ts` gained `embed(texts)` (always local
+  Ollama `/v1/embeddings`, `EMBED_MODEL` default `nomic-embed-text`).
+  `search_embeddings` table (float32 BLOBs) + incremental refresh
+  (`lib/search-index.ts`, re-embeds only changed text, drops stale rows)
+  on a `5,35 * * * *` cron with launch catch-up. `globalSearch` is now
+  async: exact LIKE tier first, semantic tier appended after per-source
+  dedupe (`lib/search-rank.ts`, cosine ≥ 0.5). Verified degradation live:
+  with Ollama down and a populated index, `/api/search` still answers 200
+  exact-only.
+- **PWA + auth**: minimal no-cache `public/sw.js` + registration component
+  (manifest/icons existed since P20); verified registered and active in
+  the preview browser. Root `middleware.ts`: when `JARVIS_AUTH_TOKEN` is
+  set, every page/API needs `Authorization: Bearer`, the `jarvis_auth`
+  cookie, or a one-time `?token=` (sets HttpOnly cookie, 307-redirects to
+  strip the URL). sw.js/manifest/icons stay exempt or install breaks.
+  Verified all paths live (401 page + JSON 401 API, wrong bearer 401,
+  right bearer 200, cookie flow, exemptions). Unset → verified no-op.
+  **Gotcha:** the dev server does not hot-reload `JARVIS_AUTH_TOKEN` into
+  the middleware worker — restart after changing it.
+
+**Mic button on Ask Jarvis** (same run, follow-up request): the voice
+sidecar gained an HTTP mode — `voice/server.py` (FastAPI, **:8018**,
+`POST /transcribe` multipart `audio=` → `{"text"}`), reusing the same lazy
+`FasterWhisperTranscriber` and decoding browser containers (webm/mp4/wav)
+via faster-whisper's own PyAV path; 7 new pytest cases (stubbed
+transcriber + decoder) → voice suite now **25 passing**. The app got
+`POST /api/transcribe` (proxies to `VOICE_SIDECAR_URL`, default :8018,
+zod-validates the sidecar reply, clear 502 "start it:" message when down)
+and `components/agent-chat.tsx` grew a 🎤 button: MediaRecorder → upload →
+transcript **auto-sends through `send()`** — the same agent tool-calling
+path as typing, so spoken commands route to sections exactly like typed
+ones (that routing already existed; nothing new was needed there).
+Verified live end-to-end with `WHISPER_MODEL=tiny` and a macOS
+`say`-synthesized clip: sidecar `{"text": "at a task to buy milk
+tomorrow."}` (tiny-model mishearing; default model is much better), proxy
+200, garbage bytes → 400/502 with clear detail, sidecar-down → 502 with
+the start command. **This box's voice venv is Python 3.11** (3.13 isn't
+installed), so `numpy` was re-pinned `2.5.1 → 2.4.6` (2.5.x dropped
+py3.11; 2.4.6 works on both boxes). Also removed stray macOS `"* 2.ts"`
+duplicate artifacts in `.next/` that broke `tsc`.
+
+Deferred to a live session (needs `ollama pull nomic-embed-text` + a chat
+model): a real agent turn exercising conversation memory ("make that high
+priority") and "undo that" through the model; a real embedding index build
+and a fuzzy search hit; PWA install from a phone over Tailscale with the
+token flow on https; the pm2 recipe; a real-microphone click of the 🎤
+button in desktop Chrome/Safari (the embedded preview browser hard-denies
+`getUserMedia`, so only the API chain below the browser was exercised with
+real audio) and a full-size `large-v3-turbo` transcription. DB was left
+clean — all verification rows (tasks, transactions, budgets, agent_log,
+embeddings) deleted, and the verification backup JSON removed.
+
+# Previous handoff — Phase 19 (2026-07-06, second run; P16–18 notes below)
+
+## Phase 19: GoodNotes sync, system monitor, screen time
 
 Built on the macOS box (first run on this machine — Node 24 was present,
 sidecar venvs were not).
