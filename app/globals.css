@@ -132,3 +132,27 @@
     @apply font-sans;
   }
 }
+
+/* Text-styled actions (Backup, Network log, "logs", clear filters, …).
+   The affordance contract: the app's one indigo accent + an underline
+   visible BY DEFAULT — clickability must read at a glance, not on hover.
+   Same accent as buttons/avatar; no new colors. */
+@utility action-link {
+  color: var(--primary);
+  text-decoration-line: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in oklch, var(--primary), transparent 55%);
+  border-radius: 4px;
+
+  &:hover {
+    text-decoration-color: currentColor;
+  }
+  &:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

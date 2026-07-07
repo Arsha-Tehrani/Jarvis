@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { getCachedQuote } from "@/lib/stocks";
+import { queueSyncPush } from "@/lib/sync/client";
 
 // Net worth = manual account balances (debt subtracts) + holdings value.
 // Holdings use the cached quote when warm, cost basis as the stated
@@ -112,5 +113,6 @@ export async function netWorthSnapshotJob(): Promise<void> {
     return;
   }
   takeSnapshot();
+  queueSyncPush(); // debounced; no-op unless SYNC_ROLE=client
   console.log("[networth] snapshot taken");
 }

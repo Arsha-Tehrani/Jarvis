@@ -1,4 +1,6 @@
 import { getDb } from "@/lib/db";
+import { loggedFetch } from "@/lib/network-log";
+import { queueSyncPush } from "@/lib/sync/client";
 
 // Unofficial leetcode.com/graphql client. Unofficial APIs break — every
 // caller must treat failure as normal: we log it, keep the last stored row,
@@ -26,7 +28,7 @@ query jarvisStats($username: String!) {
 }`;
 
 export async function fetchLeetCodeStats(username: string): Promise<LeetCodeStats> {
-  const res = await fetch("https://leetcode.com/graphql", {
+  const res = await loggedFetch("https://leetcode.com/graphql", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -35,7 +37,7 @@ export async function fetchLeetCodeStats(username: string): Promise<LeetCodeStat
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     },
     body: JSON.stringify({ query: QUERY, variables: { username } }),
-  });
+  }, { feature: "leetcode-pull", purpose: "fetch solve stats" });
   if (!res.ok) {
     throw new Error(`LeetCode responded ${res.status}`);
   }
@@ -100,6 +102,7 @@ export async function pullLeetCodeJob(): Promise<void> {
   try {
     const stats = await fetchLeetCodeStats(username);
     saveLeetCodeStats(new Date().toISOString().slice(0, 10), stats);
+    queueSyncPush(); // debounced; no-op unless SYNC_ROLE=client
     console.log(
       `[leetcode] pulled stats for ${username}: total=${stats.totalSolved} streak=${stats.streak}`
     );

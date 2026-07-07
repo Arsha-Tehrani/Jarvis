@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { loggedFetch } from "@/lib/network-log";
 
 // Google Calendar via OAuth (Testing mode: refresh tokens expire ~weekly —
 // on refresh failure we surface "reconnect" rather than crashing).
@@ -70,7 +71,7 @@ type TokenResponse = {
 
 export async function exchangeCodeForTokens(code: string): Promise<void> {
   const { clientId, clientSecret } = clientCredentials();
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await loggedFetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -80,7 +81,7 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
       redirect_uri: GOOGLE_REDIRECT_URI,
       grant_type: "authorization_code",
     }),
-  });
+  }, { feature: "google-oauth", purpose: "exchange authorization code" });
   const data = (await res.json()) as TokenResponse;
   if (!res.ok || !data.access_token) {
     throw new Error(`Token exchange failed: ${data.error_description ?? data.error ?? res.status}`);
@@ -126,7 +127,7 @@ export async function getGoogleAccessToken(): Promise<string> {
     throw new GoogleNotConnectedError("Google access expired and no refresh token — reconnect from the Calendar tab");
   }
   const { clientId, clientSecret } = clientCredentials();
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await loggedFetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -135,7 +136,7 @@ export async function getGoogleAccessToken(): Promise<string> {
       client_secret: clientSecret,
       grant_type: "refresh_token",
     }),
-  });
+  }, { feature: "google-oauth", purpose: "refresh access token" });
   const data = (await res.json()) as TokenResponse;
   if (!res.ok || !data.access_token) {
     // Testing-mode refresh tokens die after ~7 days — expected, not fatal.
@@ -164,9 +165,10 @@ export async function pollCalendar(): Promise<number> {
     singleEvents: "true",
     orderBy: "startTime",
   });
-  const res = await fetch(
+  const res = await loggedFetch(
     `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` } },
+    { feature: "calendar-poll", purpose: "list upcoming events" }
   );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -212,7 +214,7 @@ export async function createCalendarEvent({
   const endIso = end ?? new Date(startMs + 60 * 60 * 1000).toISOString();
   if (Number.isNaN(Date.parse(endIso))) throw new Error(`Unparseable end time: "${end}"`);
 
-  const res = await fetch(
+  const res = await loggedFetch(
     "https://www.googleapis.com/calendar/v3/calendars/primary/events",
     {
       method: "POST",
@@ -227,7 +229,8 @@ export async function createCalendarEvent({
         end: { dateTime: new Date(endIso).toISOString() },
         reminders: { useDefault: true },
       }),
-    }
+    },
+    { feature: "calendar-write", purpose: "create event" }
   );
   const data = (await res.json().catch(() => ({}))) as { id?: string; error?: { message?: string } };
   if (!res.ok || !data.id) {

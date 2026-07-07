@@ -30,6 +30,7 @@ import { MetricCard } from "@/components/metric-card";
 import { RingGauge } from "@/components/ring-gauge";
 import { ScreenTime } from "@/components/screen-time";
 import { Sparkline, type SparkPoint } from "@/components/sparkline";
+import { StatusSummary } from "@/components/status-summary";
 import { SystemMonitor } from "@/components/system-monitor";
 
 export const dynamic = "force-dynamic";
@@ -459,6 +460,7 @@ export default function TodayPage() {
         />
         <ScreenTime />
         <SystemMonitor />
+        <StatusSummary />
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
+import { queueSyncPush } from "@/lib/sync/client";
 
 const createSchema = z.object({
   title: z.string().min(1).max(500),
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
   const task = getDb()
     .prepare("SELECT * FROM tasks WHERE id = ?")
     .get(info.lastInsertRowid);
+  queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
   return NextResponse.json({ task }, { status: 201 });
 }
 
@@ -62,6 +64,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
   const task = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+  queueSyncPush();
   return NextResponse.json({ task });
 }
 

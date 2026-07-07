@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { getDb } from "@/lib/db";
+import { loggedFetch } from "@/lib/network-log";
 import {
   GoogleNotConnectedError,
   getGoogleAccessToken,
@@ -36,9 +37,13 @@ export type GoodNotesSyncResult = {
   failed: Array<{ name: string; error: string }>;
 };
 
-async function driveGet(url: string): Promise<Response> {
+async function driveGet(url: string, purpose: string): Promise<Response> {
   const token = await getGoogleAccessToken();
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await loggedFetch(
+    url,
+    { headers: { Authorization: `Bearer ${token}` } },
+    { feature: "goodnotes-sync", purpose }
+  );
   if (res.status === 403) {
     // The stored consent predates the drive.readonly scope.
     throw new GoogleNotConnectedError(
@@ -55,7 +60,10 @@ async function findFolderId(): Promise<string | null> {
     fields: "files(id)",
     pageSize: "1",
   });
-  const res = await driveGet(`https://www.googleapis.com/drive/v3/files?${params}`);
+  const res = await driveGet(
+    `https://www.googleapis.com/drive/v3/files?${params}`,
+    "find backup folder"
+  );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`Drive folder lookup failed (${res.status}): ${detail.slice(0, 300)}`);
@@ -74,7 +82,10 @@ async function listFolderPdfs(folderId: string): Promise<DriveFile[]> {
       pageSize: "100",
     });
     if (pageToken) params.set("pageToken", pageToken);
-    const res = await driveGet(`https://www.googleapis.com/drive/v3/files?${params}`);
+    const res = await driveGet(
+      `https://www.googleapis.com/drive/v3/files?${params}`,
+      "list notebook PDFs"
+    );
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
       throw new Error(`Drive file list failed (${res.status}): ${detail.slice(0, 300)}`);
@@ -95,7 +106,8 @@ function safeFileName(name: string): string {
 
 async function downloadPdf(file: DriveFile): Promise<string> {
   const res = await driveGet(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`,
+    "download notebook PDF"
   );
   if (!res.ok) throw new Error(`Drive download failed (${res.status}) for "${file.name}"`);
   fs.mkdirSync(TEMP_DIR, { recursive: true });

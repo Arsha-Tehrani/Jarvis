@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
+import { queueSyncPush } from "@/lib/sync/client";
 import { listHabits } from "@/lib/habits";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -49,6 +50,7 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
+    queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
     return NextResponse.json({ habits: listHabits() }, { status: 201 });
   }
 
@@ -66,6 +68,7 @@ export async function POST(req: NextRequest) {
       date
     );
   }
+  queueSyncPush();
   return NextResponse.json({ habits: listHabits() });
 }
 
