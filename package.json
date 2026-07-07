@@ -9,6 +9,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "backup": "node scripts/backup.ts",
+    "doctor": "node scripts/doctor.ts",
     "restore": "node scripts/restore.ts",
     "test": "node --test \"tests/**/*.test.ts\""
   },

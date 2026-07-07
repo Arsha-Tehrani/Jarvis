@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { loggedFetch } from "@/lib/network-log";
+import { computeCostUsd } from "@/lib/pricing";
 
 // Provider abstraction. Callers never know which provider ran.
 // Routed by LLM_PROVIDER: "ollama" (default, OpenAI-compatible) or "anthropic".
@@ -25,9 +27,24 @@ export type ToolCall = {
   args: unknown;
 };
 
+// Per-call telemetry, recorded into agent_log by the agent route. Token
+// counts come from the API response when present and stay null otherwise —
+// never estimated. costUsd is 0 for local Ollama (that's the point of it),
+// a real dollar amount for hosted models with a filled-in pricing table,
+// and null when the table has no entry for the model (see lib/pricing.ts).
+export type ChatMeta = {
+  provider: "ollama" | "anthropic";
+  model: string;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+};
+
 export type ChatResult = {
   text?: string;
   toolCalls?: ToolCall[];
+  meta?: ChatMeta;
 };
 
 export async function chat({
@@ -38,13 +55,32 @@ export async function chat({
   tools?: LlmToolDef[];
 }): Promise<ChatResult> {
   const provider = process.env.LLM_PROVIDER ?? "ollama";
+  const started = Date.now();
+  let result: ChatResult;
+  let model: string;
+  let usage: { inputTokens: number | null; outputTokens: number | null };
   if (provider === "anthropic") {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set");
     }
-    return chatAnthropic(messages, tools);
+    model = process.env.LLM_MODEL ?? "claude-sonnet-5";
+    ({ result, usage } = await chatAnthropic(messages, tools));
+  } else {
+    model = process.env.LLM_MODEL ?? "llama3.1:8b";
+    ({ result, usage } = await chatOllama(messages, tools));
   }
-  return chatOllama(messages, tools);
+  result.meta = {
+    provider: provider === "anthropic" ? "anthropic" : "ollama",
+    model,
+    latencyMs: Date.now() - started,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    costUsd:
+      provider === "anthropic"
+        ? computeCostUsd(model, usage.inputTokens, usage.outputTokens)
+        : 0,
+  };
+  return result;
 }
 
 // Embeddings for the semantic search index. Always the local Ollama
@@ -97,10 +133,12 @@ function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema) as Record<string, unknown>;
 }
 
+type ProviderUsage = { inputTokens: number | null; outputTokens: number | null };
+
 async function chatOllama(
   messages: ChatMessage[],
   tools?: LlmToolDef[]
-): Promise<ChatResult> {
+): Promise<{ result: ChatResult; usage: ProviderUsage }> {
   const baseUrl = process.env.LLM_BASE_URL ?? "http://localhost:11434/v1";
   const model = process.env.LLM_MODEL ?? "llama3.1:8b";
 
@@ -143,6 +181,9 @@ async function chatOllama(
         }>;
       };
     }>;
+    // Ollama's OpenAI-compatible endpoint usually reports usage; when it
+    // doesn't, the counts stay null rather than being estimated.
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
 
   const message = data.choices?.[0]?.message;
@@ -155,13 +196,19 @@ async function chatOllama(
       args: safeJsonParse(tc.function?.arguments),
     }));
   }
-  return result;
+  return {
+    result,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens ?? null,
+      outputTokens: data.usage?.completion_tokens ?? null,
+    },
+  };
 }
 
 async function chatAnthropic(
   messages: ChatMessage[],
   tools?: LlmToolDef[]
-): Promise<ChatResult> {
+): Promise<{ result: ChatResult; usage: ProviderUsage }> {
   const model = process.env.LLM_MODEL ?? "claude-sonnet-5";
   const system = messages
     .filter((m) => m.role === "system")
@@ -185,7 +232,9 @@ async function chatAnthropic(
     }));
   }
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  // The one hosted-LLM call in the app — audit-logged. The Ollama path above
+  // is localhost and deliberately NOT logged (see lib/network-log.ts).
+  const res = await loggedFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -193,7 +242,7 @@ async function chatAnthropic(
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
-  });
+  }, { feature: "agent-anthropic-call", purpose: "chat completion" });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`Anthropic request failed (${res.status}): ${detail.slice(0, 500)}`);
@@ -204,6 +253,7 @@ async function chatAnthropic(
       | { type: "text"; text: string }
       | { type: "tool_use"; id: string; name: string; input: unknown }
     >;
+    usage?: { input_tokens?: number; output_tokens?: number };
   };
 
   const result: ChatResult = {};
@@ -217,7 +267,13 @@ async function chatAnthropic(
   }
   if (textParts.length) result.text = textParts.join("\n");
   if (toolCalls.length) result.toolCalls = toolCalls;
-  return result;
+  return {
+    result,
+    usage: {
+      inputTokens: data.usage?.input_tokens ?? null,
+      outputTokens: data.usage?.output_tokens ?? null,
+    },
+  };
 }
 
 function safeJsonParse(raw: string | undefined): unknown {

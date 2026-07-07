@@ -79,6 +79,16 @@ async function awGet(pathname: string): Promise<unknown> {
   return res.json();
 }
 
+// Cheap liveness probe for the status page — one request, no event fetch.
+export async function probeActivityWatch(): Promise<boolean> {
+  try {
+    await awGet("/api/0/info");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type BucketInfo = { type?: string };
 
 export async function getTodayActivity(): Promise<ActivitySummary> {

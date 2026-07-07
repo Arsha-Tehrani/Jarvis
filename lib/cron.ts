@@ -9,6 +9,7 @@ import { netWorthSnapshotJob } from "@/lib/networth";
 import { slackCheckinJob } from "@/lib/slack";
 import { refreshSearchIndexJob } from "@/lib/search-index";
 import { refreshStocksJob } from "@/lib/stocks";
+import { syncJob } from "@/lib/sync/client";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
 // once at startup (catch-up-on-launch) so gaps self-heal after sleep.
@@ -38,6 +39,10 @@ const JOBS: Job[] = [
   { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
   // Offset from the mail poll so new subjects usually index right after it.
   { name: "search-index-refresh", schedule: "5,35 * * * *", run: refreshSearchIndexJob },
+  // Device sync (no-op unless SYNC_ROLE=client): push dirty rows to the
+  // host, pull everyone's back. Debounced pushes fire sooner after writes;
+  // this tick is the backstop and the only pull path.
+  { name: "sync", schedule: "*/5 * * * *", run: syncJob },
 ];
 
 const globalForCron = globalThis as unknown as { __jarvisCronStarted?: boolean };

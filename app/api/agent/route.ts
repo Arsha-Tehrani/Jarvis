@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { recentTranscript } from "@/lib/agent-memory";
 import { getDb } from "@/lib/db";
-import { chat } from "@/lib/llm";
+import { chat, type ChatMeta } from "@/lib/llm";
+import { queueSyncPush } from "@/lib/sync/client";
 import { getTool, toolDefsForLlm } from "@/lib/tools";
 
 // POST { text } — one agent turn: LLM decides tool calls, we validate each
@@ -119,8 +120,12 @@ async function handleTurn(text: string) {
   logTurn(
     text,
     { toolCalls: llmResult.toolCalls ?? [], executed, pending, rejected },
-    reply
+    reply,
+    llmResult.meta
   );
+  // Tool handlers may have written allowlisted tables — nudge the (debounced,
+  // non-blocking) sync push. No-op unless SYNC_ROLE=client.
+  if (executed.length > 0) queueSyncPush();
 
   return NextResponse.json({
     reply,
@@ -165,17 +170,32 @@ async function handleConfirm(data: z.infer<typeof confirmSchema>) {
     { executed, rejected },
     reply
   );
+  if (executed.length > 0) queueSyncPush();
 
   return NextResponse.json({ reply });
 }
 
-function logTurn(userText: string, toolCalls: unknown, result: string) {
+// meta (provider/model/latency/tokens/cost) is absent when the LLM call
+// itself failed or on the confirm leg (no LLM involved) — columns stay null.
+function logTurn(userText: string, toolCalls: unknown, result: string, meta?: ChatMeta) {
   try {
     getDb()
       .prepare(
-        "INSERT INTO agent_log (user_text, tool_calls, result) VALUES (?, ?, ?)"
+        `INSERT INTO agent_log
+           (user_text, tool_calls, result, provider, model, latency_ms, input_tokens, output_tokens, cost_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(userText, toolCalls == null ? null : JSON.stringify(toolCalls), result);
+      .run(
+        userText,
+        toolCalls == null ? null : JSON.stringify(toolCalls),
+        result,
+        meta?.provider ?? null,
+        meta?.model ?? null,
+        meta?.latencyMs ?? null,
+        meta?.inputTokens ?? null,
+        meta?.outputTokens ?? null,
+        meta?.costUsd ?? null
+      );
   } catch (err) {
     console.error("agent_log write failed:", err);
   }
