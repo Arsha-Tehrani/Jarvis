@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { chat } from "@/lib/llm";
+import { loggedFetch } from "@/lib/network-log";
 import { preFilterCategory } from "@/lib/mail-prefilter";
 
 // Gmail triage — read-only + on-demand drafts. Mirrors the Calendar OAuth
@@ -93,7 +94,7 @@ function storeTokens(
 // Exchange the OAuth code, discover which inbox it belongs to, register it.
 export async function exchangeGmailCode(code: string): Promise<string> {
   const { clientId, clientSecret } = clientCredentials();
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await loggedFetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -103,15 +104,16 @@ export async function exchangeGmailCode(code: string): Promise<string> {
       redirect_uri: GMAIL_REDIRECT_URI,
       grant_type: "authorization_code",
     }),
-  });
+  }, { feature: "gmail-oauth", purpose: "exchange authorization code" });
   const data = (await res.json()) as TokenResponse;
   if (!res.ok || !data.access_token) {
     throw new Error(`Token exchange failed: ${data.error_description ?? data.error ?? res.status}`);
   }
 
-  const profileRes = await fetch(
+  const profileRes = await loggedFetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/profile",
-    { headers: { Authorization: `Bearer ${data.access_token}` } }
+    { headers: { Authorization: `Bearer ${data.access_token}` } },
+    { feature: "gmail-oauth", purpose: "read linked inbox address" }
   );
   const profile = (await profileRes.json()) as { emailAddress?: string };
   if (!profileRes.ok || !profile.emailAddress) {
@@ -133,7 +135,9 @@ export function disconnectGmailAccount(email: string): void {
   db.prepare("DELETE FROM mail_messages WHERE account = ?").run(email);
 }
 
-async function getGmailAccessToken(email: string): Promise<string> {
+// Exported for the status page: getting a token exercises the same
+// refresh-failure detection that produces the "reconnect" prompt.
+export async function getGmailAccessToken(email: string): Promise<string> {
   const row = getDb()
     .prepare(
       "SELECT access_token, refresh_token, expires_at FROM oauth_tokens WHERE provider = ?"
@@ -149,7 +153,7 @@ async function getGmailAccessToken(email: string): Promise<string> {
     throw new GmailNotConnectedError(`${email}: access expired and no refresh token — reconnect from the Mail tab`);
   }
   const { clientId, clientSecret } = clientCredentials();
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await loggedFetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -158,7 +162,7 @@ async function getGmailAccessToken(email: string): Promise<string> {
       client_secret: clientSecret,
       grant_type: "refresh_token",
     }),
-  });
+  }, { feature: "gmail-oauth", purpose: "refresh access token" });
   const data = (await res.json()) as TokenResponse;
   if (!res.ok || !data.access_token) {
     throw new GmailNotConnectedError(
@@ -193,9 +197,10 @@ function header(meta: GmailMessageMeta, name: string): string {
 // (INSERT OR IGNORE dedupe) so repeated polls stay inside rate limits.
 export async function pollAccount(email: string, maxResults = 25): Promise<number> {
   const token = await getGmailAccessToken(email);
-  const listRes = await fetch(
+  const listRes = await loggedFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&labelIds=INBOX`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` } },
+    { feature: "mail-poll", purpose: "list inbox messages" }
   );
   if (!listRes.ok) {
     const detail = await listRes.text().catch(() => "");
@@ -219,9 +224,10 @@ export async function pollAccount(email: string, maxResults = 25): Promise<numbe
 
   let inserted = 0;
   for (const id of newIds) {
-    const msgRes = await fetch(
+    const msgRes = await loggedFetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: `Bearer ${token}` } },
+      { feature: "mail-poll", purpose: "fetch message headers" }
     );
     if (!msgRes.ok) continue;
     const meta = (await msgRes.json()) as GmailMessageMeta;
@@ -435,9 +441,10 @@ export async function createDraftReply(account: string, gmailId: string): Promis
   const token = await getGmailAccessToken(account);
 
   // Thread + reply headers from the original message.
-  const metaRes = await fetch(
+  const metaRes = await loggedFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailId}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Reply-To&metadataHeaders=From`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` } },
+    { feature: "mail-draft", purpose: "load original message headers" }
   );
   if (!metaRes.ok) throw new Error(`Could not load the original message (${metaRes.status})`);
   const meta = (await metaRes.json()) as GmailMessageMeta;
@@ -480,7 +487,7 @@ export async function createDraftReply(account: string, gmailId: string): Promis
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  const draftRes = await fetch(
+  const draftRes = await loggedFetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
     {
       method: "POST",
@@ -489,7 +496,8 @@ export async function createDraftReply(account: string, gmailId: string): Promis
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ message: { raw, threadId: meta.threadId } }),
-    }
+    },
+    { feature: "mail-draft", purpose: "create draft" }
   );
   const draft = (await draftRes.json().catch(() => ({}))) as {
     id?: string;

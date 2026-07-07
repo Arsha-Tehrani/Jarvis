@@ -15,11 +15,7 @@ export function TopBar() {
     <header className="flex items-center justify-between gap-4 py-1">
       <h1 className="text-xl font-semibold tracking-tight">{current}</h1>
       <div className="flex items-center gap-3">
-        <a
-          href="/api/backup"
-          download
-          className="text-sm text-muted-foreground hover:text-foreground hover:underline"
-        >
+        <a href="/api/backup" download className="action-link text-sm">
           Backup ↓
         </a>
         <span className="hidden text-sm text-muted-foreground sm:inline">Arsha</span>
