@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ContributionHeatmap } from "@/components/heatmap";
+import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,34 +15,39 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type Habit = {
+type Tracker = {
   id: number;
   name: string;
   cadence: "daily" | "weekly";
+  source: string | null;
+  target: number | null;
   goal: number;
-  dates: string[];
-  doneToday: boolean;
-  streak: number;
-  thisWeek: number;
+  label: string;
 };
 
+type Suggestion = { id: number; name: string; score: number };
+
+// Habits is a MANAGEMENT surface, not a second visualization: it lists what
+// you track and lets you create new trackers (with a duplicate suggestion).
+// The actual charts/streaks live on the Trackers page.
 export function HabitsView() {
-  const [habits, setHabits] = useState<Habit[]>([]);
+  const [trackers, setTrackers] = useState<Tracker[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [cadence, setCadence] = useState<"daily" | "weekly">("daily");
   const [goal, setGoal] = useState("1");
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/habits");
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to load habits");
-      setHabits(data.habits);
+      if (!res.ok) throw new Error(data.error ?? "Failed to load trackers");
+      setTrackers(data.trackers);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load habits");
+      setError(err instanceof Error ? err.message : "Failed to load trackers");
     }
   }, []);
 
@@ -49,8 +55,7 @@ export function HabitsView() {
     void load();
   }, [load]);
 
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
+  async function create(force: boolean) {
     if (!name.trim()) return;
     setBusy(true);
     try {
@@ -62,45 +67,32 @@ export function HabitsView() {
           name: name.trim(),
           cadence,
           goal: Number(goal) || 1,
+          force,
         }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error ?? "Failed to create habit");
-      } else {
-        setName("");
-        setGoal("1");
-        setCadence("daily");
-        setError(null);
+      const data = await res.json();
+      // A likely duplicate → show the suggestion, don't create yet.
+      if (res.ok && data.suggestion) {
+        setSuggestion(data.suggestion);
+        return;
       }
+      if (!res.ok) {
+        setError(data.error ?? "Failed to create tracker");
+        return;
+      }
+      setName("");
+      setGoal("1");
+      setCadence("daily");
+      setSuggestion(null);
+      setError(null);
       await load();
     } finally {
       setBusy(false);
     }
   }
 
-  async function toggle(habit: Habit) {
-    setBusy(true);
-    try {
-      await fetch("/api/habits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: habit.doneToday ? "unlog" : "log",
-          habitId: habit.id,
-        }),
-      });
-      await load();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove(habit: Habit) {
-    if (!window.confirm(`Delete habit "${habit.name}" and its history?`)) return;
-    await fetch(`/api/habits?id=${habit.id}`, { method: "DELETE" });
-    await load();
-  }
+  const manual = trackers.filter((t) => !t.source);
+  const sourced = trackers.filter((t) => t.source);
 
   return (
     <div className="flex flex-col gap-6">
@@ -108,18 +100,25 @@ export function HabitsView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>New habit</CardTitle>
+          <CardTitle>New tracker</CardTitle>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={create} className="flex flex-wrap items-end gap-2">
+        <CardContent className="flex flex-col gap-3">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void create(false);
+            }}
+            className="flex flex-wrap items-end gap-2"
+          >
             <div className="flex flex-col gap-1">
-              <Label htmlFor="hb-name" className="text-xs">
-                Name
-              </Label>
+              <Label htmlFor="hb-name" className="text-xs">Name</Label>
               <Input
                 id="hb-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setSuggestion(null);
+                }}
                 placeholder="Read 20 minutes"
                 className="w-56"
               />
@@ -136,74 +135,78 @@ export function HabitsView() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="hb-goal" className="text-xs">
-                Goal / week
-              </Label>
-              <Input
-                id="hb-goal"
-                type="number"
-                min={1}
-                max={100}
-                value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                className="w-24"
-              />
-            </div>
+            {cadence === "weekly" && (
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="hb-goal" className="text-xs">Target / week</Label>
+                <Input
+                  id="hb-goal"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={goal}
+                  onChange={(e) => setGoal(e.target.value)}
+                  className="w-24"
+                />
+              </div>
+            )}
             <Button type="submit" disabled={busy || !name.trim()}>
-              Add habit
+              Add tracker
             </Button>
           </form>
+
+          {suggestion && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-sm">
+              <span>
+                This looks like it might be the same as{" "}
+                <Link href="/trackers" className="font-medium underline">
+                  {suggestion.name}
+                </Link>{" "}
+                — use that instead, or create a new one anyway?
+              </span>
+              <Button size="sm" variant="outline" onClick={() => setSuggestion(null)}>
+                Use existing
+              </Button>
+              <Button size="sm" disabled={busy} onClick={() => void create(true)}>
+                Create anyway
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {habits.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No habits yet — add one above, then log it daily here or by telling Jarvis.
-        </p>
-      ) : (
-        habits.map((habit) => (
-          <Card key={habit.id}>
-            <CardHeader>
-              <CardTitle className="flex flex-wrap items-center justify-between gap-2">
-                <span>{habit.name}</span>
-                <span className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant={habit.doneToday ? "outline" : "default"}
-                    onClick={() => toggle(habit)}
-                    disabled={busy}
-                  >
-                    {habit.doneToday ? "Done today ✓ (undo)" : "Done today"}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => remove(habit)}>
-                    ✕
-                  </Button>
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <p className="text-sm text-muted-foreground">
-                {habit.cadence === "daily" ? (
-                  <>
-                    <span className="font-medium text-foreground">{habit.streak}</span>-day
-                    streak
-                  </>
-                ) : (
-                  <>
-                    <span className="font-medium text-foreground">
-                      {habit.thisWeek}/{habit.goal}
-                    </span>{" "}
-                    this week
-                  </>
-                )}{" "}
-                · {habit.dates.length} in the last year
-              </p>
-              <ContributionHeatmap loggedDates={habit.dates} />
-            </CardContent>
-          </Card>
-        ))
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>What you track</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 text-sm">
+          <p className="text-muted-foreground">
+            See streaks, heatmaps and progress rings on the{" "}
+            <Link href="/trackers" className="underline">Trackers</Link> page.
+          </p>
+          {trackers.length === 0 ? (
+            <p className="text-muted-foreground">Nothing tracked yet — add one above.</p>
+          ) : (
+            <ul className="flex flex-col divide-y">
+              {[...sourced, ...manual].map((t) => (
+                <li key={t.id} className="flex flex-wrap items-center gap-2 py-2">
+                  <Link href="/trackers" className="font-medium hover:underline">
+                    {t.name}
+                  </Link>
+                  <Badge variant="outline">{t.cadence}</Badge>
+                  {t.source && <Badge variant="secondary">linked: {t.source}</Badge>}
+                  {t.target != null && (
+                    <span className="text-muted-foreground">target {t.target}</span>
+                  )}
+                  {!t.source && t.cadence === "weekly" && (
+                    <span className="text-muted-foreground">target {t.goal}/week</span>
+                  )}
+                  <span className="ml-auto text-muted-foreground">{t.label}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

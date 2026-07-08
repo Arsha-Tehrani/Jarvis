@@ -37,8 +37,11 @@ export type SyncTableSpec = {
 // Order matters: habits must sync before habit_logs so the FK resolves.
 export const SYNC_TABLES: SyncTableSpec[] = [
   {
+    // The unified Tracker model (Part E folded Goals in): `source` links a
+    // tracker to a built-in feed (null = manual habit), `target` is the numeric
+    // goal that used to live in the now-legacy `goals` table (no longer synced).
     table: "habits",
-    columns: ["name", "cadence", "goal"],
+    columns: ["name", "cadence", "goal", "source", "target"],
     naturalKey: ["name"],
   },
   {
@@ -55,11 +58,6 @@ export const SYNC_TABLES: SyncTableSpec[] = [
     table: "gym_logs",
     columns: ["date", "notes"],
     naturalKey: ["date"],
-  },
-  {
-    table: "goals",
-    columns: ["kind", "target", "period"],
-    naturalKey: ["kind"],
   },
   {
     table: "leetcode_stats",

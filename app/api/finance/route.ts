@@ -8,7 +8,9 @@ import {
   recurringCharges,
   spendByCategory,
 } from "@/lib/finance/analyze";
+import { categoryReference } from "@/lib/finance/categorize";
 import { importNewStatements, statementsDir } from "@/lib/finance/ingest";
+import { getComparisonPeriod, getLatestPeriod, periodsWithData } from "@/lib/finance/query";
 import { billRadar } from "@/lib/finance/radar";
 import { getTool } from "@/lib/tools";
 
@@ -30,22 +32,35 @@ const actionSchema = z.discriminatedUnion("action", [
   }),
 ]);
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const db = getDb();
   const statements = db
     .prepare("SELECT id, month, file_path, imported_at FROM statements ORDER BY imported_at DESC")
     .all();
   const txCount = (db.prepare("SELECT COUNT(*) AS n FROM transactions").get() as { n: number }).n;
+
+  // Month navigation: an explicit ?month=YYYY-MM the user paged to, but only if
+  // it actually has data; otherwise fall back to the derived latest period so a
+  // stale/empty request can't render a misleading all-zero month.
+  const periods = periodsWithData();
+  const requested = req.nextUrl.searchParams.get("month");
+  const period =
+    requested && periods.includes(requested) ? requested : getLatestPeriod();
+
   return NextResponse.json({
     statementsDir: statementsDir(),
     statements,
     transactionCount: txCount,
-    spendByCategory: spendByCategory(),
+    periods, // every YYYY-MM with data, for the month selector
+    currentPeriod: period, // the month being shown (derived or explicit)
+    comparisonPeriod: getComparisonPeriod(),
+    spendByCategory: spendByCategory(period ?? undefined),
     recurring: recurringCharges(),
     radar: billRadar(),
-    summaries: monthSummaries(),
+    summaries: monthSummaries(period ?? undefined),
     goals: listGoals(),
     cutbacks: cutbackSuggestions(),
+    categoryReference: categoryReference(), // 15 categories + real keyword rules
   });
 }
 

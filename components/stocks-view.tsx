@@ -20,12 +20,34 @@ type Holding = {
   ticker: string;
   shares: number;
   cost_basis: number;
+  priced: boolean;
   price: number | null;
   value: number | null;
   pl: number | null;
+  plPercent: number | null;
   dayMove: number | null;
   changePercent: number | null;
 };
+
+type DividendEvent = {
+  id: number;
+  ticker: string;
+  ex_date: string;
+  amount_per_share: number;
+  shares_at_date: number | null;
+  note: string | null;
+  payout: number;
+  approximate: boolean;
+};
+type DividendData = {
+  total: number;
+  byHolding: Array<{ ticker: string; total: number; events: number; approximate: boolean }>;
+  events: DividendEvent[];
+};
+
+// Client-side sort spec for the holdings table (D1).
+type SortKey = "ticker" | "value" | "dayMove" | "pl";
+type SortState = { key: SortKey; dir: "asc" | "desc" };
 
 type WatchItem = {
   id: number;
@@ -60,6 +82,11 @@ export function StocksView() {
   const [shares, setShares] = useState("");
   const [costBasis, setCostBasis] = useState("");
   const [watchTicker, setWatchTicker] = useState("");
+  const [sort, setSort] = useState<SortState>({ key: "value", dir: "desc" });
+  const [dividends, setDividends] = useState<DividendData | null>(null);
+  const [divTicker, setDivTicker] = useState("");
+  const [divDate, setDivDate] = useState("");
+  const [divAmount, setDivAmount] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -74,11 +101,70 @@ export function StocksView() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stocks");
     }
+    try {
+      const res = await fetch("/api/stocks/dividends");
+      if (res.ok) setDividends(await res.json());
+    } catch {
+      // dividend card just shows its empty state
+    }
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Click a header: same column flips direction, new column starts descending
+  // (except ticker, which starts A→Z). Pure client-side over fetched rows.
+  function toggleSort(key: SortKey) {
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "ticker" ? "asc" : "desc" }
+    );
+  }
+
+  const sortedHoldings = [...holdings].sort((a, b) => {
+    let cmp: number;
+    if (sort.key === "ticker") cmp = a.ticker.localeCompare(b.ticker);
+    else cmp = (a[sort.key] ?? -Infinity) - (b[sort.key] ?? -Infinity);
+    return sort.dir === "asc" ? cmp : -cmp;
+  });
+
+  const caret = (key: SortKey) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
+
+  async function logDividend(e: React.FormEvent) {
+    e.preventDefault();
+    const amount = Number(divAmount);
+    if (!divTicker.trim() || !divDate || !(amount > 0)) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/stocks/dividends", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticker: divTicker.trim(),
+          ex_date: divDate,
+          amount_per_share: amount,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to log dividend");
+      } else {
+        setDivTicker("");
+        setDivDate("");
+        setDivAmount("");
+        setDividends(await res.json());
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeDividend(id: number) {
+    const res = await fetch(`/api/stocks/dividends?id=${id}`, { method: "DELETE" });
+    if (res.ok) setDividends(await res.json());
+  }
 
   async function addHolding(e: React.FormEvent) {
     e.preventDefault();
@@ -136,7 +222,10 @@ export function StocksView() {
 
   const totalValue = holdings.reduce((s, h) => s + (h.value ?? 0), 0);
   const totalDayMove = holdings.reduce((s, h) => s + (h.dayMove ?? 0), 0);
-  const havePrices = holdings.some((h) => h.value != null);
+  const havePrices = holdings.length > 0;
+  // Holdings with no live quote are counted at cost basis; name how many so the
+  // total isn't mistaken for fully market-priced.
+  const costBasisCount = holdings.filter((h) => !h.priced).length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -162,7 +251,12 @@ export function StocksView() {
             <div className="flex flex-wrap gap-8 text-sm">
               <div>
                 <p className="text-2xl font-semibold tabular-nums">{usd(totalValue)}</p>
-                <p className="text-muted-foreground">total value</p>
+                <p className="text-muted-foreground">
+                  total value
+                  {costBasisCount > 0 && (
+                    <span> · {costBasisCount} at cost basis (no live quote)</span>
+                  )}
+                </p>
               </div>
               <div>
                 <p className="text-2xl font-semibold">
@@ -178,18 +272,34 @@ export function StocksView() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Ticker</TableHead>
+                  <TableHead>
+                    <button className="hover:underline" onClick={() => toggleSort("ticker")}>
+                      Ticker{caret("ticker")}
+                    </button>
+                  </TableHead>
                   <TableHead className="text-right">Shares</TableHead>
                   <TableHead className="text-right">Cost basis</TableHead>
                   <TableHead className="text-right">Price</TableHead>
-                  <TableHead className="text-right">Value</TableHead>
-                  <TableHead className="text-right">P/L</TableHead>
-                  <TableHead className="text-right">Day</TableHead>
+                  <TableHead className="text-right">
+                    <button className="hover:underline" onClick={() => toggleSort("value")}>
+                      Value{caret("value")}
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <button className="hover:underline" onClick={() => toggleSort("pl")}>
+                      P/L{caret("pl")}
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <button className="hover:underline" onClick={() => toggleSort("dayMove")}>
+                      Day{caret("dayMove")}
+                    </button>
+                  </TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {holdings.map((h) => (
+                {sortedHoldings.map((h) => (
                   <TableRow key={h.id}>
                     <TableCell className="font-medium">{h.ticker}</TableCell>
                     <TableCell className="text-right tabular-nums">{h.shares}</TableCell>
@@ -201,7 +311,7 @@ export function StocksView() {
                       {h.value != null ? usd(h.value) : "—"}
                     </TableCell>
                     <TableCell className="text-right">
-                      <MoveCell value={h.pl} percent={null} />
+                      <MoveCell value={h.pl} percent={h.plPercent} />
                     </TableCell>
                     <TableCell className="text-right">
                       <MoveCell value={h.dayMove} percent={h.changePercent} />
@@ -266,6 +376,72 @@ export function StocksView() {
             </div>
             <Button type="submit" variant="secondary" disabled={busy || !watchTicker.trim()}>
               Watch
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-baseline justify-between">
+            Dividend income
+            <span className="text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-500">
+              {usd(dividends?.total ?? 0)}
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <p className="text-xs text-muted-foreground">
+            Free-tier quote APIs don&apos;t provide dividends, so log them here. Payout =
+            shares × amount/share; without a share count for the ex-date it uses your
+            current shares, marked <span className="italic">≈</span>.
+          </p>
+          {dividends && dividends.byHolding.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {dividends.byHolding.map((b) => (
+                <li key={b.ticker} className="flex items-center gap-3">
+                  <span className="w-16 font-medium">{b.ticker}</span>
+                  <span className="w-24 text-right tabular-nums">{usd(b.total)}</span>
+                  <span className="text-muted-foreground">
+                    {b.events} event{b.events === 1 ? "" : "s"}
+                    {b.approximate && " ≈"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {dividends && dividends.events.length > 0 && (
+            <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+              {dividends.events.map((e) => (
+                <li key={e.id} className="flex items-center gap-2">
+                  <span className="tabular-nums">{e.ex_date}</span>
+                  <span className="font-medium text-foreground">{e.ticker}</span>
+                  <span className="tabular-nums">
+                    ${e.amount_per_share.toFixed(2)}/sh → {usd(e.payout)}
+                    {e.approximate && " ≈"}
+                  </span>
+                  <button className="underline-offset-2 hover:underline" onClick={() => removeDividend(e.id)}>
+                    remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={logDividend} className="flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="d-ticker" className="text-xs">Ticker</Label>
+              <Input id="d-ticker" value={divTicker} onChange={(e) => setDivTicker(e.target.value)} className="w-24" placeholder="VOO" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="d-date" className="text-xs">Ex-date</Label>
+              <Input id="d-date" type="date" value={divDate} onChange={(e) => setDivDate(e.target.value)} className="w-40" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="d-amount" className="text-xs">$ / share</Label>
+              <Input id="d-amount" type="number" min={0} step="any" value={divAmount} onChange={(e) => setDivAmount(e.target.value)} className="w-28" />
+            </div>
+            <Button type="submit" variant="secondary" disabled={busy || !divTicker.trim() || !divDate || !(Number(divAmount) > 0)}>
+              Log dividend
             </Button>
           </form>
         </CardContent>

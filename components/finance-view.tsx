@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SpendChart } from "@/components/spend-chart";
+import { TransactionTable } from "@/components/transaction-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -35,23 +36,46 @@ import type { RadarItem } from "@/lib/finance/radar";
 type Statement = { id: number; month: string | null; file_path: string; imported_at: string };
 type ImportResult = {
   file: string;
+  status: "imported" | "warning" | "rejected";
   imported: number;
-  categorizedBy: string;
+  kind?: "transaction" | "brokerage" | "unknown";
+  categorizedBy?: string;
+  warnings?: string[];
+  reason?: string;
   llmError?: string;
-  error?: string;
+  confidence?: number;
+  signals?: string[];
 };
+
+type MonthComparison = { current: MonthSummary; comparison: MonthSummary | null };
 
 type FinanceData = {
   statementsDir: string;
   statements: Statement[];
   transactionCount: number;
+  periods: string[];
+  currentPeriod: string | null;
+  comparisonPeriod: string | null;
   spendByCategory: CategorySpend[];
   recurring: RecurringCharge[];
   radar: RadarItem[];
-  summaries: MonthSummary[];
+  summaries: MonthComparison;
   goals: Goal[];
   cutbacks: CutbackSuggestion[];
+  categoryReference: Array<{ category: string; keywords: string[] }>;
 };
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// "2026-06" → "June 2026". Mirrors lib/finance/period.monthLabel for the UI.
+function monthLabel(period: string | null): string {
+  if (!period) return "—";
+  const [y, m] = period.split("-").map(Number);
+  return MONTH_NAMES[m - 1] ? `${MONTH_NAMES[m - 1]} ${y}` : period;
+}
 
 const usd = (v: number) =>
   `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -72,10 +96,14 @@ export function FinanceView() {
   const [goalTarget, setGoalTarget] = useState("");
   const [selectedRenewals, setSelectedRenewals] = useState<Set<string>>(new Set());
   const [renewalResult, setRenewalResult] = useState<string | null>(null);
+  // null = show the derived latest period; a YYYY-MM = the month paged to.
+  const [month, setMonth] = useState<string | null>(null);
+  // Category filter shared by the chips, the spend chart, and the txn table.
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (ym: string | null) => {
     try {
-      const res = await fetch("/api/finance");
+      const res = await fetch(`/api/finance${ym ? `?month=${ym}` : ""}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Failed to load finance data");
       setData(body);
@@ -86,8 +114,8 @@ export function FinanceView() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(month);
+  }, [load, month]);
 
   async function runImport() {
     setBusy(true);
@@ -101,7 +129,7 @@ export function FinanceView() {
       const body = await res.json();
       if (!res.ok) setError(body.error ?? "Import failed");
       else setImportResults(body.results);
-      await load();
+      await load(month);
     } finally {
       setBusy(false);
     }
@@ -128,18 +156,18 @@ export function FinanceView() {
             "Upload failed"
         );
       }
-      const rejectedLines = (body.rejected ?? []).map(
+      const rejectedLines: ImportResult[] = (body.rejected ?? []).map(
         (r: { name: string; reason: string }) => ({
           file: r.name,
+          status: "rejected" as const,
           imported: 0,
-          categorizedBy: "none",
-          error: r.reason,
+          reason: r.reason,
         })
       );
       if (body.results || rejectedLines.length) {
         setImportResults([...(body.results ?? []), ...rejectedLines]);
       }
-      await load();
+      await load(month);
     } catch {
       setError("Could not reach the API.");
     } finally {
@@ -165,7 +193,7 @@ export function FinanceView() {
       } else {
         setGoalTarget("");
       }
-      await load();
+      await load(month);
     } finally {
       setBusy(false);
     }
@@ -173,7 +201,7 @@ export function FinanceView() {
 
   async function deleteGoal(id: number) {
     await fetch(`/api/finance/goals?id=${id}`, { method: "DELETE" });
-    await load();
+    await load(month);
   }
 
   function toggleRenewal(merchant: string) {
@@ -221,7 +249,12 @@ export function FinanceView() {
   if (error && !data) return <p className="text-sm text-destructive">{error}</p>;
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
-  const [last, current] = data.summaries;
+  const current = data.summaries.current;
+  const last = data.summaries.comparison;
+  const periods = data.periods ?? [];
+  const shownIdx = data.currentPeriod ? periods.indexOf(data.currentPeriod) : -1;
+  const canPrev = shownIdx > 0;
+  const canNext = shownIdx >= 0 && shownIdx < periods.length - 1;
 
   return (
     <div className="flex flex-col gap-6">
@@ -265,17 +298,34 @@ export function FinanceView() {
                 <li className="text-muted-foreground">No new files found.</li>
               )}
               {importResults.map((r, i) => (
-                <li key={i} className={r.error ? "text-destructive" : ""}>
+                <li
+                  key={i}
+                  className={
+                    r.status === "rejected"
+                      ? "text-destructive"
+                      : r.status === "warning"
+                        ? "text-amber-600 dark:text-amber-500"
+                        : ""
+                  }
+                >
                   <span className="font-medium">{r.file}</span>:{" "}
-                  {r.error
-                    ? r.error
-                    : `${r.imported} transactions (categorized by ${r.categorizedBy})`}
-                  {r.llmError && (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      — LLM unavailable ({r.llmError}); keyword rules used
-                    </span>
+                  {r.status === "rejected" ? (
+                    <>Rejected — {r.reason}</>
+                  ) : (
+                    <>
+                      {r.imported}{" "}
+                      {r.kind === "brokerage" ? "holdings" : "transactions"}
+                      {r.categorizedBy ? ` (${r.categorizedBy})` : ""}
+                      {r.status === "warning" ? " — parsed with warnings" : ""}
+                    </>
                   )}
+                  {r.warnings?.length ? (
+                    <ul className="ml-4 list-disc text-muted-foreground">
+                      {r.warnings.map((w, j) => (
+                        <li key={j}>{w}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -294,26 +344,105 @@ export function FinanceView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>This month ({current.month})</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle>{monthLabel(data.currentPeriod)}</CardTitle>
+            {/* Statement-based, so navigate real months with data — no live
+                "current month". Paging is disabled past the imported range. */}
+            <div className="flex items-center gap-2 text-sm">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canPrev}
+                onClick={() => setMonth(periods[shownIdx - 1])}
+              >
+                ← Prev
+              </Button>
+              <Select
+                value={data.currentPeriod ?? undefined}
+                onValueChange={(v) => setMonth(v)}
+              >
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="Month" />
+                </SelectTrigger>
+                <SelectContent>
+                  {[...periods].reverse().map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {monthLabel(p)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canNext}
+                onClick={() => setMonth(periods[shownIdx + 1])}
+              >
+                Next →
+              </Button>
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Statement-based — figures cover the month shown, not a live current month.
+          </p>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-wrap gap-8 text-sm">
-            {(
-              [
-                ["Income", current.income, last.income],
-                ["Spend", current.spend, last.spend],
-                ["Invested", current.invested, last.invested],
-                ["Net", current.net, last.net],
-              ] as const
-            ).map(([label, value, prev]) => (
-              <div key={label}>
-                <p className="text-2xl font-semibold tabular-nums">{usd(value)}</p>
-                <p className="text-muted-foreground">
-                  {label} · {usd(prev)} last month
-                </p>
-              </div>
-            ))}
-          </div>
+          {current.month === "" ? (
+            <p className="text-sm text-muted-foreground">
+              No transactions imported yet.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-8 text-sm">
+              {(
+                [
+                  ["Income", current.income, last?.income],
+                  ["Spend", current.spend, last?.spend],
+                  ["Invested", current.invested, last?.invested],
+                  ["Net", current.net, last?.net],
+                ] as const
+              ).map(([label, value, prev]) => (
+                <div key={label}>
+                  <p className="text-2xl font-semibold tabular-nums">{usd(value)}</p>
+                  <p className="text-muted-foreground">
+                    {label}
+                    {last
+                      ? ` · ${usd(prev ?? 0)} in ${monthLabel(data.comparisonPeriod)}`
+                      : " · not enough history yet"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>How categories work</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm">
+          {/* Generated from the real keyword-fallback rules in categorize.ts —
+              never a separate copy that can drift. */}
+          <details>
+            <summary className="cursor-pointer text-muted-foreground">
+              Every transaction is sorted into one of these 15 categories (LLM first,
+              these keyword rules as the always-working fallback). Click to see them.
+            </summary>
+            <ul className="mt-3 flex flex-col gap-2">
+              {(data.categoryReference ?? []).map((c) => (
+                <li key={c.category} className="flex flex-col gap-1">
+                  <span className="font-medium">{c.category}</span>
+                  <span className="text-muted-foreground">
+                    {c.keywords.length > 0
+                      ? `matches: ${c.keywords.slice(0, 8).join(", ")}${c.keywords.length > 8 ? "…" : ""}`
+                      : c.category === "Other"
+                        ? "anything the rules don't match (and the LLM didn't classify)"
+                        : "assigned by the model or by amount (positive = Income)"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
         </CardContent>
       </Card>
 
@@ -328,19 +457,41 @@ export function FinanceView() {
             </p>
           ) : (
             <>
-              <SpendChart data={data.spendByCategory} />
+              {/* Clickable chips filter the transaction table below in place. */}
+              <div className="flex flex-wrap gap-2">
+                {data.spendByCategory.map((c) => (
+                  <button
+                    key={c.category}
+                    onClick={() =>
+                      setCategoryFilter(categoryFilter === c.category ? null : c.category)
+                    }
+                  >
+                    <Badge variant={categoryFilter === c.category ? "default" : "secondary"}>
+                      {c.category} {usd(c.thisMonth)}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+              {/* Clicking a bar applies that category filter. */}
+              <SpendChart data={data.spendByCategory} onSelect={setCategoryFilter} />
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Category</TableHead>
-                    <TableHead className="text-right">This month</TableHead>
-                    <TableHead className="text-right">Last month</TableHead>
+                    <TableHead className="text-right">{monthLabel(data.currentPeriod)}</TableHead>
+                    <TableHead className="text-right">Prior month</TableHead>
                     <TableHead className="text-right">Change</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.spendByCategory.map((c) => (
-                    <TableRow key={c.category}>
+                    <TableRow
+                      key={c.category}
+                      className="cursor-pointer"
+                      onClick={() =>
+                        setCategoryFilter(categoryFilter === c.category ? null : c.category)
+                      }
+                    >
                       <TableCell>{c.category}</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {usd(c.thisMonth)}
@@ -359,6 +510,20 @@ export function FinanceView() {
               </Table>
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Transactions — {monthLabel(data.currentPeriod)}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TransactionTable
+            month={data.currentPeriod}
+            categoryFilter={categoryFilter}
+            onClearFilter={() => setCategoryFilter(null)}
+            onChanged={() => void load(month)}
+          />
         </CardContent>
       </Card>
 

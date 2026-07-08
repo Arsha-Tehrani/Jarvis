@@ -18,7 +18,13 @@ import type { CategorySpend } from "@/lib/finance/analyze";
 const usd = (v: number) =>
   `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 
-export function SpendChart({ data }: { data: CategorySpend[] }) {
+export function SpendChart({
+  data,
+  onSelect,
+}: {
+  data: CategorySpend[];
+  onSelect?: (category: string) => void;
+}) {
   if (data.length === 0) return null;
   const rows = data.slice(0, 8);
   const height = 40 + rows.length * 52;
@@ -80,6 +86,12 @@ export function SpendChart({ data }: { data: CategorySpend[] }) {
             name="This month"
             fill="var(--series-1)"
             radius={[0, 4, 4, 0]}
+            cursor={onSelect ? "pointer" : undefined}
+            onClick={(entry: unknown) => {
+              // recharts hands the bar's data point; the original row is on .payload.
+              const cat = (entry as { payload?: { category?: string } })?.payload?.category;
+              if (cat) onSelect?.(cat);
+            }}
           />
           <Bar
             dataKey="lastMonth"

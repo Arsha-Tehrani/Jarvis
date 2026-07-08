@@ -41,9 +41,9 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 ### Life tracking
 
 - **Tasks** — a task list with due dates and priorities, fed by hand or by the agent.
-- **Trackers** — gym visits, LeetCode progress (auto-pulled daily), sleep/bedtime/weight/mood, generic habits with streaks and heatmaps, and daily macros.
+- **Trackers** — gym visits, LeetCode progress (auto-pulled daily), sleep/bedtime/weight/mood, user-defined habits with streaks and heatmaps, and daily macros — one page that visualizes everything you track.
 - **Nutrition / macros** — log a meal by text, through the agent, or by **photo**: a local vision model estimates portions and a JSON-mode extraction produces validated calories/protein/carbs/fat.
-- **Goals** — savings rate, gym days per week, LeetCode per week, average sleep, calories per day — each with on-track math on the Goals page and in the morning brief.
+- **Goals are just Tracker targets** — savings rate, gym days/week, LeetCode/week, average sleep, calories/day are targets attached to Trackers (progress rings, computed from real data), not a separate static list. Setting one still requires confirmation, and at-risk targets feed the morning brief.
 - **Google Calendar** — OAuth-connected, read back hourly into a local cache; the agent can create events and phone-notifying reminders. Google stays the single source of truth.
 - **People** — a keep-in-touch list with contact cadences, overdue flags, and upcoming birthdays.
 - **Career** — job-application pipeline (wishlist → applied → … → offer) with next actions and follow-up nudges.
@@ -73,7 +73,7 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 - **System monitor** — a live dashboard card with CPU load, memory, and disk usage for the machine Jarvis is running on.
 - **Screen time** — total active time today and top apps/sites, read from a local ActivityWatch instance.
 - **PWA & remote access** — installable on a phone (manifest + service worker), with optional bearer-token auth (`JARVIS_AUTH_TOKEN`) so the app can be served over Tailscale or a local mesh without being wide open.
-- **Device sync (optional)** — run Jarvis on two machines and keep the derived tracker tables (tasks, gym, habits, goals, LeetCode stats, net-worth snapshots) in sync through one always-on "host" over Tailscale. Strictly allowlist-based: finance transactions, mail, notes, and OAuth tokens never leave the machine they live on, by construction.
+- **Device sync (optional)** — run Jarvis on two machines and keep the derived tracker tables (tasks, gym, unified habits/trackers, LeetCode stats, net-worth snapshots) in sync through one always-on "host" over Tailscale. Strictly allowlist-based: finance transactions, mail, notes, and OAuth tokens never leave the machine they live on, by construction.
 - **Sidecar setup & start/stop** — the `/status` page has Set up / Start / Stop buttons and a live log panel for the macro and textbook-RAG sidecars; "Set up" creates the venv and installs requirements right from the browser, so a from-scratch install or a missing-dependency crash is recoverable with no terminal at all. ActivityWatch gets the same card with best-effort launch/quit (it's a third-party tray app — Jarvis detects it, points at the installer when missing, and never pretends a quit landed when it didn't).
 - **Backups & restore** — one command exports every table to JSON (OAuth tokens deliberately excluded); a matching restore command loads an export back into `jarvis.db`. Never locked in.
 
@@ -168,7 +168,7 @@ A plain task table (`title`, `due_at`, `priority`, `status`, `source`) surfaced 
 - **Gym** — one row per visit (`gym_logs`), logged from the UI, the agent (`log_gym`), the Slack check-in, or voice.
 - **LeetCode** — a daily cron hits the unofficial `leetcode.com/graphql` API for total solved, streak, and recent problems. Unofficial APIs break, so every caller treats failure as normal: log it, keep the last stored row, and the manual-entry fallback (`log_leetcode`) always works.
 - **Health** — `log_metric` upserts one value per date+kind: `sleep_hours` (0–16), `bedtime` (decimal hour, 23.5 = 11:30pm), `weight` (your unit as-is), `mood` (1–5). Values are range-validated by a zod discriminated union before they land.
-- **Habits** — user-defined habits with `daily` cadence (consecutive-day streak) or `weekly` cadence (this week's count vs. a per-week goal), rendered as a GitHub-style heatmap over the last ~53 weeks. `log_habit` fails with the list of known habits if the name doesn't match, so the model can self-correct.
+- **Habits / user trackers** — user-defined trackers with `daily` cadence (consecutive-day streak) or `weekly` cadence (this week's count vs. a per-week target), rendered as a GitHub-style heatmap over the last ~53 weeks on the Trackers page. `log_habit` fails with the list of known trackers if the name doesn't match, so the model can self-correct. See the unified **Trackers/Habits/Goals** model below.
 
 ### Nutrition / macros
 
@@ -180,19 +180,31 @@ Three ways in, one validated table (`nutrition_logs`):
 
 Either sidecar path must validate as `{item, calories, protein, carbs, fat}` against a pydantic gate — one repair pass showing the model its own error, then a hard 422 reject. Unvalidated output never touches the database. Validated items POST to the app's zod-validated `/api/nutrition`. Honest by design: photo estimates are labeled as rough approximations (portions guessed from one 2D image) in both the UI and API; the text path is more accurate. The Trackers page shows a "Macros today" card with totals vs. goal, a per-item list, a photo-approximation badge, and per-item remove.
 
-### Goals
+### Trackers, Habits & Goals — one unified model
 
-The `goals` table holds `(kind, target, period)`; `lib/goals-progress.ts` computes actuals per kind: `savings_rate`, `gym_days_per_week`, `leetcode_per_week`, `sleep_hours` (rolling average), and `calories_per_day` — the one goal where **lower is better** (a ceiling, not a floor). Setting a goal through the agent requires confirmation. Progress rings appear on the Goals page, and at-risk weekly goals feed the morning brief: a weekly count goal is "at risk" when the remaining need exceeds the days left in the week.
+Goals and Habits used to be two systems that overlapped (the same real-world thing, e.g. "gym", could be logged/shown in two disconnected places, and a Goal was a static number with nothing behind it). They're now **one Tracker model**: a Tracker is a row in the generalized `habits` table. `source` links it to a built-in feed (`gym_logs`, `leetcode`, `sleep_hours`, `calories`, `savings_rate`) or is null for a manual habit; `target` is the numeric goal that used to live in the separate `goals` table.
+
+- **One home for visualization** — the **Trackers page** renders everything: sourced trackers (the former Goals) as progress **rings** vs. their target; manual trackers as **heatmaps** with a cadence-correct label. Labels respect cadence — `daily` speaks in streaks ("12-day streak"), `weekly` in count-vs-target ("4 of 6 this week") — never "per week" for a daily streak (a real bug this fixes; `lib/tracker-progress.ts`, unit-tested).
+- **Habits page = management** — name/cadence/target and a link into Trackers, not a second chart. Creating a tracker runs a **duplicate check** against every existing tracker: deterministic normalized-name/keyword similarity first (`lib/tracker-dedupe.ts`, always runs), with an optional LLM pass for closer semantic matches — always a *suggestion* ("this looks like your existing 'Gym' — use it, or create anyway?"), never a silent block.
+- **Goals retired** — a goal is just a target on a Tracker, so progress is always computed from real logged data, never a static number. The standalone **Goals page redirects** to Trackers. An **idempotent migration** (`lib/trackers-migrate.ts`) folds each legacy `goals` row into a Tracker, mapping all five kinds (`calories` stays a ceiling, not a floor) and **merging** a pre-existing habit/goal pair for the same thing into one Tracker instead of duplicating it. `goals` is kept as a legacy table for backup/restore but is no longer written.
+- **Downstream** — the agent's `set_goal` is now an alias that sets a Tracker's target (still confirm-gated); the morning brief's "goals at risk" and the weekly digest read from the unified Tracker progress (`computeGoalsProgress`, now sourced from `lib/trackers.ts`).
 
 ### Finance
 
 Drop CSV or PDF bank statements into the gitignored `/statements` folder and hit Import:
 
+0. **Classify first** (`lib/finance/classify.ts`) — before any parsing, each file is routed by what it *contains*, not its extension: a content-based classifier scores brokerage signals (Symbol/Quantity/Market Value columns, arithmetically-consistent holding rows, brokerage letterhead) against transaction signals (dated running-balance rows, statement headers). CSV tables and PDF text both feed the same classifier and converge on one verdict — `brokerage`, `transaction`, or `unknown` — with a confidence score. A file that classifies below the confidence floor (or whose extracted holdings fail the qty×price ≈ market-value sanity check) is **rejected with a specific, visible reason** rather than imported with wrong or zeroed numbers; a confident wrong number is worse than a clear "couldn't parse this". The import UI shows a per-file result — parsed cleanly / parsed with named warnings / rejected with the reason — and a redacted excerpt of the extracted text/table is retained on the `statements` row (`raw_text`) for debugging.
 1. **Ingest** (`lib/finance/ingest.ts`) scans for files not yet in the `statements` table, parses them (redacting account numbers), and stores transactions. Everything stays on this machine.
 2. **Categorization** (`categorize.ts`) is LLM-first — only merchant/amount lines are sent, never full statements — with keyword rules as the always-working fallback so import succeeds even with no model running. Fifteen fixed categories (Income, Rent, Groceries, Dining, …).
 3. **Recurring radar** (`radar.ts`) is fully deterministic (dates + amounts, no LLM): it estimates each subscription's next renewal from its median gap and flags "renews in ~N days" (≤14) and "amount jumped >10% vs. usual".
-4. **Brokerage CSVs** — Fidelity has no free personal API, so holdings come in the same way: a positions/history CSV in `/statements` is shape-detected and upserted by ticker (never deleted, so a second account's export can't clobber manual holdings). Account-number columns are never persisted.
+4. **Brokerage statements** — Fidelity has no free personal API, so holdings come in the same way. A positions/history **CSV** is shape-detected; a brokerage **PDF** is now recognized by the classifier and its holdings table extracted into the *same* `{ticker, shares, cost_basis}` shape, so both paths validate against one zod schema (`lib/finance/holdings-schema.ts`) before write. The PDF extractor stitches **wrapped rows** (long security names push the numeric columns onto the next line) and captures the **core money-market position** (SPAXX, cost "not applicable" → its $1 price), so the whole account is represented — not the third of it an earlier build caught. A **positions snapshot takes precedence**: it *replaces* prior holdings (the newest statement wins, so a sold-out position doesn't linger and inflate net worth), while a `history` export upserts. Account-number columns are never persisted. (Single-portfolio assumption: a full snapshot wipes hand-entered holdings the statement doesn't mention.)
 5. **Agent queries** — the read-only `query_finance` tool answers spend/earn questions filtered by category, merchant text, month, or date range, returning a total plus a small category breakdown.
+
+**Months come from the data, not the clock.** This is a statement-based app: statements lag, so "this month" on the system clock is reliably empty. `lib/finance/period.ts` (pure, unit-tested) derives the current period from the most recent imported transaction and the comparison period from the month before it (only when that month has data — otherwise the UI says "not enough history yet" instead of $0-vs-$0). The Finance page labels the real month ("June 2026") and lets you page through any month with data (`GET /api/finance?month=YYYY-MM`), disabled past the imported range.
+
+**Category explainer & the "why".** An in-app panel lists the 15 categories with the keywords that map to each, generated *from the real rules* in `categorize-rules.ts` (never a separate copy that can drift). `GET /api/finance/transactions` carries a derived "why" per row (which keyword matched, or "assigned by the model"), and `PATCH` re-categorizes a transaction — optionally remembering the correction (`category_overrides`, keyed by merchant) so future imports of that merchant stick.
+
+**Amount Invested.** Outgoing brokerage ACH transfers (e.g. the real Fidelity descriptor `Fid Bkg Svc … Moneyline`, which an "FIDELITY" keyword never catches) are matched deterministically on description text only — never amount, since a weekly contribution grows over time — and *force* the `Investment` category over the LLM. "Amount Invested" is then a reliable per-month sum, so a growing weekly pattern shows as a trend.
 
 ### Category budgets
 
@@ -202,9 +214,15 @@ The `category_budgets` table maps each of the 15 fixed transaction categories to
 
 Quotes come from Finnhub (preferred, 60 req/min free) or Alpha Vantage (fallback, ~25 req/day free). A 15-minute in-memory cache plus the 15-minute cron re-warm keep usage far inside both free tiers. No API key means a clear error state in the UI, never a crash.
 
+The holdings table is **click-to-sort** (ticker, value, day move, overall P/L — click a header, click again to reverse; pure client-side over already-fetched data). Every P/L figure shows its **percentage** next to the dollar amount — daily from previous close, overall from cost basis, e.g. `+$1,204 (+13.7%)`.
+
+**Dividends** are logged manually: Finnhub's dividend endpoint is premium and Alpha Vantage dropped free dividend data, so — like LeetCode's manual entry — you enter ex-date + amount/share and the app computes payout (`shares × amount/share`) into a running total and per-holding breakdown. Without a recorded share count for the ex-date it uses the current share count, clearly flagged `≈` as an approximation. Payout math is pure and unit-tested (`lib/dividends-math.ts`).
+
 ### Net worth
 
-Net worth = manual account balances (`accounts`, where `debt` subtracts) + holdings value. Holdings use the cached market quote when warm and fall back to cost basis — stated in the UI as a valuation proxy, not a promise. The daily 18:00 snapshot (plus launch catch-up) builds the over-time chart on the Net Worth page.
+Net worth = manual account balances (`accounts`, where `debt` subtracts) + holdings value. Holdings use the cached market quote when warm and fall back to cost basis — stated in the UI as a valuation proxy, not a promise. A single unknown symbol (the SPAXX money-market core has no Finnhub quote) no longer blanks the whole portfolio — that holding falls back to cost basis and is labelled, so the Stocks total stays honest. The daily 18:00 snapshot (plus launch catch-up) builds the over-time chart on the Net Worth page.
+
+Account balances are entered by hand, so an account with no manual entry reads $0 even after importing a statement that states the balance. Ingest now captures the statement's summary balance (checking "Ending Balance" → cash; credit-card "New Balance" → debt) and the Net Worth page surfaces it as a **suggestion** — "Checking (June 2026) shows a balance of $X — update?" — that writes only through the existing confirm-gated accounts endpoint. Nothing is auto-applied.
 
 ### Google Calendar & reminders
 
@@ -276,7 +294,7 @@ Sync state is written only after a successful ingest — if the sidecar or Ollam
 
 ### Device sync (selective, host/client)
 
-Jarvis instances on multiple machines can sync a small **allowlist** of derived tables — `tasks`, `gym_logs`, `habits`, `habit_logs`, `goals`, `leetcode_stats`, `networth_snapshots` — defined in one place (`lib/sync/tables.ts`) with the exclusion rule commented above it. Raw imports never sync: transactions, statements, mail, notes, and `oauth_tokens` are rejected by both endpoints even if explicitly requested (there's a test for exactly that).
+Jarvis instances on multiple machines can sync a small **allowlist** of derived tables — `tasks`, `gym_logs`, `habits`/`habit_logs` (the unified Trackers, including their `source`/`target`), `leetcode_stats`, `networth_snapshots` — defined in one place (`lib/sync/tables.ts`) with the exclusion rule commented above it. The legacy `goals` table is no longer synced (folded into `habits`). Raw imports never sync: transactions, statements, mail, notes, and `oauth_tokens` are rejected by both endpoints even if explicitly requested (there's a test for exactly that).
 
 Setup:
 

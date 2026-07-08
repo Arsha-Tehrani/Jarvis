@@ -3,32 +3,51 @@ import path from "path";
 import { getDb } from "@/lib/db";
 import {
   importBrokerageHoldings,
-  looksLikeBrokerageCsv,
   parseBrokerageCsv,
+  validateHoldings,
 } from "@/lib/finance/brokerage";
 import { parseFidelityPdfHoldings } from "@/lib/finance/brokerage-parse";
 import { categorizeTransactions } from "@/lib/finance/categorize";
 import {
-  BrokerageStatementError,
+  classifyStatementTable,
+  classifyStatementText,
+  CONFIDENCE_FLOOR,
+  type Classification,
+} from "@/lib/finance/classify";
+import {
   extractPdfText,
+  extractStatementBalance,
   inferPeriodEnd,
-  isBrokerageStatement,
+  parseCsv,
   parseCsvStatement,
   parsePdfText,
+  redactAccountNumbers,
   type ParsedTransaction,
 } from "@/lib/finance/parse";
 
 // Import flow: scan /statements for files not yet in the statements table,
-// parse (redacting account numbers), store, categorize, re-detect recurring
-// charges. Everything stays on this machine.
+// classify (content-based, extension-independent), parse (redacting account
+// numbers), store, categorize, re-detect recurring charges. Everything stays
+// on this machine.
+//
+// The classifier is the front door: a file is routed by what it actually
+// contains, and a file we can't confidently parse is REJECTED with a visible
+// reason rather than imported with wrong/zeroed numbers — a confident wrong
+// number is worse than a clear "couldn't parse this".
+
+export type ImportStatus = "imported" | "warning" | "rejected";
 
 export type ImportResult = {
   file: string;
+  status: ImportStatus;
   imported: number;
-  categorizedBy: string;
-  kind?: "statement" | "brokerage";
+  kind: "transaction" | "brokerage" | "unknown";
+  categorizedBy?: string;
+  warnings?: string[];
+  reason?: string; // set when status === "rejected"
   llmError?: string;
-  error?: string;
+  confidence?: number;
+  signals?: string[];
 };
 
 export function statementsDir(): string {
@@ -57,9 +76,10 @@ export async function importNewStatements(): Promise<ImportResult[]> {
     } catch (err) {
       results.push({
         file,
+        status: "rejected",
         imported: 0,
-        categorizedBy: "none",
-        error: err instanceof Error ? err.message : "import failed",
+        kind: "unknown",
+        reason: err instanceof Error ? err.message : "import failed",
       });
     }
   }
@@ -67,33 +87,138 @@ export async function importNewStatements(): Promise<ImportResult[]> {
   return results;
 }
 
+// Record a file in the statements table (so the scan doesn't retry it) with
+// the classified kind and a redacted excerpt of what we actually parsed.
+function recordStatement(file: string, month: string, kind: string, rawText: string): number {
+  const excerpt = redactAccountNumbers(rawText).slice(0, 8000);
+  const info = getDb()
+    .prepare("INSERT INTO statements (month, file_path, kind, raw_text) VALUES (?, ?, ?, ?)")
+    .run(month, file, kind, excerpt);
+  return info.lastInsertRowid as number;
+}
+
+function rejected(
+  file: string,
+  kind: Classification["kind"],
+  reason: string,
+  classification?: Classification
+): ImportResult {
+  return {
+    file,
+    status: "rejected",
+    imported: 0,
+    kind,
+    reason,
+    confidence: classification?.confidence,
+    signals: classification?.signals,
+  };
+}
+
 async function importOne(dir: string, file: string): Promise<ImportResult> {
   const fullPath = path.join(dir, file);
+  const isPdf = /\.pdf$/i.test(file);
 
-  // Brokerage exports (Fidelity positions/history) share the drop folder;
-  // sniff the header and route them to holdings instead of transactions.
-  if (/\.csv$/i.test(file)) {
-    const content = fs.readFileSync(fullPath, "utf8");
-    if (looksLikeBrokerageCsv(content)) {
-      return importBrokerageFile(file, content);
-    }
+  // Extract once into a form the classifier and the parsers both consume:
+  // PDF → flat text, CSV → a parsed table (kept as text too, for the classifier
+  // signals and the debug excerpt).
+  const rawText = isPdf
+    ? await extractPdfText(fs.readFileSync(fullPath))
+    : fs.readFileSync(fullPath, "utf8");
+  const table = isPdf ? null : parseCsv(rawText);
+
+  const classification = isPdf
+    ? classifyStatementText(rawText)
+    : classifyStatementTable(table!);
+
+  if (classification.kind === "unknown" || classification.confidence < CONFIDENCE_FLOOR) {
+    return rejected(
+      file,
+      classification.kind,
+      classification.kind === "unknown"
+        ? `Couldn't recognize this as a bank statement or a brokerage statement (${classification.signals.join("; ")}).`
+        : `Low confidence (${Math.round(classification.confidence * 100)}%) that this is a ${classification.kind} statement — not importing to avoid wrong numbers (${classification.signals.join("; ")}).`,
+      classification
+    );
   }
 
-  let rows: ParsedTransaction[];
-  if (/\.pdf$/i.test(file)) {
-    const text = await extractPdfText(fs.readFileSync(fullPath));
-    // A brokerage/investment PDF (Fidelity et al.) is holdings, not
-    // transactions: extract the positions table into holdings instead of
-    // mis-parsing it as spending.
-    if (isBrokerageStatement(text)) {
-      return importBrokeragePdf(file, text);
+  return classification.kind === "brokerage"
+    ? importBrokerage(file, rawText, table, classification)
+    : importTransactions(file, rawText, table, classification);
+}
+
+// Brokerage (CSV positions/history OR PDF holdings) → validated holdings
+// upserts. Both paths funnel through validateHoldings + the shared schema.
+function importBrokerage(
+  file: string,
+  rawText: string,
+  table: string[][] | null,
+  classification: Classification
+): ImportResult {
+  let extracted;
+  let source: string;
+  try {
+    if (table) {
+      const parsed = parseBrokerageCsv(rawText);
+      extracted = parsed.holdings;
+      source = `brokerage ${parsed.source}`;
+    } else {
+      extracted = parseFidelityPdfHoldings(rawText);
+      source = "brokerage positions (PDF)";
     }
-    rows = parsePdfText(text);
-  } else {
-    rows = parseCsvStatement(fs.readFileSync(fullPath, "utf8"));
+  } catch (err) {
+    return rejected(
+      file,
+      "brokerage",
+      err instanceof Error ? err.message : "could not parse brokerage file",
+      classification
+    );
+  }
+
+  const { holdings, warnings } = validateHoldings(extracted);
+  if (holdings.length === 0) {
+    return rejected(
+      file,
+      "brokerage",
+      "Recognized as a brokerage statement, but no holdings rows could be extracted — the expected columns (Symbol/Quantity/Market Value) didn't line up. Try exporting the Positions view as CSV.",
+      classification
+    );
+  }
+
+  const { year, month } = inferPeriodEnd(rawText);
+  const statementMonth = `${year}-${String(month).padStart(2, "0")}`;
+  recordStatement(file, statementMonth, "brokerage", rawText);
+  const result = importBrokerageHoldings(holdings, source.includes("history") ? "history" : "positions");
+  return {
+    file,
+    status: warnings.length > 0 ? "warning" : "imported",
+    imported: result.upserted,
+    kind: "brokerage",
+    categorizedBy: source,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    confidence: classification.confidence,
+    signals: classification.signals,
+  };
+}
+
+async function importTransactions(
+  file: string,
+  rawText: string,
+  table: string[][] | null,
+  classification: Classification
+): Promise<ImportResult> {
+  let rows: ParsedTransaction[];
+  try {
+    rows = table ? parseCsvStatement(rawText) : parsePdfText(rawText);
+  } catch (err) {
+    return rejected(
+      file,
+      "transaction",
+      err instanceof Error ? err.message : "could not parse transactions",
+      classification
+    );
   }
   if (rows.length === 0) {
-    throw new Error("No transactions found in file");
+    return rejected(file, "transaction", "No transactions found in file", classification);
   }
 
   const db = getDb();
@@ -105,12 +230,19 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
   }
   const month = [...monthCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
 
+  // Summary balance (ending/new balance) for the net-worth suggestion — stored,
+  // never auto-applied to an account.
+  const balance = extractStatementBalance(rawText);
+
   const insertedIds: number[] = [];
+  let statementId = -1;
   const insertAll = db.transaction(() => {
-    const info = db
-      .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
-      .run(month, file);
-    const statementId = info.lastInsertRowid as number;
+    statementId = recordStatement(file, month, "transaction", rawText);
+    if (balance) {
+      db.prepare(
+        "UPDATE statements SET ending_balance = ?, balance_kind = ?, balance_label = ? WHERE id = ?"
+      ).run(balance.balance, balance.kind, balance.label, statementId);
+    }
     const insert = db.prepare(
       `INSERT INTO transactions (date, amount, merchant, category, raw_description, statement_id)
        VALUES (?, ?, ?, 'Uncategorized', ?, ?)`
@@ -136,50 +268,28 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
   });
   applyCategories();
 
+  // User corrections win over everything: a merchant the user previously
+  // re-categorized keeps that category on this and future imports.
+  db.prepare(
+    `UPDATE transactions SET category = (
+       SELECT category FROM category_overrides o WHERE o.merchant = transactions.merchant
+     )
+     WHERE statement_id = ?
+       AND merchant IN (SELECT merchant FROM category_overrides)`
+  ).run(statementId);
+
   return {
     file,
+    status: outcome.llmError ? "warning" : "imported",
     imported: rows.length,
+    kind: "transaction",
     categorizedBy: outcome.source,
     llmError: outcome.llmError,
-  };
-}
-
-// Brokerage/investment PDF → holdings upserts (same destination as the CSV
-// path). If the holdings table can't be read, fall back to the CSV-export
-// guidance rather than importing garbage; either way it's recorded so the
-// scan doesn't retry it forever.
-function importBrokeragePdf(file: string, text: string): ImportResult {
-  const holdings = parseFidelityPdfHoldings(text);
-  const { year, month } = inferPeriodEnd(text);
-  const statementMonth = `${year}-${String(month).padStart(2, "0")}`;
-  getDb()
-    .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
-    .run(statementMonth, file);
-  if (holdings.length === 0) {
-    return { file, imported: 0, categorizedBy: "none", error: new BrokerageStatementError().message };
-  }
-  const result = importBrokerageHoldings(holdings, "positions");
-  return {
-    file,
-    imported: result.upserted,
-    categorizedBy: "brokerage positions (PDF)",
-    kind: "brokerage",
-  };
-}
-
-// Brokerage CSV → holdings upserts. Recorded in the statements table so
-// the same file isn't re-processed; account numbers are never persisted.
-function importBrokerageFile(file: string, content: string): ImportResult {
-  const { holdings, source } = parseBrokerageCsv(content);
-  const result = importBrokerageHoldings(holdings, source);
-  getDb()
-    .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
-    .run(new Date().toISOString().slice(0, 7), file);
-  return {
-    file,
-    imported: result.upserted,
-    categorizedBy: `brokerage ${source}`,
-    kind: "brokerage",
+    warnings: outcome.llmError
+      ? [`LLM unavailable (${outcome.llmError}); keyword rules used`]
+      : undefined,
+    confidence: classification.confidence,
+    signals: classification.signals,
   };
 }
 

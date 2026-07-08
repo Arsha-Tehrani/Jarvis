@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import { syncColumnMigrations, syncTriggerSql } from "@/lib/sync/tables";
+import { migrateGoalsToTrackers } from "@/lib/trackers-migrate";
 
 // One connection per process. Next.js dev hot-reload re-evaluates modules,
 // so stash the handle on globalThis to avoid leaking connections.
@@ -76,6 +77,21 @@ const MIGRATIONS: string[] = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL UNIQUE
   )`,
+  // Part D3 — dividend events. Finnhub's dividend endpoint is premium and
+  // Alpha Vantage dropped free dividend data, so these are entered by hand
+  // (the "manual entry always works" path). Payout is shares-on-ex-date ×
+  // amount/share; without per-date holdings history we use the current share
+  // count, clearly labeled as an approximation in the UI.
+  `CREATE TABLE IF NOT EXISTS dividend_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    ex_date TEXT NOT NULL,
+    amount_per_share REAL NOT NULL,
+    shares_at_date REAL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(ticker, ex_date)
+  )`,
   `CREATE TABLE IF NOT EXISTS calendar_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     google_event_id TEXT NOT NULL UNIQUE,
@@ -136,6 +152,13 @@ const MIGRATIONS: string[] = [
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  )`,
+  // Part B4 — user category corrections keyed by merchant. Consulted on every
+  // import (highest priority, above the LLM/keywords) so a manual re-categorize
+  // sticks for future statements with the same merchant.
+  `CREATE TABLE IF NOT EXISTS category_overrides (
+    merchant TEXT PRIMARY KEY,
+    category TEXT NOT NULL
   )`,
   // Phase 6f — net worth rollup
   `CREATE TABLE IF NOT EXISTS accounts (
@@ -286,6 +309,21 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   { table: "agent_log", column: "input_tokens", ddl: "input_tokens INTEGER" },
   { table: "agent_log", column: "output_tokens", ddl: "output_tokens INTEGER" },
   { table: "agent_log", column: "cost_usd", ddl: "cost_usd REAL" },
+  // Part A — retain the redacted extracted text/table of each imported file
+  // so a downstream number that looks off can be traced back to what was
+  // actually parsed (the "logs" pattern), not just a pass/fail flag.
+  { table: "statements", column: "raw_text", ddl: "raw_text TEXT" },
+  { table: "statements", column: "kind", ddl: "kind TEXT" },
+  // Part B5 — captured summary balance, surfaced as a confirm-gated net-worth
+  // account suggestion (never auto-applied).
+  { table: "statements", column: "ending_balance", ddl: "ending_balance REAL" },
+  { table: "statements", column: "balance_kind", ddl: "balance_kind TEXT" },
+  { table: "statements", column: "balance_label", ddl: "balance_label TEXT" },
+  // Part E — generalize `habits` into the unified Tracker model: `source` links
+  // a tracker to a built-in feed (null = manual habit), `target` is the numeric
+  // goal folded in from the legacy `goals` table.
+  { table: "habits", column: "source", ddl: "source TEXT" },
+  { table: "habits", column: "target", ddl: "target REAL" },
   // Phase 23 — sync bookkeeping columns on every allowlisted table,
   // generated from the allowlist itself (lib/sync/tables.ts).
   ...syncColumnMigrations(),
@@ -306,6 +344,9 @@ function applyMigrations(db: Database.Database): void {
     }
   }
   for (const sql of POST_MIGRATIONS) db.exec(sql);
+  // Data migration (not DDL): fold legacy goals into the unified Trackers.
+  // Idempotent, so it's safe to run on every connect.
+  migrateGoalsToTrackers(db);
 }
 
 function connect(): Database.Database {
