@@ -24,6 +24,20 @@ const TEMP_DIR = path.join(process.cwd(), "temp_notes");
 // Marker PDF→Markdown conversion can take minutes per file on CPU.
 const INGEST_TIMEOUT_MS = 15 * 60 * 1000;
 
+// The backup folder simply not existing is a normal not-configured state,
+// not a failure: plenty of people connect Google for Calendar/Gmail without
+// ever using GoodNotes. Distinguished from real errors (403 scope, Drive
+// API failures, sidecar down) so the job can skip it quietly like every
+// other optional integration instead of logging a stack trace.
+export class GoodNotesFolderNotFoundError extends Error {
+  constructor(folderName: string) {
+    super(
+      `Drive folder "${folderName}" not found — create it (GoodNotes' backup destination) or set GOODNOTES_DRIVE_FOLDER`
+    );
+    this.name = "GoodNotesFolderNotFoundError";
+  }
+}
+
 export function goodnotesFolderName(): string {
   return process.env.GOODNOTES_DRIVE_FOLDER ?? "GoodNotes Backup";
 }
@@ -144,9 +158,7 @@ async function ingestIntoRag(filePath: string): Promise<{ chunks: number; engine
 export async function syncGoodNotes(): Promise<GoodNotesSyncResult> {
   const folderId = await findFolderId();
   if (!folderId) {
-    throw new Error(
-      `Drive folder "${goodnotesFolderName()}" not found — check the GoodNotes backup destination or set GOODNOTES_DRIVE_FOLDER`
-    );
+    throw new GoodNotesFolderNotFoundError(goodnotesFolderName());
   }
 
   const db = getDb();
@@ -203,6 +215,10 @@ export async function syncGoodNotesJob(): Promise<void> {
     );
     for (const f of r.failed) console.error(`[goodnotes] "${f.name}": ${f.error}`);
   } catch (err) {
+    if (err instanceof GoodNotesFolderNotFoundError) {
+      console.log(`[goodnotes] sync skipped (${err.message})`);
+      return;
+    }
     console.error("[goodnotes] sync failed:", err);
   }
 }
