@@ -8,6 +8,7 @@ import {
 } from "@/lib/finance/brokerage";
 import { categorizeTransactions } from "@/lib/finance/categorize";
 import {
+  BrokerageStatementError,
   parseCsvStatement,
   parsePdfStatement,
   type ParsedTransaction,
@@ -76,7 +77,19 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
 
   let rows: ParsedTransaction[];
   if (/\.pdf$/i.test(file)) {
-    rows = await parsePdfStatement(fs.readFileSync(fullPath));
+    try {
+      rows = await parsePdfStatement(fs.readFileSync(fullPath));
+    } catch (err) {
+      if (err instanceof BrokerageStatementError) {
+        // Record it so it isn't retried every scan — a brokerage PDF will
+        // never yield checking transactions. The message steers to CSV.
+        getDb()
+          .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
+          .run(new Date().toISOString().slice(0, 7), file);
+        return { file, imported: 0, categorizedBy: "none", error: err.message };
+      }
+      throw err;
+    }
   } else {
     rows = parseCsvStatement(fs.readFileSync(fullPath, "utf8"));
   }
