@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { chat } from "@/lib/llm";
+import { extractBody, mailTaskTitle, type GmailPart } from "@/lib/mail-core";
 import { loggedFetch } from "@/lib/network-log";
 import { preFilterCategory } from "@/lib/mail-prefilter";
+import { getSetting, setSetting } from "@/lib/settings";
 
 // Gmail triage — read-only + on-demand drafts. Mirrors the Calendar OAuth
 // pattern: CSRF state cookie, tokens in oauth_tokens (server-side only),
@@ -193,12 +195,21 @@ function header(meta: GmailMessageMeta, name: string): string {
   );
 }
 
-// Fetch recent messages for one inbox; only new gmail_ids are processed
-// (INSERT OR IGNORE dedupe) so repeated polls stay inside rate limits.
-export async function pollAccount(email: string, maxResults = 25): Promise<number> {
-  const token = await getGmailAccessToken(email);
+// List one page of inbox message ids; shared by the fresh poll (no page
+// token) and "load older" (walks Gmail's nextPageToken cursor).
+async function listInboxPage(
+  email: string,
+  token: string,
+  maxResults: number,
+  pageToken?: string
+): Promise<{ ids: string[]; nextPageToken?: string }> {
+  const params = new URLSearchParams({
+    maxResults: String(maxResults),
+    labelIds: "INBOX",
+  });
+  if (pageToken) params.set("pageToken", pageToken);
   const listRes = await loggedFetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&labelIds=INBOX`,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,
     { headers: { Authorization: `Bearer ${token}` } },
     { feature: "mail-poll", purpose: "list inbox messages" }
   );
@@ -206,10 +217,17 @@ export async function pollAccount(email: string, maxResults = 25): Promise<numbe
     const detail = await listRes.text().catch(() => "");
     throw new Error(`Gmail list failed for ${email} (${listRes.status}): ${detail.slice(0, 200)}`);
   }
-  const list = (await listRes.json()) as { messages?: Array<{ id: string }> };
-  const ids = (list.messages ?? []).map((m) => m.id);
-  if (ids.length === 0) return 0;
+  const list = (await listRes.json()) as {
+    messages?: Array<{ id: string }>;
+    nextPageToken?: string;
+  };
+  return { ids: (list.messages ?? []).map((m) => m.id), nextPageToken: list.nextPageToken };
+}
 
+// Fetch headers for ids not yet cached and store them (INSERT OR IGNORE
+// dedupe) so repeated polls stay inside rate limits.
+async function storeNewMessages(email: string, token: string, ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
   const db = getDb();
   const known = new Set(
     (
@@ -254,6 +272,73 @@ export async function pollAccount(email: string, maxResults = 25): Promise<numbe
     inserted += info.changes;
   }
   return inserted;
+}
+
+export async function pollAccount(email: string, maxResults = 25): Promise<number> {
+  const token = await getGmailAccessToken(email);
+  const { ids } = await listInboxPage(email, token, maxResults);
+  return storeNewMessages(email, token, ids);
+}
+
+// "Load older": pull the next page of the inbox (past what polling has
+// cached) into mail_messages, resuming from a per-account cursor in the
+// settings table. The first call starts from page 1 (fully cached by
+// polling), so we walk forward — bounded — until a page actually adds
+// rows; otherwise one click would be a confusing no-op that only primed
+// the cursor. Returns whether Gmail says there is more after this.
+export async function loadOlderMessages(
+  email: string,
+  maxResults = 25
+): Promise<{ inserted: number; more: boolean }> {
+  const cursorKey = `mail_page_token:${email}`;
+  const token = await getGmailAccessToken(email);
+
+  let inserted = 0;
+  let more = false;
+  for (let hop = 0; hop < 3; hop++) {
+    const cursor = getSetting(cursorKey);
+    const { ids, nextPageToken } = await listInboxPage(
+      email,
+      token,
+      maxResults,
+      cursor || undefined
+    );
+    inserted += await storeNewMessages(email, token, ids);
+    setSetting(cursorKey, nextPageToken ?? "");
+    more = !!nextPageToken;
+    if (inserted > 0 || !nextPageToken) break;
+  }
+  return { inserted, more };
+}
+
+// ---- On-demand body fetch (user clicked a message; never sent to any LLM) ----
+
+// The triage promise stands: sender/subject/snippet only go to the model.
+// Bodies are fetched when the USER opens a message, returned as plain text
+// (html stripped in lib/mail-core), and rendered as text — never as HTML.
+export async function getMessageBody(
+  account: string,
+  gmailId: string
+): Promise<{ body: string; bodySource: "plain" | "html" | "snippet" }> {
+  const db = getDb();
+  const cached = db
+    .prepare("SELECT snippet FROM mail_messages WHERE account = ? AND gmail_id = ?")
+    .get(account, gmailId) as { snippet: string | null } | undefined;
+  if (!cached) throw new Error("Message not found — poll first");
+
+  const token = await getGmailAccessToken(account);
+  const res = await loggedFetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailId}?format=full`,
+    { headers: { Authorization: `Bearer ${token}` } },
+    { feature: "mail-body", purpose: "fetch message body for display" }
+  );
+  if (!res.ok) throw new Error(`Could not load the message body (${res.status})`);
+  const full = (await res.json()) as { payload?: GmailPart };
+  const extracted = extractBody(full.payload);
+  if (extracted.source === "none") {
+    return { body: cached.snippet ?? "(no readable text in this message)", bodySource: "snippet" };
+  }
+  return { body: extracted.text, bodySource: extracted.source };
 }
 
 // ---- Triage via lib/llm.chat: sender+subject+snippet only, never bodies ----
@@ -365,8 +450,8 @@ export async function makeTaskFromMessage(
     | undefined;
   if (!message) throw new Error("Message not found — poll first");
 
-  const senderName = message.sender.replace(/<[^>]*>/g, "").trim() || message.sender;
-  const title = `Reply: ${message.subject} — ${senderName}`.slice(0, 500);
+  // Shared with /api/mail's task_created flag — one derivation, one truth.
+  const title = mailTaskTitle(message.sender, message.subject);
 
   const existing = db
     .prepare("SELECT 1 FROM tasks WHERE title = ? AND status = 'open'")
