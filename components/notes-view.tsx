@@ -10,11 +10,85 @@ type NoteSummary = { path: string; modified: string };
 type NoteContent = { path: string; content: string };
 type SearchHit = { path: string; snippet: string };
 
+// Folder tree built from slash-separated note paths, rendered with native
+// <details> elements — the browser keeps the open/closed state for us.
+type TreeNode = {
+  folders: Map<string, TreeNode>;
+  files: NoteSummary[];
+};
+
+function buildTree(notes: NoteSummary[]): TreeNode {
+  const root: TreeNode = { folders: new Map(), files: [] };
+  for (const note of notes) {
+    const segments = note.path.split("/");
+    let node = root;
+    for (const segment of segments.slice(0, -1)) {
+      let child = node.folders.get(segment);
+      if (!child) {
+        child = { folders: new Map(), files: [] };
+        node.folders.set(segment, child);
+      }
+      node = child;
+    }
+    node.files.push(note);
+  }
+  return root;
+}
+
+function TreeFolder({
+  name,
+  node,
+  onOpen,
+}: {
+  name: string;
+  node: TreeNode;
+  onOpen: (path: string) => void;
+}) {
+  return (
+    <details className="ml-0">
+      <summary className="cursor-pointer select-none rounded px-1 py-0.5 text-sm font-medium hover:bg-accent/50">
+        📁 {name}
+      </summary>
+      <div className="ml-4 border-l pl-2">
+        <TreeChildren node={node} onOpen={onOpen} />
+      </div>
+    </details>
+  );
+}
+
+function TreeChildren({
+  node,
+  onOpen,
+}: {
+  node: TreeNode;
+  onOpen: (path: string) => void;
+}) {
+  return (
+    <>
+      {[...node.folders.entries()].map(([name, child]) => (
+        <TreeFolder key={name} name={name} node={child} onOpen={onOpen} />
+      ))}
+      {node.files.map((f) => (
+        <button
+          key={f.path}
+          className="block w-full truncate rounded px-1 py-0.5 text-left text-sm hover:bg-accent/50 hover:underline"
+          onClick={() => onOpen(f.path)}
+          title={f.path}
+        >
+          {f.path.split("/").pop()?.replace(/\.md$/i, "")}
+        </button>
+      ))}
+    </>
+  );
+}
+
 export function NotesView() {
   const [configured, setConfigured] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dailyNote, setDailyNote] = useState<NoteContent | null>(null);
   const [recent, setRecent] = useState<NoteSummary[]>([]);
+  const [all, setAll] = useState<NoteSummary[]>([]);
+  const [filter, setFilter] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[] | null>(null);
   const [openNote, setOpenNote] = useState<NoteContent | null>(null);
@@ -33,6 +107,7 @@ export function NotesView() {
       setError(null);
       setDailyNote(data.dailyNote);
       setRecent(data.recent);
+      setAll(data.all ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to read vault");
     }
@@ -139,6 +214,51 @@ export function NotesView() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-baseline justify-between">
+            Vault explorer
+            <span className="text-sm font-normal text-muted-foreground">
+              {all.length} notes
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <Input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by name or folder…"
+          />
+          <div className="max-h-[28rem] overflow-y-auto rounded-md border p-2">
+            {all.length === 0 ? (
+              <p className="p-2 text-sm text-muted-foreground">
+                No markdown files found in the vault.
+              </p>
+            ) : filter.trim() ? (
+              // Filtering flattens the tree — matches shown with full paths.
+              <ul className="flex flex-col">
+                {all
+                  .filter((n) => n.path.toLowerCase().includes(filter.trim().toLowerCase()))
+                  .slice(0, 200)
+                  .map((n) => (
+                    <li key={n.path}>
+                      <button
+                        className="block w-full truncate rounded px-1 py-0.5 text-left text-sm hover:bg-accent/50 hover:underline"
+                        onClick={() => open(n.path)}
+                        title={n.path}
+                      >
+                        {n.path}
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            ) : (
+              <TreeChildren node={buildTree(all)} onOpen={(p) => void open(p)} />
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

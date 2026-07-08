@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   VaultNotConfiguredError,
+  allNotes,
   appendNote,
   isVaultConfigured,
   readNote,
@@ -25,6 +26,7 @@ export async function GET(req: NextRequest) {
       configured: true,
       dailyNote: todaysDailyNote(),
       recent: recentNotes(),
+      all: allNotes(),
     });
   } catch (err) {
     if (err instanceof VaultNotConfiguredError) {
