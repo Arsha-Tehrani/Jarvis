@@ -55,7 +55,8 @@ function walkMarkdownFiles(vault: string): string[] {
     }
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) stack.push(path.join(dir, entry.name));
+        // Case-insensitive: Obsidian writes ".Trash" on some platforms.
+        if (!SKIP_DIRS.has(entry.name.toLowerCase())) stack.push(path.join(dir, entry.name));
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         files.push(path.join(dir, entry.name));
       }
@@ -103,6 +104,28 @@ export function recentNotes(limit = 10): NoteSummary[] {
       path: path.relative(vault, f.file),
       modified: new Date(f.mtime).toISOString(),
     }));
+}
+
+// Every note in the vault (walker already skips .obsidian/.trash/.git and
+// caps at MAX_FILES), sorted by path for the explorer tree. Paths are
+// normalized to forward slashes so the tree renders identically on
+// Windows; readNote resolves either separator.
+export function allNotes(): NoteSummary[] {
+  const vault = vaultPath();
+  return walkMarkdownFiles(vault)
+    .map((f) => {
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(f).mtimeMs;
+      } catch {
+        // race: file deleted mid-walk — keep it listed, opening will 404 clearly
+      }
+      return {
+        path: path.relative(vault, f).split(path.sep).join("/"),
+        modified: new Date(mtime).toISOString(),
+      };
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export function searchNotes(query: string, limit = 20): SearchHit[] {
