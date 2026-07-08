@@ -73,8 +73,31 @@ export function parseCsvStatement(content: string): ParsedTransaction[] {
   return rows;
 }
 
-// PDF → text lines → try to read "date … description … amount" per line.
-// Bank PDFs vary wildly; this is best-effort and failures surface clearly.
+// A brokerage/investment report (Fidelity, Schwab, …) is a holdings summary,
+// not a list of dated transactions. Parsing one as checking transactions
+// produced garbage before; we detect and refuse it, pointing at the CSV
+// positions export (which the brokerage importer handles) instead.
+export class BrokerageStatementError extends Error {
+  constructor() {
+    super(
+      "This looks like a brokerage/investment report, not a transaction statement — " +
+        "export a positions/history CSV for holdings, or a CSV of transactions."
+    );
+    this.name = "BrokerageStatementError";
+  }
+}
+
+export function isBrokerageStatement(text: string): boolean {
+  return (
+    /INVESTMENT REPORT|Brokerage services provided|Your Account Value|Ending Account Value|Holdings? as of|Realized Gain\/Loss/i.test(
+      text
+    ) &&
+    // Real transaction statements have a running-balance or payment-due
+    // structure; investment reports don't. Guards against false positives.
+    !/DATE\s+DESCRIPTION\s+AMOUNT\s+BALANCE|Minimum Payment Due/i.test(text)
+  );
+}
+
 export async function parsePdfStatement(buffer: Buffer): Promise<ParsedTransaction[]> {
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
@@ -85,31 +108,177 @@ export async function parsePdfStatement(buffer: Buffer): Promise<ParsedTransacti
   } finally {
     await parser.destroy();
   }
+  return parsePdfText(text);
+}
 
-  const rows: ParsedTransaction[] = [];
-  const lineRe =
-    /^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{4}-\d{2}-\d{2})\s+(.+?)\s+(-?\$?\(?\d[\d,]*\.\d{2}\)?)$/;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const m = lineRe.exec(line);
-    if (!m) continue;
-    const date = parseDate(m[1]);
-    const amount = parseAmount(m[3]);
-    if (!date || amount == null || Number.isNaN(amount)) continue;
-    const desc = redactAccountNumbers(m[2].trim());
-    rows.push({
-      date,
-      amount,
-      merchant: normalizeMerchant(desc),
-      raw_description: desc,
-    });
+const MONTHS: Record<string, number> = {
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+};
+
+// The statement's period end (year + month), used to give year-less MM/DD
+// transaction lines a real year. Scans the header for MM/DD/YY(YY) and
+// "Month DD, YYYY" dates and takes the latest; falls back to the most common
+// 20YY in the document, then the current year.
+export function inferPeriodEnd(text: string): { year: number; month: number } {
+  const head = text.slice(0, 3000);
+  const candidates: { year: number; month: number }[] = [];
+  for (const m of head.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/g)) {
+    const month = Number(m[1]);
+    const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    if (month >= 1 && month <= 12) candidates.push({ year, month });
   }
+  for (const m of head.matchAll(/\b([A-Za-z]+)\s+\d{1,2},?\s+(20\d{2})\b/g)) {
+    const month = MONTHS[m[1].toLowerCase()];
+    if (month) candidates.push({ year: Number(m[2]), month });
+  }
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => a.year - b.year || a.month - b.month);
+    return candidates[candidates.length - 1];
+  }
+  const years = [...text.matchAll(/\b(20\d{2})\b/g)].map((m) => Number(m[1]));
+  if (years.length > 0) {
+    const freq = new Map<number, number>();
+    for (const y of years) freq.set(y, (freq.get(y) ?? 0) + 1);
+    const best = [...freq.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    return { year: best, month: 12 };
+  }
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth() + 1 };
+}
+
+// MM/DD at the start of a transaction line. The day must NOT be followed by
+// another digit or a slash, so a full metadata date like "07/13/26" can't
+// backtrack into "07/1" and leak "3/26" as a bogus transaction.
+const DATE_START = /^(\d{1,2})\/(\d{1,2})(?![\d/])/;
+const DECIMAL = /-?\s?\$?\(?\d[\d,]*\.\d{2}\)?/g;
+// Lines that close a transaction record instead of continuing it — summaries,
+// page furniture, column headers. None begin with a MM/DD date.
+const BOUNDARY =
+  /^(date\b|beginning balance|ending balance|deposits and|atm & debit|electronic with|total\b|subtotal|balance\b|page \d|--? \d|previous balance|new balance|minimum payment|account number|statement)/i;
+
+type TxnRecord = { month: number; day: number; text: string };
+
+// Group flat text lines into transaction records: a record begins at a line
+// starting MM/DD and absorbs up to two following wrap lines (bank PDFs break
+// long descriptions across lines). Boundary/summary lines end the record.
+export function groupRecords(lines: string[]): TxnRecord[] {
+  const records: TxnRecord[] = [];
+  let current: TxnRecord | null = null;
+  let wraps = 0;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const d = DATE_START.exec(line);
+    if (d) {
+      if (current) records.push(current);
+      current = { month: Number(d[1]), day: Number(d[2]), text: line };
+      wraps = 0;
+    } else if (current) {
+      if (BOUNDARY.test(line)) {
+        records.push(current);
+        current = null;
+      } else if (wraps < 2) {
+        current.text += " " + line;
+        wraps++;
+      }
+    }
+  }
+  if (current) records.push(current);
+  return records;
+}
+
+function decimalsIn(text: string): number[] {
+  return (text.match(DECIMAL) ?? []).map((s) => parseAmount(s)).filter(
+    (n): n is number => n != null && !Number.isNaN(n)
+  );
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function describe(record: TxnRecord): string {
+  // Strip the leading MM/DD and any trailing money columns.
+  let text = record.text.replace(DATE_START, "").trim();
+  text = text.replace(new RegExp(`(?:\\s*${DECIMAL.source})+\\s*$`), "").trim();
+  return redactAccountNumbers(text);
+}
+
+// Pure parser over already-extracted PDF text. Two layouts:
+//  - checking (DATE DESCRIPTION AMOUNT BALANCE): amounts derived from the
+//    running-balance delta, so deposit lines that print only a balance still
+//    get the right signed amount;
+//  - credit card (DATE DESCRIPTION AMOUNT, no balance): the single trailing
+//    number is the amount, sign-flipped so purchases read as money out.
+export function parsePdfText(text: string): ParsedTransaction[] {
+  if (isBrokerageStatement(text)) throw new BrokerageStatementError();
+
+  const lines = text.split(/\r?\n/);
+  const { year, month: endMonth } = inferPeriodEnd(text);
+  const yearFor = (m: number) => (m <= endMonth ? year : year - 1);
+
+  const balanceMode =
+    /DATE\s+DESCRIPTION\s+AMOUNT\s+BALANCE/i.test(text) ||
+    /Beginning Balance\s*\$?[\d,]+\.\d{2}/i.test(text);
+
+  const records = groupRecords(lines);
+  const rows: ParsedTransaction[] = [];
+
+  if (balanceMode) {
+    const begin = /Beginning Balance\s*\$?([\d,]+\.\d{2})/i.exec(text);
+    let prevBalance = begin ? parseAmount(begin[1]) : null;
+    for (const rec of records) {
+      const nums = decimalsIn(rec.text);
+      if (nums.length === 0) continue;
+      const balance = nums[nums.length - 1];
+      let amount: number | null;
+      if (prevBalance != null) {
+        amount = round2(balance - prevBalance);
+      } else if (nums.length >= 2) {
+        amount = nums[nums.length - 2]; // explicit amount column
+      } else {
+        continue; // deposit line with no seed balance — can't tell
+      }
+      prevBalance = balance; // keep the running-balance chain intact even if we skip below
+      const date = makeDate(yearFor(rec.month), rec.month, rec.day);
+      if (!date || amount == null || Number.isNaN(amount) || amount === 0) continue;
+      const desc = describe(rec);
+      if (!hasPayeeName(desc)) continue; // numeric noise, not a transaction
+      rows.push({ date, amount, merchant: normalizeMerchant(desc), raw_description: desc });
+    }
+  } else {
+    for (const rec of records) {
+      const nums = decimalsIn(rec.text);
+      if (nums.length === 0) continue;
+      // Credit card: purchases are positive on the statement but are money
+      // out; flip so the sign matches the checking convention.
+      const amount = round2(-nums[nums.length - 1]);
+      const date = makeDate(yearFor(rec.month), rec.month, rec.day);
+      if (!date || Number.isNaN(amount) || amount === 0) continue;
+      const desc = describe(rec);
+      if (!hasPayeeName(desc)) continue; // numeric noise, not a transaction
+      rows.push({ date, amount, merchant: normalizeMerchant(desc), raw_description: desc });
+    }
+  }
+
   if (rows.length === 0) {
     throw new Error(
       "No transaction lines recognized in PDF — export the statement as CSV instead."
     );
   }
   return rows;
+}
+
+// A real transaction always names a payee/merchant. Requiring a couple of
+// letters drops numeric fragments that a date-led line can otherwise produce.
+function hasPayeeName(description: string): boolean {
+  return (description.match(/[A-Za-z]/g) ?? []).length >= 2;
+}
+
+function makeDate(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 // --- helpers ---
