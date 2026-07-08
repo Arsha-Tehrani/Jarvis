@@ -113,15 +113,11 @@ class PushToTalkSession:
 def main() -> None:
     import keyboard  # requires admin only on Linux; fine on Windows
 
-    from .hardware import detect
-    from .transcriber import FasterWhisperTranscriber
+    from .transcriber import make_transcriber
 
-    choice = detect()
-    print(f"[voice] {choice.reason}")
-    print(f"[voice] model={config.WHISPER_MODEL} device={choice.device} compute={choice.compute_type}")
     session = PushToTalkSession(
         recorder=SoundDeviceRecorder(),
-        transcriber=FasterWhisperTranscriber(choice=choice),
+        transcriber=make_transcriber(),
     )
     keyboard.on_press_key(config.PTT_KEY, lambda _e: session.on_press())
     keyboard.on_release_key(config.PTT_KEY, lambda _e: session.on_release())
