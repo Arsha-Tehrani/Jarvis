@@ -388,11 +388,7 @@ export default function TodayPage() {
           range="Past 14 days"
         >
           {spendTrend.some((p) => p.value > 0) && (
-            <Sparkline
-              data={spendTrend}
-              variant="bars"
-              formatValue={(v) => usd(v)}
-            />
+            <Sparkline data={spendTrend} variant="bars" format="usd" />
           )}
         </MetricCard>
         {mailLinked && (
