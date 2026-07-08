@@ -11,17 +11,28 @@ type Props = {
   data: SparkPoint[];
   height?: number;
   variant?: "line" | "bars";
+  // Client components can pass a formatter function directly. Server
+  // components can't (functions don't cross the RSC boundary), so they pass
+  // the serializable `format` name instead.
   formatValue?: (v: number) => string;
+  format?: "number" | "usd";
 };
 
 const W = 200; // viewBox units; scales to container width
+
+const FORMATTERS: Record<NonNullable<Props["format"]>, (v: number) => string> = {
+  number: (v) => String(Math.round(v * 100) / 100),
+  usd: (v) => `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`,
+};
 
 export function Sparkline({
   data,
   height = 48,
   variant = "line",
-  formatValue = (v) => String(Math.round(v * 100) / 100),
+  formatValue,
+  format = "number",
 }: Props) {
+  const formatFn = formatValue ?? FORMATTERS[format];
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<SVGSVGElement>(null);
   if (data.length === 0) return null;
@@ -55,7 +66,7 @@ export function Sparkline({
         onPointerMove={onMove}
         onPointerLeave={() => setHover(null)}
         role="img"
-        aria-label={`Trend, latest ${formatValue(data[data.length - 1].value)}`}
+        aria-label={`Trend, latest ${formatFn(data[data.length - 1].value)}`}
       >
         {variant === "line" ? (
           <>
@@ -124,7 +135,7 @@ export function Sparkline({
           style={{ left: `${(x(hover as number) / W) * 100}%` }}
         >
           <span className="text-muted-foreground">{hovered.label}</span>{" "}
-          <span className="font-medium">{formatValue(hovered.value)}</span>
+          <span className="font-medium">{formatFn(hovered.value)}</span>
         </div>
       )}
     </div>
