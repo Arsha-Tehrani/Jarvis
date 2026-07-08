@@ -24,7 +24,9 @@ function isoDaysAgo(n: number): string {
 export function listHabits(): HabitWithStats[] {
   const db = getDb();
   const habits = db
-    .prepare("SELECT id, name, cadence, goal FROM habits ORDER BY name")
+    // Manual habits only (source IS NULL): sourced trackers (former Goals)
+    // have no habit_logs and render as rings on the Trackers page.
+    .prepare("SELECT id, name, cadence, goal FROM habits WHERE source IS NULL ORDER BY name")
     .all() as Habit[];
   const today = new Date().toISOString().slice(0, 10);
   const since = isoDaysAgo(370);

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import {
   ACCOUNT_KINDS,
+  balanceSuggestions,
   computeNetWorth,
   listAccounts,
   snapshots,
@@ -29,6 +30,7 @@ export async function GET() {
     now: computeNetWorth(),
     snapshots: snapshots(),
     weeklyDelta: weeklyDelta(),
+    balanceSuggestions: balanceSuggestions(),
   });
 }
 

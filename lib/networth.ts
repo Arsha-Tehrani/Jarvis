@@ -28,6 +28,53 @@ export function listAccounts(): Account[] {
   return getDb().prepare("SELECT * FROM accounts ORDER BY kind, name").all() as Account[];
 }
 
+export type BalanceSuggestion = {
+  label: string; // e.g. "Checking"
+  kind: "cash" | "debt";
+  balance: number;
+  month: string | null;
+  accountId: number | null; // matching account, if one exists
+  currentBalance: number | null; // its current balance, to show the delta
+};
+
+// Net worth account balances are entered by hand, so without a manual entry
+// they read $0 even after importing a statement that plainly states the
+// balance. This surfaces the captured ending balance (per label, most recent
+// statement) as a SUGGESTION to create/update the matching account — the write
+// itself stays behind the existing confirm-gated accounts endpoint. Only
+// suggests when the number is new or differs from the current balance.
+export function balanceSuggestions(): BalanceSuggestion[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT balance_label AS label, balance_kind AS kind, ending_balance AS balance, month
+       FROM statements s
+       WHERE ending_balance IS NOT NULL
+         AND imported_at = (
+           SELECT MAX(imported_at) FROM statements s2 WHERE s2.balance_label = s.balance_label
+         )`
+    )
+    .all() as Array<{ label: string; kind: "cash" | "debt"; balance: number; month: string | null }>;
+
+  const suggestions: BalanceSuggestion[] = [];
+  for (const r of rows) {
+    const account = db
+      .prepare("SELECT id, balance FROM accounts WHERE name = ?")
+      .get(r.label) as { id: number; balance: number } | undefined;
+    // Skip when the account already matches the statement to the cent.
+    if (account && Math.abs(account.balance - r.balance) < 0.005) continue;
+    suggestions.push({
+      label: r.label,
+      kind: r.kind,
+      balance: r.balance,
+      month: r.month,
+      accountId: account?.id ?? null,
+      currentBalance: account?.balance ?? null,
+    });
+  }
+  return suggestions;
+}
+
 export function computeNetWorth(): NetWorthNow {
   const db = getDb();
   const accountsTotal = (

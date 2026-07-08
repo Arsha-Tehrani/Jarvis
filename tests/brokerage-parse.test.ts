@@ -37,6 +37,35 @@ test("parseFidelityPdfHoldings: extracts ticker/shares/cost-basis from statement
   assert.equal(by.NKE.cost_basis, 65.2); // 456.40 / 7
 });
 
+// Long security names wrap: the "(SYMBOL)" ends one line and the numeric
+// columns land on the next. The core money-market position prints "not
+// applicable" for cost/unrealized. Both must still resolve — missing the
+// wrapped rows is what made net worth read far too low.
+const WRAPPED_HOLDINGS = `
+Symbol/CUSIP Description Quantity Price Market Value Cost Basis Unrealized
+FIDELITY GOVERNMENT MONEY
+MARKET (SPAXX)
+$6,165.88 4,823.030 $1.0000 $4,823.03 not applicable not applicable $173.45
+SPORTRADAR GROUP AG
+CLASS A (SRAD)
+$647.29 59.000 $14.9700 $883.23 $988.32 -$105.09 -
+MICROSOFT CORP (MSFT) 450.24 2.000 373.0200 746.04 770.47 -24.43 7.28
+`;
+
+test("parseFidelityPdfHoldings: resolves wrapped rows and the money-market core", () => {
+  const holdings = parseFidelityPdfHoldings(WRAPPED_HOLDINGS);
+  const by = Object.fromEntries(holdings.map((h) => [h.ticker, h]));
+  assert.equal(holdings.length, 3);
+  // Same-line row still works.
+  assert.deepEqual(by.MSFT, { ticker: "MSFT", shares: 2, cost_basis: 385.24 });
+  // Wrapped row: numbers were on the line AFTER the ticker; "-$105.09"
+  // (minus before the dollar sign) is read as negative so value-cost lines up.
+  assert.deepEqual(by.SRAD, { ticker: "SRAD", shares: 59, cost_basis: 16.75 }); // 988.32 / 59
+  // Money-market core: cost "not applicable" → cost basis taken as its $1 price
+  // so market value ≈ cash and no phantom gain shows.
+  assert.deepEqual(by.SPAXX, { ticker: "SPAXX", shares: 4823.03, cost_basis: 1 });
+});
+
 test("parseFidelityPdfHoldings: disclaimer/prose lines are not mistaken for holdings", () => {
   // No line here satisfies qty*price == market value.
   const noise = `

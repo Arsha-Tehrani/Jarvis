@@ -57,13 +57,26 @@ export async function getQuotes(tickers: string[]): Promise<Map<string, Quote>> 
   if (misses.length === 0) return result;
   if (!isStocksConfigured()) throw new StocksNotConfiguredError();
 
+  // Per-ticker resilience: one unknown symbol (e.g. the SPAXX money-market
+  // core, which Finnhub 403s) must not blank out every other quote. Skip the
+  // failed ticker — it falls back to cost basis downstream — and only throw if
+  // EVERY fetch failed (a genuinely broken key or rate-limit), so a real
+  // outage still surfaces instead of silently showing an all-cost-basis page.
+  let firstError: unknown;
   for (const ticker of misses) {
-    const quote = process.env.FINNHUB_API_KEY
-      ? await fetchFinnhub(ticker)
-      : await fetchAlphaVantage(ticker);
-    cache().set(ticker, quote);
-    result.set(ticker, quote);
+    try {
+      const quote = process.env.FINNHUB_API_KEY
+        ? await fetchFinnhub(ticker)
+        : await fetchAlphaVantage(ticker);
+      cache().set(ticker, quote);
+      result.set(ticker, quote);
+    } catch (err) {
+      firstError ??= err;
+      console.warn(`[stocks] skipping ${ticker}:`, err instanceof Error ? err.message : err);
+    }
   }
+  // Nothing priced at all (no cache, every fetch failed) → surface the outage.
+  if (result.size === 0 && firstError) throw firstError;
   return result;
 }
 

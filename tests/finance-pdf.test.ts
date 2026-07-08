@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   BrokerageStatementError,
+  extractStatementBalance,
   groupRecords,
   inferPeriodEnd,
   isBrokerageStatement,
@@ -123,6 +124,23 @@ test("brokerage/investment reports are detected and refused, not mis-parsed", ()
   assert.equal(isBrokerageStatement(CHECKING), false);
   assert.equal(isBrokerageStatement(CREDIT_CARD), false);
   assert.throws(() => parsePdfText(BROKERAGE), BrokerageStatementError);
+});
+
+test("extractStatementBalance reads the summary balance and its kind", () => {
+  // Checking: last "Ending Balance" → a cash asset.
+  assert.deepEqual(extractStatementBalance(CHECKING), {
+    balance: 4046.73,
+    kind: "cash",
+    label: "Checking",
+  });
+  // Credit card: "New Balance" alongside "Minimum Payment Due" → a debt.
+  assert.deepEqual(extractStatementBalance(CREDIT_CARD), {
+    balance: 249.24,
+    kind: "debt",
+    label: "Credit Card",
+  });
+  // Nothing to suggest when there's no summary line.
+  assert.equal(extractStatementBalance("just some text, no balance here"), null);
 });
 
 test("cross-year: a December line on a January statement lands in the prior year", () => {

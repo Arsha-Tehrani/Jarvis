@@ -31,6 +31,9 @@ const FORBIDDEN = [
   "network_log",
   "health_logs",
   "accounts",
+  // Part E: goals folded into the unified habits/Tracker model → legacy,
+  // local-only, no longer synced.
+  "goals",
 ];
 
 test("non-allowlisted tables are rejected by the push endpoint schema", () => {
@@ -81,6 +84,7 @@ function freshDb(): InstanceType<typeof Database> {
   db.exec(`CREATE TABLE habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
     cadence TEXT NOT NULL DEFAULT 'daily', goal INTEGER NOT NULL DEFAULT 1,
+    source TEXT, target REAL,
     ${SYNC_COLS})`);
   db.exec(`CREATE TABLE habit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
