@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SpendChart } from "@/components/spend-chart";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -107,6 +107,47 @@ export function FinanceView() {
     }
   }
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Native file picker → POST /api/finance/upload → files land in
+  // /statements and the same ingest pipeline runs immediately.
+  async function uploadStatements(list: FileList | null) {
+    if (!list || list.length === 0) return;
+    setBusy(true);
+    setError(null);
+    setImportResults(null);
+    try {
+      const form = new FormData();
+      for (const file of Array.from(list)) form.append("files", file);
+      const res = await fetch("/api/finance/upload", { method: "POST", body: form });
+      const body = await res.json();
+      if (!res.ok && !body.saved?.length) {
+        setError(
+          body.error ??
+            body.rejected?.map((r: { name: string; reason: string }) => `${r.name}: ${r.reason}`).join("; ") ??
+            "Upload failed"
+        );
+      }
+      const rejectedLines = (body.rejected ?? []).map(
+        (r: { name: string; reason: string }) => ({
+          file: r.name,
+          imported: 0,
+          categorizedBy: "none",
+          error: r.reason,
+        })
+      );
+      if (body.results || rejectedLines.length) {
+        setImportResults([...(body.results ?? []), ...rejectedLines]);
+      }
+      await load();
+    } catch {
+      setError("Could not reach the API.");
+    } finally {
+      setBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
   async function saveGoal(e: React.FormEvent) {
     e.preventDefault();
     const target = Number(goalTarget);
@@ -199,9 +240,20 @@ export function FinanceView() {
             the Stocks tab. Account numbers are never stored; nothing leaves this
             machine.
           </p>
-          <div className="flex items-center gap-3">
-            <Button onClick={runImport} disabled={busy}>
-              {busy ? "Importing…" : "Import new statements"}
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.pdf"
+              multiple
+              className="hidden"
+              onChange={(e) => void uploadStatements(e.target.files)}
+            />
+            <Button onClick={() => fileInputRef.current?.click()} disabled={busy}>
+              {busy ? "Working…" : "Import new statement…"}
+            </Button>
+            <Button variant="outline" onClick={runImport} disabled={busy}>
+              Scan folder
             </Button>
             <span className="text-muted-foreground">
               {data.statements.length} imported · {data.transactionCount} transactions
