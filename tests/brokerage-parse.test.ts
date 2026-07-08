@@ -5,8 +5,47 @@ import { test } from "node:test";
 import {
   looksLikeBrokerageTable,
   parseBrokerageTable,
+  parseFidelityPdfHoldings,
 } from "../lib/finance/brokerage-parse.ts";
 import { parseCsv } from "../lib/finance/parse.ts";
+
+// Real Fidelity statement holding rows as pdfjs extracts them:
+//   <NAME> (<SYMBOL>) <begin> <qty> <price> <mktval> <cost> <unrealized> <eai|->
+const FIDELITY_HOLDINGS = `
+Symbol/
+CUSIP Description Quantity Price Market Value Cost Basis Unrealized
+MICROSOFT CORP (MSFT) 450.24 2.000 373.0200 746.04 770.47 -24.43 7.28
+ALPHABET INC CAP STK CL A(GOOGL) 760.68 2.000 357.3700 714.74 694.80 19.94 1.76
+TESLA INC COM (TSLA) 217.89 0.500 420.6000 210.30 133.81 76.49 -
+NIKE INC CLASS B COM NPV(NKE) 323.61 7.000 41.0500 287.35 456.40 -169.05 11.48
+(May not reflect all gains and losses due to incomplete cost basis)
+Total Cost Basis does not include the cost basis on core positions.
+`;
+
+test("parseFidelityPdfHoldings: extracts ticker/shares/cost-basis from statement rows", () => {
+  const holdings = parseFidelityPdfHoldings(FIDELITY_HOLDINGS);
+  const by = Object.fromEntries(holdings.map((h) => [h.ticker, h]));
+
+  assert.equal(holdings.length, 4);
+  // qty from the quantity column (not the leading "begin value" column).
+  assert.equal(by.MSFT.shares, 2);
+  assert.equal(by.TSLA.shares, 0.5);
+  assert.equal(by.NKE.shares, 7);
+  // cost basis per share = total cost / shares.
+  assert.equal(by.MSFT.cost_basis, 385.24); // 770.47 / 2
+  assert.equal(by.GOOGL.cost_basis, 347.4); // 694.80 / 2
+  assert.equal(by.NKE.cost_basis, 65.2); // 456.40 / 7
+});
+
+test("parseFidelityPdfHoldings: disclaimer/prose lines are not mistaken for holdings", () => {
+  // No line here satisfies qty*price == market value.
+  const noise = `
+(May not reflect all gains and losses due to incomplete cost basis)
+Your Account Value: $19,214.47
+Beginning Account Value $19,091.87 $16,206.74
+`;
+  assert.deepEqual(parseFidelityPdfHoldings(noise), []);
+});
 
 const sampleTable = parseCsv(
   fs.readFileSync(

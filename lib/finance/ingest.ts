@@ -6,11 +6,15 @@ import {
   looksLikeBrokerageCsv,
   parseBrokerageCsv,
 } from "@/lib/finance/brokerage";
+import { parseFidelityPdfHoldings } from "@/lib/finance/brokerage-parse";
 import { categorizeTransactions } from "@/lib/finance/categorize";
 import {
   BrokerageStatementError,
+  extractPdfText,
+  inferPeriodEnd,
+  isBrokerageStatement,
   parseCsvStatement,
-  parsePdfStatement,
+  parsePdfText,
   type ParsedTransaction,
 } from "@/lib/finance/parse";
 
@@ -77,19 +81,14 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
 
   let rows: ParsedTransaction[];
   if (/\.pdf$/i.test(file)) {
-    try {
-      rows = await parsePdfStatement(fs.readFileSync(fullPath));
-    } catch (err) {
-      if (err instanceof BrokerageStatementError) {
-        // Record it so it isn't retried every scan — a brokerage PDF will
-        // never yield checking transactions. The message steers to CSV.
-        getDb()
-          .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
-          .run(new Date().toISOString().slice(0, 7), file);
-        return { file, imported: 0, categorizedBy: "none", error: err.message };
-      }
-      throw err;
+    const text = await extractPdfText(fs.readFileSync(fullPath));
+    // A brokerage/investment PDF (Fidelity et al.) is holdings, not
+    // transactions: extract the positions table into holdings instead of
+    // mis-parsing it as spending.
+    if (isBrokerageStatement(text)) {
+      return importBrokeragePdf(file, text);
     }
+    rows = parsePdfText(text);
   } else {
     rows = parseCsvStatement(fs.readFileSync(fullPath, "utf8"));
   }
@@ -142,6 +141,29 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
     imported: rows.length,
     categorizedBy: outcome.source,
     llmError: outcome.llmError,
+  };
+}
+
+// Brokerage/investment PDF → holdings upserts (same destination as the CSV
+// path). If the holdings table can't be read, fall back to the CSV-export
+// guidance rather than importing garbage; either way it's recorded so the
+// scan doesn't retry it forever.
+function importBrokeragePdf(file: string, text: string): ImportResult {
+  const holdings = parseFidelityPdfHoldings(text);
+  const { year, month } = inferPeriodEnd(text);
+  const statementMonth = `${year}-${String(month).padStart(2, "0")}`;
+  getDb()
+    .prepare("INSERT INTO statements (month, file_path) VALUES (?, ?)")
+    .run(statementMonth, file);
+  if (holdings.length === 0) {
+    return { file, imported: 0, categorizedBy: "none", error: new BrokerageStatementError().message };
+  }
+  const result = importBrokerageHoldings(holdings, "positions");
+  return {
+    file,
+    imported: result.upserted,
+    categorizedBy: "brokerage positions (PDF)",
+    kind: "brokerage",
   };
 }
 

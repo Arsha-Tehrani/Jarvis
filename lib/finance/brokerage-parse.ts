@@ -188,3 +188,51 @@ function dedupe(holdings: BrokerageHolding[]): BrokerageHolding[] {
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 const round4 = (v: number) => Math.round(v * 10000) / 10000;
+
+// ---- Fidelity brokerage/investment PDF holdings ----
+//
+// Fidelity statements list holdings one per line as:
+//   <NAME> (<SYMBOL>) <begin> <qty> <price> <mkt value> <cost> <unrealized> <eai|->
+// e.g.  MICROSOFT CORP (MSFT) 450.24 2.000 373.0200 746.04 770.47 -24.43 7.28
+// The leading columns vary, so instead of trusting positions we locate the
+// qty/price/value/cost run by arithmetic: qty*price must equal the market
+// value and value-cost must equal the unrealized gain. That self-check makes
+// false matches (disclaimer text, transaction lines) essentially impossible.
+
+// Ticker in parentheses followed by only numeric columns to end of line.
+const HOLDING_LINE = /\(([A-Z][A-Z0-9.\-]{0,9})\)\s+((?:-?[\d,]+\.\d+\s+)*-?[\d,]+\.\d+)\s*-?\s*$/;
+
+function approx(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(0.02, Math.abs(b) * 0.002);
+}
+
+function parseHoldingLine(line: string): BrokerageHolding | null {
+  const m = HOLDING_LINE.exec(line.trim());
+  if (!m) return null;
+  const ticker = cleanTicker(m[1]);
+  if (!ticker) return null;
+  const nums = (m[2].match(/-?\d[\d,]*\.\d+/g) ?? []).map((s) => Number(s.replace(/,/g, "")));
+
+  // Slide a window until qty*price == market value (and, when present,
+  // value - cost == unrealized). That pins the four columns unambiguously.
+  for (let i = 0; i + 3 < nums.length; i++) {
+    const qty = nums[i];
+    const price = nums[i + 1];
+    const value = nums[i + 2];
+    const cost = nums[i + 3];
+    if (qty <= 0 || price <= 0 || value <= 0 || cost < 0) continue;
+    if (!approx(qty * price, value)) continue;
+    if (i + 4 < nums.length && !approx(value - cost, nums[i + 4])) continue;
+    return { ticker, shares: round4(qty), cost_basis: round2(cost / qty) };
+  }
+  return null;
+}
+
+export function parseFidelityPdfHoldings(text: string): BrokerageHolding[] {
+  const holdings: BrokerageHolding[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const h = parseHoldingLine(line);
+    if (h) holdings.push(h);
+  }
+  return dedupe(holdings);
+}

@@ -98,17 +98,19 @@ export function isBrokerageStatement(text: string): boolean {
   );
 }
 
-export async function parsePdfStatement(buffer: Buffer): Promise<ParsedTransaction[]> {
+export async function extractPdfText(buffer: Buffer): Promise<string> {
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
-  let text: string;
   try {
     const result = await parser.getText();
-    text = result.text;
+    return result.text;
   } finally {
     await parser.destroy();
   }
-  return parsePdfText(text);
+}
+
+export async function parsePdfStatement(buffer: Buffer): Promise<ParsedTransaction[]> {
+  return parsePdfText(await extractPdfText(buffer));
 }
 
 const MONTHS: Record<string, number> = {
