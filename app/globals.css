@@ -156,3 +156,21 @@
     cursor: not-allowed;
   }
 }
+
+/* Mic button (Ask Jarvis card): make "you can click this" unmistakable.
+   Idle state is the neutral outline Button variant — shadcn already swaps
+   in the indigo-tinted --accent background on hover, so the work here is
+   (a) easing that swap instead of snapping, and (b) hue-rotating the tint
+   slightly toward violet. The same rule covers the recording state: the
+   destructive red warms toward orange on hover. Filter is cheap (GPU
+   compositing), no layout impact. */
+.mic-btn {
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    filter 200ms ease;
+}
+
+.mic-btn:hover:not(:disabled) {
+  filter: hue-rotate(18deg) saturate(1.15);
+}

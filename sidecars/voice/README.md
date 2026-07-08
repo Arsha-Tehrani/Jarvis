@@ -41,7 +41,7 @@ first transcription.
 | Hardware | Path |
 |---|---|
 | NVIDIA GPU | CUDA + float16 (needs CUDA 12 + cuDNN 9 runtimes installed) |
-| AMD GPU (e.g. RX 6700 XT) | **CPU int8.** faster-whisper/CTranslate2 has no clean native AMD path — CUDA-only upstream; ROCm exists only as experimental Linux community builds. The startup log says so explicitly. |
+| AMD GPU (e.g. RX 6700 XT) | **CPU int8 by default.** faster-whisper/CTranslate2 has no clean native AMD path — CUDA-only upstream; ROCm exists only as experimental Linux community builds. The startup log says so explicitly. **To use the GPU anyway**, set `WHISPER_BACKEND=onnx`: an ONNX Runtime backend (`voice/onnx_transcriber.py`) that picks CUDA → DirectML → CPU-int8 dynamically, and DirectML runs on any DX12 GPU. Install `onnxruntime-directml` + `optimum[exporters]` + `transformers` + CPU `torch` (see requirements.txt's optional block). |
 | Apple Silicon (M-series) | CPU int8 via Accelerate/NEON — the runtime has no Metal GPU offload (use whisper.cpp if that matters more). |
 | Anything else | CPU int8 — the reliable default. |
 

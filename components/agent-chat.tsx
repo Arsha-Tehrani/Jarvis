@@ -255,7 +255,7 @@ export function AgentChat() {
             onClick={() => void toggleRecording()}
             disabled={busy || mic === "transcribing"}
             aria-label={mic === "recording" ? "Stop recording" : "Record a voice message"}
-            className={mic === "recording" ? "animate-pulse" : undefined}
+            className={mic === "recording" ? "mic-btn animate-pulse" : "mic-btn"}
           >
             {mic === "recording" ? <Square className="size-4" /> : <Mic className="size-4" />}
           </Button>

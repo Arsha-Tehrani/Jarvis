@@ -10,3 +10,14 @@ pytest==9.1.1
 python-multipart==0.0.32
 sounddevice==0.5.5
 uvicorn[standard]==0.50.0
+
+# --- Optional: WHISPER_BACKEND=onnx (DirectML path for AMD GPUs on Windows;
+# see voice/onnx_transcriber.py). Install ONE onnxruntime flavor — they
+# conflict in the same venv — plus the export stack. Pin at install time.
+#   onnxruntime-directml   # Windows AMD/Intel GPU (DmlExecutionProvider)
+#   onnxruntime-gpu        # NVIDIA (CUDAExecutionProvider)
+#   onnxruntime            # CPU-only build
+#   optimum[exporters]     # ONNX export + ORTModelForSpeechSeq2Seq
+#   transformers           # WhisperProcessor (tokenizer + feature extractor)
+#   torch                  # tensor frontend only; CPU wheel is fine:
+#                          #   pip install torch --index-url https://download.pytorch.org/whl/cpu

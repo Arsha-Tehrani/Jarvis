@@ -42,3 +42,19 @@ class FasterWhisperTranscriber:
         """audio: float32 mono at 16 kHz in [-1, 1]."""
         segments, _info = self._load().transcribe(audio, beam_size=5, vad_filter=True)
         return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def make_transcriber() -> Transcriber:
+    """Backend switch shared by the HTTP server and push-to-talk. The onnx
+    backend logs its own provider ladder; faster-whisper logs via detect()."""
+    if config.WHISPER_BACKEND == "onnx":
+        from .onnx_transcriber import OnnxWhisperTranscriber
+
+        return OnnxWhisperTranscriber()
+    choice = detect()
+    print(f"[voice] {choice.reason}")
+    print(
+        f"[voice] model={config.WHISPER_MODEL} "
+        f"device={choice.device} compute={choice.compute_type}"
+    )
+    return FasterWhisperTranscriber(choice=choice)

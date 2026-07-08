@@ -20,7 +20,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile
 
 from . import config
-from .transcriber import FasterWhisperTranscriber, Transcriber
+from .transcriber import Transcriber, make_transcriber
 
 app = FastAPI(title="Jarvis voice sidecar")
 
@@ -34,7 +34,7 @@ def get_transcriber() -> Transcriber:
     """Lazy singleton; tests swap in a stub via set_transcriber."""
     global _transcriber
     if _transcriber is None:
-        _transcriber = FasterWhisperTranscriber()
+        _transcriber = make_transcriber()
     return _transcriber
 
 
