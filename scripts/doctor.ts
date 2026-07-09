@@ -136,7 +136,11 @@ async function checkSidecars(): Promise<void> {
       label: "Macro (nutrition)",
       healthUrl: `${env.MACRO_SIDECAR_URL ?? "http://localhost:8017"}/health`,
     },
-    { dir: "voice", label: "Voice" },
+    {
+      dir: "voice",
+      label: "Voice",
+      healthUrl: `${env.VOICE_SIDECAR_URL ?? "http://localhost:8018"}/health`,
+    },
   ];
 
   for (const { dir, label, healthUrl } of sidecars) {

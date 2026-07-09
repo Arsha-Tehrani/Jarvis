@@ -36,7 +36,7 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 - **Natural-language agent** — type (or speak) "remind me to call the bank Friday" or "I ate two eggs and toast" and the agent calls the right tool. Every tool call is zod-validated before it executes; money/destructive actions require explicit confirmation; every turn is logged.
 - **Conversation memory** — each turn sees a rolling window of the recent conversation (from the `agent_log` table), so "make that high priority" works without re-explaining what "that" is.
 - **Undo** — "undo that" invokes the `revert_action` tool, which maps a logged action (added task, logged workout, logged meal, …) to its inverse database operation and asks for confirmation before running it.
-- **Voice input** — two paths, one local Whisper model: a 🎤 button on the Ask Jarvis card records in the browser and auto-sends the transcript through the agent, and a push-to-talk sidecar (hold F9, talk, release) does the same from anywhere on the desktop. Either way, "remind me to call the bank Friday" spoken aloud is routed by the agent to the right section, exactly like typing it.
+- **Voice input** — two paths, one local Whisper model: a 🎤 button on the Ask Jarvis card records in the browser and auto-sends the transcript through the agent (with a Ready/Starting/Down/Needs-setup indicator, and auto-start on click if the sidecar's down), and a push-to-talk sidecar (hold F9, talk, release) does the same from anywhere on the desktop. Either way, "remind me to call the bank Friday" spoken aloud is routed by the agent to the right section, exactly like typing it.
 
 ### Life tracking
 
@@ -68,13 +68,13 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 - **Mail triage** — read-only Gmail polling (multi-account) with LLM triage into categories; drafts are created only on explicit click, and nothing can ever send mail.
 - **Slack check-in & morning brief** — a morning DM asking about sleep/gym/LeetCode, and a daily brief of events, tasks, follow-ups, unread mail, budget overages, and goals at risk.
 - **Weekly digest** — Sunday-night life + finance summary appended to your Obsidian vault.
-- **System status** — the `/status` page probes every optional integration (Ollama, sidecars, ActivityWatch, vault, Google Calendar/Gmail/Drive, Slack, LeetCode, quote APIs) and shows ok / degraded / down / not-configured per check; a compact "10/12 healthy" card sits on the Today view. Backed by `GET /api/status` with a ~20s server-side cache.
+- **System status** — the `/status` page probes every optional integration (Ollama, sidecars, ActivityWatch, vault, Google Calendar/Gmail/Drive, Slack, LeetCode, quote APIs) and shows ok / degraded / down / not-configured per check; a compact "10/13 healthy" card sits on the Today view. Backed by `GET /api/status` with a ~20s server-side cache.
 - **Network audit log** — the `/network-log` page lists every outbound network call Jarvis has made: destination host, which feature triggered it, outcome, and latency — **never** request contents, URLs, or headers. Calls to localhost (Ollama, sidecars) don't leave the machine and aren't logged. This makes "sensitive data never leaves the laptop except calls you configured" provable rather than asserted.
 - **System monitor** — a live dashboard card with CPU load, memory, and disk usage for the machine Jarvis is running on.
 - **Screen time** — total active time today and top apps/sites, read from a local ActivityWatch instance.
 - **PWA & remote access** — installable on a phone (manifest + service worker), with optional bearer-token auth (`JARVIS_AUTH_TOKEN`) so the app can be served over Tailscale or a local mesh without being wide open.
 - **Device sync (optional)** — run Jarvis on two machines and keep the derived tracker tables (tasks, gym, unified habits/trackers, LeetCode stats, net-worth snapshots) in sync through one always-on "host" over Tailscale. Strictly allowlist-based: finance transactions, mail, notes, and OAuth tokens never leave the machine they live on, by construction.
-- **Sidecar setup & start/stop** — the `/status` page has Set up / Start / Stop buttons and a live log panel for the macro and textbook-RAG sidecars; "Set up" creates the venv and installs requirements right from the browser, so a from-scratch install or a missing-dependency crash is recoverable with no terminal at all. ActivityWatch gets the same card with best-effort launch/quit (it's a third-party tray app — Jarvis detects it, points at the installer when missing, and never pretends a quit landed when it didn't).
+- **Sidecar setup & start/stop** — the `/status` page has Set up / Start / Stop buttons and a live log panel for the macro, textbook-RAG, and voice sidecars; "Set up" creates the venv and installs requirements right from the browser, so a from-scratch install or a missing-dependency crash is recoverable with no terminal at all. Adding a sidecar to this system is one registry entry (`lib/sidecars/registry.ts`) — the status probe, the `/status` card, and the Start/Stop/Set-up/logs API routes are all generic over whatever's registered there. ActivityWatch gets the same card with best-effort launch/quit (it's a third-party tray app — Jarvis detects it, points at the installer when missing, and never pretends a quit landed when it didn't).
 - **Backups & restore** — one command exports every table to JSON (OAuth tokens deliberately excluded); a matching restore command loads an export back into `jarvis.db`. Never locked in.
 
 ## Architecture at a glance
@@ -83,8 +83,8 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 Next.js app (localhost:3000)          Python sidecars (optional)
 ├─ UI: dashboard pages                ├─ textbook-rag  :8016  (PDF → RAG → cited answers)
 ├─ API routes under /app/api          ├─ macro         :8017  (food photo/text → macros)
-├─ lib/db.ts      SQLite (jarvis.db)  └─ voice          —     (push-to-talk → /api/agent)
-├─ lib/llm.ts     Ollama | Anthropic
+├─ lib/db.ts      SQLite (jarvis.db)  ├─ voice         :8018  (mic → transcript; also
+├─ lib/llm.ts     Ollama | Anthropic  │                        push-to-talk → /api/agent)
 ├─ lib/tools.ts   agent tool registry          Ollama (localhost:11434)
 └─ lib/cron.ts    scheduler + catch-up         └─ chat, vision, embedding models
 ```
@@ -302,7 +302,7 @@ Sync state is written only after a successful ingest — if the sidecar or Ollam
 
 ### System status & network audit
 
-`lib/status.ts` runs twelve independent probes (each try/caught — one failing integration never hides another) and caches the result ~20s. `/status` polls it every 30s with a manual-refresh button and also hosts the agent cost/latency panel, the sidecar Start/Stop controls, and the Sync section; the Today view shows the compact summary card. Probes are deliberately cheap: presence checks for rate-limited APIs (a missing Finnhub key is "unconfigured", a live quote failure surfaces in the Stocks UI), the last stored cron result for LeetCode, and one small request where liveness matters (Ollama, sidecars, Slack `auth.test`, Drive scope).
+`lib/status.ts` runs thirteen independent probes (each try/caught — one failing integration never hides another) and caches the result ~20s. `/status` polls it every 30s with a manual-refresh button and also hosts the agent cost/latency panel, the sidecar Start/Stop controls, and the Sync section; the Today view shows the compact summary card. Probes are deliberately cheap: presence checks for rate-limited APIs (a missing Finnhub key is "unconfigured", a live quote failure surfaces in the Stocks UI), the last stored cron result for LeetCode, and one small request where liveness matters (Ollama, sidecars, Slack `auth.test`, Drive scope).
 
 `lib/network-log.ts` wraps the handful of genuinely outbound `fetch` call sites in `loggedFetch`, which records **metadata only** — host, feature, purpose, outcome, latency — to the `network_log` table (30-day / 10k-row retention, pruned amortized on write). Bodies, query params, and headers are never stored, so the audit log can't become the leak it exists to rule out. `/network-log` renders it filterable by feature and day. `npm run doctor` is the CLI cousin for first-time setup.
 
@@ -334,7 +334,8 @@ The host needs no push worker for its own writes: clients pulling from it read i
 
 Two entry points share one lazily-loaded local **faster-whisper `large-v3-turbo`** model:
 
-- **Mic button** — the 🎤 on the Ask Jarvis card records with the browser's MediaRecorder, POSTs the clip to `/api/transcribe`, which proxies it to the sidecar's HTTP server (`python -m voice.server`, `:8018`, `POST /transcribe`). The transcript is auto-sent through the agent — same routing as typing. Sidecar down, mic denied, or undecodable audio all surface as clear chat errors, never crashes.
+- **Mic button** — the 🎤 on the Ask Jarvis card records with the browser's MediaRecorder, POSTs the clip to `/api/transcribe`, which proxies it to the sidecar's HTTP server (`python -m voice.server`, `:8018`, `POST /transcribe`). The transcript is auto-sent through the agent — same routing as typing. A small indicator next to the button (Ready / Starting… / Down / Needs setup) reflects the sidecar's real state, reusing the same `/api/sidecars` data the `/status` page's card shows — no second probe. Clicking the mic while it reads **Down** auto-starts the sidecar (the same action `/status`'s Start button uses) and proceeds with recording once it's ready, instead of surfacing a raw "sidecar not running, start it yourself" error. **Needs setup** (no venv, or missing packages) shows the specific reason and a direct link to `/status`'s Set-up flow rather than a terminal command. Mic denied or undecodable audio still surface as clear chat errors, never crashes.
+- **Voice sidecar is one entry in the shared sidecar registry** (`lib/sidecars/registry.ts`) — the same Set up / Start / Stop / logs machinery, `/status` card, and health probe that the macro and textbook-RAG sidecars already use, all generic over whatever's registered there.
 - **Push-to-talk** — `python -m voice.push_to_talk`: hold **F9** (configurable via `PTT_KEY`) to record 16 kHz mono audio, release to transcribe, then POST the transcript to `/api/agent` exactly as the chat box does — printing the transcript and the agent's reply, including pending-confirmation notices. The compute path is a pure, unit-tested decision matrix over probed hardware: NVIDIA → CUDA fp16; AMD → CPU int8 with an explicit log that faster-whisper has no clean native AMD GPU path; Apple Silicon → CPU int8; everything overridable with `WHISPER_DEVICE` / `WHISPER_COMPUTE` / `WHISPER_MODEL`.
 
 ### PWA & remote access
