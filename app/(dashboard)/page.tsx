@@ -25,6 +25,7 @@ import { birthdaysThisWeek, overduePeople } from "@/lib/people";
 import { currentReads } from "@/lib/reading";
 import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
+import { computePortfolioTotal } from "@/lib/stocks/portfolio-total";
 import { AgentChat } from "@/components/agent-chat";
 import { MetricCard } from "@/components/metric-card";
 import { RingGauge } from "@/components/ring-gauge";
@@ -200,29 +201,25 @@ export default function TodayPage() {
   const netWorth = hasNetWorthData ? computeNetWorth() : null;
   const nwDelta = hasNetWorthData ? weeklyDelta() : null;
 
-  // Portfolio from the quote cache only (no network in render)
+  // Portfolio from the quote cache only (no network in render). Same
+  // computePortfolioTotal as /api/stocks and lib/networth.ts, so a holding
+  // with no live quote (e.g. SPAXX) falls back to cost basis here too
+  // instead of being silently dropped from the sum — that drop was the
+  // actual reason this card used to under-count vs. the Stocks page total.
   const holdings = db
-    .prepare("SELECT ticker, shares FROM holdings")
-    .all() as { ticker: string; shares: number }[];
-  let portfolioValue: number | null = null;
-  let dayMove: number | null = null;
-  if (holdings.length > 0) {
-    let value = 0;
-    let move = 0;
-    let covered = false;
-    for (const h of holdings) {
-      const q = getCachedQuote(h.ticker);
-      if (q) {
-        value += q.price * h.shares;
-        move += q.change * h.shares;
-        covered = true;
-      }
-    }
-    if (covered) {
-      portfolioValue = value;
-      dayMove = move;
-    }
-  }
+    .prepare("SELECT ticker, shares, cost_basis FROM holdings")
+    .all() as { ticker: string; shares: number; cost_basis: number }[];
+  const portfolio = computePortfolioTotal(holdings, getCachedQuote);
+  const portfolioValue = portfolio.pricedBy === "none" ? null : portfolio.totalValue;
+  // Distinct from portfolioValue: day move is only MEANINGFUL when at least
+  // one holding has a live quote. All-cost-basis (pricedBy "cost-basis") has
+  // a perfectly good total but a genuinely unknown day move — null here (not
+  // 0) keeps the "quotes not loaded yet" sub-label honest instead of
+  // claiming a $0 move that was never actually measured.
+  const dayMove =
+    portfolio.pricedBy === "none" || portfolio.pricedBy === "cost-basis"
+      ? null
+      : portfolio.totalDayMove;
 
   return (
     <div className="flex flex-col gap-6">

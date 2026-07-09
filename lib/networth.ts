@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { getCachedQuote } from "@/lib/stocks";
+import { computePortfolioTotal } from "@/lib/stocks/portfolio-total";
 import { queueSyncPush } from "@/lib/sync/client";
 
 // Net worth = manual account balances (debt subtracts) + holdings value.
@@ -89,23 +90,20 @@ export function computeNetWorth(): NetWorthNow {
   const holdings = db
     .prepare("SELECT ticker, shares, cost_basis FROM holdings")
     .all() as { ticker: string; shares: number; cost_basis: number }[];
-  let holdingsValue = 0;
-  let anyMarket = false;
-  for (const h of holdings) {
-    const q = getCachedQuote(h.ticker);
-    if (q) {
-      holdingsValue += q.price * h.shares;
-      anyMarket = true;
-    } else {
-      holdingsValue += h.cost_basis * h.shares;
-    }
-  }
+  // Same computePortfolioTotal the Today card and /api/stocks use — see
+  // lib/stocks/portfolio-total.ts for why three independent
+  // implementations of this fallback used to drift apart.
+  const portfolio = computePortfolioTotal(holdings, getCachedQuote);
+  const holdingsValue = portfolio.totalValue;
 
   return {
     accountsTotal,
     holdingsValue,
-    holdingsPriced:
-      holdings.length === 0 ? "none" : anyMarket ? "market" : "cost-basis",
+    // "mixed" (some holdings live, some cost-basis) reads as "market" here,
+    // same as before this was unified — this field only gates one UI
+    // caveat ("at cost basis — quotes not loaded"), which shouldn't fire
+    // just because ONE holding out of many lacks a quote.
+    holdingsPriced: portfolio.pricedBy === "mixed" ? "market" : portfolio.pricedBy,
     total: accountsTotal + holdingsValue,
   };
 }
