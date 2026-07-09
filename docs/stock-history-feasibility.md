@@ -94,3 +94,25 @@ Confirm live, with a real `ALPHAVANTAGE_API_KEY`, which of
 (not a premium-error body) — this is a live-API check the project's own
 testing philosophy defers (never tested live), so it's called out explicitly
 here rather than guessed at in code.
+
+## Implementation status (Phase 6)
+
+Built: `lib/stocks/history-core.ts` (pure caching-decision + response
+parsing, unit-tested), `lib/stocks/history.ts` (DB + network glue),
+`stock_history_cache` table, `GET /api/stocks/history?ticker=`, and a
+click-to-chart Recharts dialog on the Stocks page.
+
+**This box has no `ALPHAVANTAGE_API_KEY` configured** (confirmed by
+inspecting `.env.local` without printing the value) — only `FINNHUB_API_KEY`
+is set, and Finnhub can't serve history at all (confirmed above). That means
+the live-key question above is **still unresolved** and could not be
+verified in this run: there is no way to know, on this machine, whether
+`TIME_SERIES_DAILY_ADJUSTED` (tried first) actually returns data or a
+premium-gated error until a real Alpha Vantage key is added. What *was*
+verified live against the running app: the not-configured state returns a
+calm 200 with a clear message (never a crash); a same-day cache hit serves
+without touching the network or the missing-key check at all; a stale
+(prior-day) cache entry correctly triggers a fresh-fetch attempt. The one
+thing that could not be exercised is an actual Alpha Vantage response body —
+that's a deferred live-verification item, the same category as this
+project's "LLM calls are never tested live" rule.

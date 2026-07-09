@@ -183,6 +183,42 @@ phases land; see the phase list below for what's done so far.
   - 3 new tests in `tests/portfolio-total.test.ts`: proportional split
     across two priced holdings, the SPAXX-cost-basis-fallback case with a
     sum-to-~100% assertion, and null-not-NaN when the total is 0.
+- **Phase 6: click-to-chart price history.** Phase 0 said yes-with-caching,
+  Alpha Vantage only. Built `lib/stocks/history-core.ts` (pure: caching
+  decision + Alpha Vantage response parsing, unit-tested) and
+  `lib/stocks/history.ts` (DB + network glue — same pure/impure split as
+  `lib/sync/core.ts`/`client.ts`), a new `stock_history_cache` table
+  (one JSON blob per ticker, replaced wholesale, keyed by `fetched_date` so
+  a ticker fetches **at most once per calendar day**), `GET
+  /api/stocks/history?ticker=`, and a click-a-ticker Recharts line-chart
+  dialog on the Stocks page.
+  - **Genuinely unresolved, not just untested**: this box has **no
+    `ALPHAVANTAGE_API_KEY` configured** (checked `.env.local` without
+    printing it — only `FINNHUB_API_KEY` is set). Phase 0 flagged that
+    public reports disagree on whether `TIME_SERIES_DAILY` or
+    `TIME_SERIES_DAILY_ADJUSTED` is the free one; without a real key,
+    **that could not be settled in this run** and stays a deferred
+    live-verification item — same category as this project's "LLM calls
+    are never tested live" rule. The code tries
+    `TIME_SERIES_DAILY_ADJUSTED` first and treats a premium-gated response
+    the same as a rate limit (calm degraded state, not a crash) regardless
+    of which one turns out to be free.
+  - What **was** live-verified against the running app, using synthetic
+    cache rows (inserted directly, cleaned up after): the not-configured
+    state returns a calm 200 with a clear message; a same-day cache hit
+    serves the cached series without touching the network or the
+    missing-key check at all; a stale (2026-07-01) cache row correctly
+    triggers a fresh-fetch attempt (which then hit the same
+    not-configured path, proving `shouldFetch`'s "different day → fetch"
+    branch is wired end-to-end, not just unit-tested in isolation).
+  - 8 new tests in `tests/stock-history.test.ts`: the 3 caching-decision
+    cases, plus 5 `parseAlphaVantageDaily` cases (valid response sorted
+    oldest-first, premium-gated `Information` body, rate-limited `Note`
+    body, unknown-symbol empty body, and a non-numeric close dropped
+    instead of NaN-poisoning the series).
+  - **Next live session, first thing**: add a real `ALPHAVANTAGE_API_KEY`
+    and click a ticker — confirm which endpoint actually returns data (not
+    a premium-error body) and that the chart renders real prices.
 
 ## Phase 21 (2026-07-06, third run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
 
