@@ -69,3 +69,45 @@ test("ticker lookup is case-insensitive (quote map keyed by uppercase)", () => {
   assert.equal(result.holdings[0].priced, true);
   assert.equal(result.totalValue, 420);
 });
+
+// Phase 5: % of portfolio per holding, using this module's own total as the
+// denominator so it can never drift from the total shown elsewhere.
+
+test("percentOfPortfolio: two holdings split proportionally to their value", () => {
+  const getQuote: QuoteLookup = (t) =>
+    t === "VOO" ? { price: 300, change: 0, changePercent: 0 } : { price: 100, change: 0, changePercent: 0 };
+  const result = computePortfolioTotal(
+    [
+      { ticker: "VOO", shares: 10, cost_basis: 250 }, // value 3000
+      { ticker: "AAPL", shares: 10, cost_basis: 100 }, // value 1000
+    ],
+    getQuote
+  );
+  assert.equal(result.holdings[0].percentOfPortfolio, 75);
+  assert.equal(result.holdings[1].percentOfPortfolio, 25);
+});
+
+test("percentOfPortfolio includes the SPAXX cost-basis-fallback case, and percentages sum to ~100%", () => {
+  const getQuote: QuoteLookup = (t) =>
+    t === "VOO" ? { price: 420, change: 0, changePercent: 0 } : undefined; // SPAXX unpriced
+  const result = computePortfolioTotal(
+    [
+      { ticker: "VOO", shares: 10, cost_basis: 400 }, // value 4200
+      { ticker: "SPAXX", shares: 231.47, cost_basis: 1 }, // value 231.47, cost-basis fallback
+    ],
+    getQuote
+  );
+  const sum = result.holdings.reduce((s, h) => s + (h.percentOfPortfolio ?? 0), 0);
+  assert.ok(Math.abs(sum - 100) < 1e-9, `percentages summed to ${sum}, expected ~100`);
+  // SPAXX still gets a real percentage despite being cost-basis-priced, not
+  // null or dropped — same "never drop an unpriced holding" fix as the total.
+  assert.ok(result.holdings[1].percentOfPortfolio! > 0);
+});
+
+test("percentOfPortfolio is null (not NaN/Infinity) when the total is 0", () => {
+  const result = computePortfolioTotal(
+    [{ ticker: "ZERO", shares: 10, cost_basis: 0 }],
+    () => undefined
+  );
+  assert.equal(result.holdings[0].percentOfPortfolio, null);
+});
