@@ -2,26 +2,34 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Mic, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { deriveVoiceIndicator, type VoiceIndicatorState } from "@/lib/sidecars/voice-indicator";
 
 type PendingCall = { name: string; args: unknown; description: string };
 
 type Entry =
   | { kind: "user"; text: string }
   | { kind: "agent"; text: string }
-  | { kind: "error"; text: string }
+  // linkHref/linkLabel: e.g. pointing at /status's Set-up flow when the
+  // voice sidecar needs setup — never just the raw terminal-command message.
+  | { kind: "error"; text: string; linkHref?: string; linkLabel?: string }
   | { kind: "pending"; originalText: string; calls: PendingCall[]; resolved?: string };
 
-type MicState = "idle" | "recording" | "transcribing";
+type MicState = "idle" | "starting-sidecar" | "recording" | "transcribing";
+
+const VOICE_POLL_MS = 10_000;
+const VOICE_START_TIMEOUT_MS = 20_000;
 
 export function AgentChat() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [mic, setMic] = useState<MicState>("idle");
+  const [voiceState, setVoiceState] = useState<VoiceIndicatorState>("needs-setup");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const router = useRouter();
 
@@ -32,13 +40,54 @@ export function AgentChat() {
     };
   }, []);
 
-  function pushError(text: string) {
-    setEntries((prev) => [...prev, { kind: "error", text }]);
+  // Reuses the exact same /api/sidecars data the /status page's voice card
+  // already shows — no second probe, no bespoke polling mechanism.
+  async function refreshVoiceState(): Promise<VoiceIndicatorState> {
+    try {
+      const res = await fetch("/api/sidecars");
+      const data = await res.json();
+      const voice = (data.sidecars as Array<{ id: string }> | undefined)?.find(
+        (s) => s.id === "voice-sidecar"
+      );
+      const next = deriveVoiceIndicator(voice as Parameters<typeof deriveVoiceIndicator>[0]);
+      setVoiceState(next);
+      return next;
+    } catch {
+      setVoiceState("needs-setup");
+      return "needs-setup";
+    }
+  }
+
+  useEffect(() => {
+    void refreshVoiceState();
+    const id = setInterval(() => void refreshVoiceState(), VOICE_POLL_MS);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function pushError(text: string, link?: { href: string; label: string }) {
+    setEntries((prev) => [
+      ...prev,
+      { kind: "error", text, linkHref: link?.href, linkLabel: link?.label },
+    ]);
+  }
+
+  async function waitForVoiceReady(timeoutMs: number): Promise<VoiceIndicatorState> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const state = await refreshVoiceState();
+      if (state !== "starting" && state !== "down") return state;
+      if (Date.now() >= deadline) return state;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
   }
 
   // Record → /api/transcribe (voice sidecar) → the transcript goes through
   // send(), i.e. the exact same agent path as typing. Mic/sidecar problems
-  // surface as chat errors, never crashes.
+  // surface as chat errors, never crashes. If the sidecar is down but its
+  // venv is ready, this auto-starts it (same action the /status card's
+  // Start button uses) and proceeds once ready, rather than making the user
+  // leave the chat to click Start themselves.
   async function toggleRecording() {
     if (mic === "recording") {
       recorderRef.current?.stop(); // onstop handles the rest
@@ -46,11 +95,51 @@ export function AgentChat() {
     }
     if (mic !== "idle" || busy) return;
 
+    if (voiceState === "needs-setup") {
+      pushError(
+        "Voice sidecar isn't set up yet — Set up creates the venv and installs requirements right from the browser.",
+        { href: "/status", label: "Go to Status → Set up" }
+      );
+      return;
+    }
+
+    if (voiceState === "down") {
+      setMic("starting-sidecar");
+      const startRes = await fetch("/api/sidecars/voice-sidecar/start", { method: "POST" }).catch(
+        () => null
+      );
+      if (!startRes || !startRes.ok) {
+        const body = await startRes?.json().catch(() => ({}));
+        pushError(
+          (body as { error?: string })?.error ??
+            "Could not start the voice sidecar — check /status for details."
+        );
+        setMic("idle");
+        return;
+      }
+      const finalState = await waitForVoiceReady(VOICE_START_TIMEOUT_MS);
+      if (finalState !== "ready") {
+        pushError(
+          finalState === "needs-setup"
+            ? "Voice sidecar needs setup."
+            : "Voice sidecar didn't become ready in time — check its log panel for the reason.",
+          { href: "/status", label: "Go to Status" }
+        );
+        setMic("idle");
+        return;
+      }
+    }
+
+    await startRecording();
+  }
+
+  async function startRecording() {
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
       pushError("Microphone unavailable — check the browser's mic permission for this site.");
+      setMic("idle");
       return;
     }
     const mimeType = ["audio/webm", "audio/mp4", ""].find(
@@ -226,6 +315,14 @@ export function AgentChat() {
                 >
                   {entry.kind === "user" ? "You: " : entry.kind === "error" ? "Error: " : "Jarvis: "}
                   {entry.text}
+                  {entry.kind === "error" && entry.linkHref && (
+                    <>
+                      {" "}
+                      <Link href={entry.linkHref} className="underline">
+                        {entry.linkLabel ?? entry.linkHref}
+                      </Link>
+                    </>
+                  )}
                 </p>
               );
             })}
@@ -244,26 +341,54 @@ export function AgentChat() {
             placeholder={
               mic === "recording"
                 ? "Listening… click ■ when done"
-                : 'Try: "add a task to review my budget Friday"'
+                : mic === "starting-sidecar"
+                  ? "Starting voice service…"
+                  : 'Try: "add a task to review my budget Friday"'
             }
             disabled={busy || mic !== "idle"}
           />
-          <Button
-            type="button"
-            variant={mic === "recording" ? "destructive" : "outline"}
-            size="icon"
-            onClick={() => void toggleRecording()}
-            disabled={busy || mic === "transcribing"}
-            aria-label={mic === "recording" ? "Stop recording" : "Record a voice message"}
-            className={mic === "recording" ? "mic-btn animate-pulse" : "mic-btn"}
-          >
-            {mic === "recording" ? <Square className="size-4" /> : <Mic className="size-4" />}
-          </Button>
+          <div className="flex flex-col items-center gap-0.5">
+            <Button
+              type="button"
+              variant={mic === "recording" ? "destructive" : "outline"}
+              size="icon"
+              onClick={() => void toggleRecording()}
+              disabled={busy || mic === "transcribing" || mic === "starting-sidecar"}
+              aria-label={mic === "recording" ? "Stop recording" : "Record a voice message"}
+              className={mic === "recording" ? "mic-btn animate-pulse" : "mic-btn"}
+            >
+              {mic === "recording" ? <Square className="size-4" /> : <Mic className="size-4" />}
+            </Button>
+            <VoiceIndicatorDot mic={mic} voiceState={voiceState} />
+          </div>
           <Button type="submit" disabled={busy || mic !== "idle" || !input.trim()}>
             {busy || mic === "transcribing" ? "…" : "Send"}
           </Button>
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+// Small Ready/Starting/Down/Needs setup indicator next to the mic button,
+// reflecting the voice sidecar's real state (Phase 5) — reuses
+// deriveVoiceIndicator's four states rather than a separate UI-only enum.
+function VoiceIndicatorDot({ mic, voiceState }: { mic: MicState; voiceState: VoiceIndicatorState }) {
+  const effective = mic === "starting-sidecar" ? "starting" : voiceState;
+  const config: Record<VoiceIndicatorState, { color: string; label: string }> = {
+    ready: { color: "bg-emerald-500", label: "Ready" },
+    starting: { color: "bg-amber-500 animate-pulse", label: "Starting…" },
+    down: { color: "bg-muted-foreground", label: "Down" },
+    "needs-setup": { color: "bg-destructive", label: "Needs setup" },
+  };
+  const { color, label } = config[effective];
+  return (
+    <span
+      className="flex items-center gap-1 text-[10px] text-muted-foreground"
+      title={`Voice sidecar: ${label}`}
+    >
+      <span className={`inline-block size-1.5 rounded-full ${color}`} />
+      {label}
+    </span>
   );
 }

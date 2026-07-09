@@ -16,7 +16,7 @@ import {
   type ProbeResult,
 } from "@/lib/status-core";
 
-// The twelve status-page probes. Every optional integration reports one of
+// The thirteen status-page probes. Every optional integration reports one of
 // ok / degraded / down / unconfigured — unconfigured is a normal state, not
 // an error. Probes are cheap by design: presence checks where a live call
 // would burn a rate limit, one small request where liveness matters. The

@@ -287,7 +287,79 @@ the plan's instruction not to start this phase before those landed.
     not literally interactively clicked in this session for the reason
     above).
 
-## Fix-plan run (complete): stock chart feasibility + 6 finance/stocks fixes
+## Phase 5 (2026-07-09): voice sidecar gets Set up / Start / Stop + a mic-button auto-start
+
+**Bug:** clicking the mic surfaced `Error: Voice sidecar not running at
+http://localhost:8018. Start it: sidecars/voice/.venv/bin/python -m
+voice.server` — a correct diagnosis, but the user had to leave the app and
+open a terminal.
+
+Confirmed first that `voice/server.py` already has everything the existing
+sidecar-management system needs: it's a real long-running HTTP server (not
+the interactive `push_to_talk.py` CLI), started the same way as
+`rag.server`/`macro.server` (`python -m voice.server`), with its own
+`GET /health` returning `{"status","model","loaded"}` on port 8018
+(`VOICE_SIDECAR_URL`). That meant this was almost entirely a **registration**
+task, not new plumbing:
+
+- Added one entry to `lib/sidecars/registry.ts`'s `SIDECARS` array
+  (`id: "voice-sidecar"`, `module: "voice.server"`, port 8018) and widened
+  the `SidecarDef["id"]` union. That's it for the backend — `lib/status.ts`'s
+  `sidecarProbe` already maps generically over `SIDECARS` (now 13 probes,
+  not 12), `components/status-view.tsx`'s `SidecarControls` already renders
+  a card for any check whose `id` matches a sidecar, and
+  `app/api/sidecars/[id]/{start,stop,setup,logs}` already validate `id`
+  against `SIDECAR_IDS` derived from the same registry — confirmed via an
+  Explore-agent read of `status-view.tsx` before touching anything, so no
+  hand-written JSX was needed for the card itself. Also added a `healthUrl`
+  to `scripts/doctor.ts`'s existing (but health-check-less) `voice` entry,
+  for the same "server running or not" line the other two sidecars get.
+- New pure `lib/sidecars/voice-indicator.ts`: `deriveVoiceIndicator(status)`
+  maps `/api/sidecars`' real state (`running`/`starting`/`stopped`/`crashed`/
+  `not-installed` + `readiness`) to one of `ready | starting | down |
+  needs-setup` — the same four states the plan asked for, reusing existing
+  data rather than a second probe.
+- `components/agent-chat.tsx`: polls `/api/sidecars` every 10s (same data
+  `/status`'s card already shows), renders a small colored-dot indicator
+  next to the mic button. Clicking the mic while **down** now calls
+  `POST /api/sidecars/voice-sidecar/start` (the same action the `/status`
+  Start button uses), polls up to 20s for `ready`, then proceeds straight
+  into recording — no second click needed. Clicking while **needs-setup**
+  shows the specific reason plus a clickable `Go to Status → Set up` link
+  (a new optional `linkHref`/`linkLabel` on the chat `Entry` error type) —
+  never the raw terminal-command message the user hit today.
+- 9 new tests in `tests/voice-indicator.test.ts`: all four states from every
+  reachable input combination, including "not-installed with no readiness
+  field" and "running takes priority even if readiness is momentarily
+  absent." `npm test`: 233 passing (up from 224).
+- **Live-verified against the running app, exercising all three real
+  branches** (this box's voice venv already exists, confirmed by
+  `npm run doctor`):
+  1. **Ready path**: started the real sidecar via `/api/sidecars/voice-sidecar/start`
+     (real PID, real port 8018, `curl`'d `/health` directly → real
+     `{"status":"ok","model":"large-v3-turbo","loaded":false}`); confirmed
+     the Ask Jarvis indicator showed a green dot + "Ready".
+  2. **Auto-start path**: stopped it, reloaded (indicator correctly showed
+     "Down"), clicked the mic — confirmed via `/api/sidecars` that the
+     sidecar reached `state: "running"` as a direct result of the click (not
+     pre-started), and the flow proceeded to attempt real microphone
+     recording, which then hit this environment's already-documented
+     limitation (embedded preview browser hard-denies `getUserMedia` — same
+     note as the original voice-bridge HANDOFF entry) with the correct
+     "Microphone unavailable" chat error — proving the auto-start mechanism
+     itself end-to-end, short of the literal audio capture this environment
+     can't do.
+  3. **Needs-setup path**: temporarily renamed `sidecars/voice/.venv` to
+     simulate "no environment," restarted the dev server (readiness has a
+     2-minute cache, keyed off filesystem state at check time), confirmed
+     `/api/sidecars` reported `readiness: "not-set-up"`, the Ask Jarvis card
+     showed "Needs setup", clicking the mic produced the specific message
+     plus a working `Go to Status → Set up` link (verified `href="/status"`
+     directly), and `/status`'s own card showed "Setup needed — no
+     environment found." with a Set-up button instead of Start. **Restored
+     the real venv immediately after** and confirmed via a fresh
+     `npm run doctor` run that it reports "venv ready" again exactly as
+     before — the real setup was untouched by the test.
 
 Six phases plus a research spike, each closed on green `npm test` (169 → 187
 node tests) and `npm run typecheck`; `npm run build` and `npm run doctor`
