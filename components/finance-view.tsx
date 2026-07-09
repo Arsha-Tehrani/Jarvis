@@ -47,6 +47,43 @@ const ACCOUNT_TYPE_LABEL: Record<string, string> = {
   savings: "Savings",
   credit_card: "Credit Card",
 };
+
+type ReanalyzeCounts = { count: number; categories: Record<string, number> };
+type ReanalyzePreview = {
+  statementId: number;
+  file: string;
+  kind: string;
+  accountType?: string;
+  current: ReanalyzeCounts;
+  next: ReanalyzeCounts | { rejected: true; reason: string };
+};
+
+// Before/after summary shown pre-commit, per CLAUDE.md's confirm-gate rule
+// for destructive financial-data writes — never just a bare "are you sure?".
+function ReanalyzeDiff({ preview }: { preview: ReanalyzePreview }) {
+  if ("rejected" in preview.next) {
+    return <p className="text-destructive">{preview.next.reason}</p>;
+  }
+  const unit = preview.kind === "brokerage" ? "holdings" : "transactions";
+  return (
+    <p className="text-muted-foreground">
+      {preview.current.count} → {preview.next.count} {unit}
+      {preview.accountType && ACCOUNT_TYPE_LABEL[preview.accountType]
+        ? ` — ${ACCOUNT_TYPE_LABEL[preview.accountType]}`
+        : ""}
+      {preview.kind === "transaction" && (
+        <>
+          {" "}
+          (estimated categories:{" "}
+          {Object.entries(preview.next.categories)
+            .map(([cat, n]) => `${cat} ×${n}`)
+            .join(", ") || "none"}
+          )
+        </>
+      )}
+    </p>
+  );
+}
 type ImportResult = {
   file: string;
   status: "imported" | "warning" | "rejected";
@@ -110,6 +147,9 @@ export function FinanceView() {
   const [goalTarget, setGoalTarget] = useState("");
   const [selectedRenewals, setSelectedRenewals] = useState<Set<string>>(new Set());
   const [renewalResult, setRenewalResult] = useState<string | null>(null);
+  const [reanalyzePreview, setReanalyzePreview] = useState<ReanalyzePreview | null>(null);
+  const [reanalyzeAllPreviews, setReanalyzeAllPreviews] = useState<ReanalyzePreview[] | null>(null);
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
   // null = show the derived latest period; a YYYY-MM = the month paged to.
   const [month, setMonth] = useState<string | null>(null);
   // Category filter shared by the chips, the spend chart, and the txn table.
@@ -143,6 +183,83 @@ export function FinanceView() {
       const body = await res.json();
       if (!res.ok) setError(body.error ?? "Import failed");
       else setImportResults(body.results);
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Re-Analyze: destructive (deletes + re-imports a statement's rows), so a
+  // preview is always fetched first and committed only on an explicit click,
+  // per CLAUDE.md's confirm-gate rule for financial-data writes.
+  async function previewReanalyzeOne(statementId: number) {
+    setBusy(true);
+    setReanalyzeError(null);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reanalyze_preview", statementId }),
+      });
+      const body = await res.json();
+      if (!res.ok) setReanalyzeError(body.error ?? "Preview failed");
+      else setReanalyzePreview(body.preview);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmReanalyzeOne() {
+    if (!reanalyzePreview) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reanalyze_commit", statementId: reanalyzePreview.statementId }),
+      });
+      const body = await res.json();
+      if (!res.ok) setReanalyzeError(body.error ?? "Re-analyze failed");
+      setReanalyzePreview(null);
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewReanalyzeAll() {
+    if (!data) return;
+    setBusy(true);
+    setReanalyzeError(null);
+    try {
+      const previews: ReanalyzePreview[] = [];
+      for (const s of data.statements) {
+        const res = await fetch("/api/finance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reanalyze_preview", statementId: s.id }),
+        });
+        const body = await res.json();
+        if (res.ok) previews.push(body.preview);
+      }
+      setReanalyzeAllPreviews(previews);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmReanalyzeAll() {
+    if (!reanalyzeAllPreviews) return;
+    setBusy(true);
+    try {
+      for (const p of reanalyzeAllPreviews) {
+        await fetch("/api/finance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reanalyze_commit", statementId: p.statementId }),
+        });
+      }
+      setReanalyzeAllPreviews(null);
       await load(month);
     } finally {
       setBusy(false);
@@ -302,10 +419,63 @@ export function FinanceView() {
             <Button variant="outline" onClick={runImport} disabled={busy}>
               Scan folder
             </Button>
+            {data.statements.length > 0 && (
+              <Button variant="outline" onClick={previewReanalyzeAll} disabled={busy}>
+                Re-Analyze All…
+              </Button>
+            )}
             <span className="text-muted-foreground">
               {data.statements.length} imported · {data.transactionCount} transactions
             </span>
           </div>
+          {reanalyzeError && <p className="text-destructive">{reanalyzeError}</p>}
+          {reanalyzePreview && (
+            <div className="flex flex-col gap-2 rounded border border-border p-3">
+              <p className="font-medium">Re-analyze &quot;{reanalyzePreview.file}&quot;?</p>
+              <ReanalyzeDiff preview={reanalyzePreview} />
+              <div className="flex gap-2">
+                <Button size="sm" disabled={busy} onClick={confirmReanalyzeOne}>
+                  Confirm Re-Analyze
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setReanalyzePreview(null)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+          {reanalyzeAllPreviews && (
+            <div className="flex flex-col gap-2 rounded border border-border p-3">
+              <p className="font-medium">
+                Re-analyze all {reanalyzeAllPreviews.length} statement(s)?
+              </p>
+              <ul className="flex flex-col gap-2">
+                {reanalyzeAllPreviews.map((p) => (
+                  <li key={p.statementId}>
+                    <p className="text-muted-foreground">{p.file}</p>
+                    <ReanalyzeDiff preview={p} />
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-2">
+                <Button size="sm" disabled={busy} onClick={confirmReanalyzeAll}>
+                  Confirm Re-Analyze All
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setReanalyzeAllPreviews(null)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
           {importResults && (
             <ul className="flex flex-col gap-1">
               {importResults.length === 0 && (
@@ -359,6 +529,14 @@ export function FinanceView() {
                   ) : s.kind === "transaction" ? (
                     <Badge variant="outline">Statement</Badge>
                   ) : null}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => previewReanalyzeOne(s.id)}
+                  >
+                    Re-Analyze
+                  </Button>
                 </li>
               ))}
             </ul>
