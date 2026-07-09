@@ -9,7 +9,38 @@ committed separately.
 Baseline at the start of this run: 6 real statements / 111 real transactions
 (grown since the previous run's 4/62 baseline — the user imported more real
 statements between runs; not touched by this run except where a phase says
-so).
+so). Ending state, confirmed at the end of the run: still 6 statements / 111
+transactions / 25 holdings — Phase 2's real account-type fixes are the only
+change to the user's real data (2 checking, 2 credit_card, 2 investment,
+correctly tagged), left in place as intended; every other phase's synthetic
+test data was cleaned up after use.
+
+**All five phases complete**, each closed on green `npm test` (187 → 233,
++46 across the run), `npm run typecheck`, and finishing with a clean
+`npm run build` and `npm run doctor`. One commit per phase (see the final
+report for hashes).
+
+**Deferred — needs a human, not guessable from here:**
+- **`nomic-embed-text` still isn't pulled** (`ollama pull nomic-embed-text`)
+  — pre-existing from Phase 21, unrelated to this run's scope; semantic
+  search/RAG keep degrading to exact-match until it's pulled. Not touched by
+  this run.
+- **Phase 4's tab-switching click** wasn't literally interactively clicked
+  in this session — this session's automated browser tab was confirmably
+  backgrounded (`document.hidden: true`), which breaks Radix UI's
+  focus-driven tab activation specifically (isolated via multiple methods;
+  see Phase 4's entry above). The tab *content* was proven correct for all
+  four tabs by forcing each value directly and checking against real DB
+  counts. **First live session**: click through Checking & Savings / Credit
+  Card / Investment / Total once in a normal focused browser to confirm the
+  click itself — low risk, standard shadcn/Radix behavior, but not something
+  this session could exercise the way every other UI interaction in this
+  run was exercised.
+- **Alpha Vantage stock-history key** (from the previous run, still
+  unresolved): this box has no `ALPHAVANTAGE_API_KEY`; which of
+  `TIME_SERIES_DAILY`/`TIME_SERIES_DAILY_ADJUSTED` is actually free on the
+  free tier is still unverified. Unrelated to this run's scope, carried
+  forward as-is.
 
 ## Phase 1 (2026-07-09): Re-Analyze vs Re-Analyze All — dual-open confirmation
 
