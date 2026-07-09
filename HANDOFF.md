@@ -68,6 +68,37 @@ phases land; see the phase list below for what's done so far.
     guide documents real breaking changes (fully-async `cookies`/`headers`/
     `params`/`searchParams`, `middleware.ts` → `proxy.ts`) relevant to any
     route handler touched in this run.
+- **Phase 2: net worth missing bank balances.** Root-caused by reading the
+  code AND live-testing against the running app (not guessing): the
+  extraction → suggestion → confirm-gated-apply pipeline (`extractStatementBalance`,
+  `balanceSuggestions()`, the Net Worth page's apply button) **already works
+  correctly today** for both checking (`Ending Balance` → cash) and
+  credit-card (`New Balance` → debt) — verified live end-to-end (import →
+  suggestion appears with the right label/balance → apply creates the
+  account → suggestion clears → net worth total updates correctly), then
+  cleaned up. The user's actual reported symptom (net worth showing only the
+  brokerage holding, accounts empty) is fully explained by their 3 real
+  statements predating `kind`/`raw_text`/`ending_balance` tracking entirely —
+  the same historical gap Phase 1 found, not a bug in the current pipeline.
+  `importNewStatements()` skips files already in the `statements` table, so
+  these specific 3 files can only be fixed by Phase 3's Re-Analyze (or by
+  hand-deleting their `statements` row and re-scanning today).
+  - **Real bug found and fixed along the way**: `extractStatementBalance`
+    hardcoded the suggestion's label to `"Checking"` regardless of the
+    statement's actual account type — a savings statement (same
+    `Ending Balance` structure as checking) would suggest a "Checking"
+    account and **collide** with a real checking suggestion under the same
+    label, since `balanceSuggestions()` groups by `balance_label`. Now takes
+    an optional `accountLabel` param, wired from Phase 1's classified
+    sub-type in `ingest.ts` (falls back to the old hardcoded defaults when
+    the sub-type is undetermined, so ambiguous-content CSVs keep working).
+  - Live-verified: synthetic checking + savings statements imported
+    together produced two DISTINCT, correctly-labeled suggestions (not one
+    colliding "Checking" entry); applying one correctly updates net worth
+    totals. Test data cleaned up after (DB back to 4 statements / 62
+    transactions / 0 accounts).
+  - New test in `tests/finance-pdf.test.ts` for the label override + default
+    fallback.
 
 ## Phase 21 (2026-07-06, third run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
 

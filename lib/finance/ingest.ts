@@ -37,6 +37,14 @@ import {
 // reason rather than imported with wrong/zeroed numbers — a confident wrong
 // number is worse than a clear "couldn't parse this".
 
+// Maps classify.ts's sub-type to the human label extractStatementBalance
+// stores as balance_label — the net-worth suggestion's matching key.
+const SUBKIND_LABEL: Record<AccountSubKind, string> = {
+  checking: "Checking",
+  savings: "Savings",
+  credit_card: "Credit Card",
+};
+
 export type ImportStatus = "imported" | "warning" | "rejected";
 
 export type ImportResult = {
@@ -257,8 +265,13 @@ async function importTransactions(
   const month = [...monthCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
 
   // Summary balance (ending/new balance) for the net-worth suggestion — stored,
-  // never auto-applied to an account.
-  const balance = extractStatementBalance(rawText);
+  // never auto-applied to an account. Labeled with the classified sub-type
+  // (Checking/Savings/Credit Card) so a savings statement doesn't collide
+  // with a checking suggestion under the same generic label.
+  const balance = extractStatementBalance(
+    rawText,
+    classification.subKind ? SUBKIND_LABEL[classification.subKind] : undefined
+  );
 
   const insertedIds: number[] = [];
   let statementId = -1;
