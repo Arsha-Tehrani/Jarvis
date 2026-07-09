@@ -33,12 +33,26 @@ import type {
 } from "@/lib/finance/analyze";
 import type { RadarItem } from "@/lib/finance/radar";
 
-type Statement = { id: number; month: string | null; file_path: string; imported_at: string };
+type Statement = {
+  id: number;
+  month: string | null;
+  file_path: string;
+  imported_at: string;
+  kind?: string | null;
+  account_type?: string | null;
+};
+
+const ACCOUNT_TYPE_LABEL: Record<string, string> = {
+  checking: "Checking",
+  savings: "Savings",
+  credit_card: "Credit Card",
+};
 type ImportResult = {
   file: string;
   status: "imported" | "warning" | "rejected";
   imported: number;
   kind?: "transaction" | "brokerage" | "unknown";
+  accountType?: string;
   categorizedBy?: string;
   warnings?: string[];
   reason?: string;
@@ -315,6 +329,9 @@ export function FinanceView() {
                     <>
                       {r.imported}{" "}
                       {r.kind === "brokerage" ? "holdings" : "transactions"}
+                      {r.accountType && ACCOUNT_TYPE_LABEL[r.accountType]
+                        ? ` — ${ACCOUNT_TYPE_LABEL[r.accountType]}`
+                        : ""}
                       {r.categorizedBy ? ` (${r.categorizedBy})` : ""}
                       {r.status === "warning" ? " — parsed with warnings" : ""}
                     </>
@@ -333,8 +350,15 @@ export function FinanceView() {
           {data.statements.length > 0 && (
             <ul className="text-muted-foreground">
               {data.statements.map((s) => (
-                <li key={s.id}>
-                  {s.file_path} — {s.month ?? "?"} (imported {s.imported_at.slice(0, 10)})
+                <li key={s.id} className="flex items-center gap-2">
+                  <span>
+                    {s.file_path} — {s.month ?? "?"} (imported {s.imported_at.slice(0, 10)})
+                  </span>
+                  {s.account_type && ACCOUNT_TYPE_LABEL[s.account_type] ? (
+                    <Badge variant="outline">{ACCOUNT_TYPE_LABEL[s.account_type]}</Badge>
+                  ) : s.kind === "transaction" ? (
+                    <Badge variant="outline">Statement</Badge>
+                  ) : null}
                 </li>
               ))}
             </ul>

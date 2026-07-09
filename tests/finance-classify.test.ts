@@ -70,6 +70,84 @@ test("credit-card PDF classifies as a transaction statement", () => {
   assert.ok(c.confidence >= CONFIDENCE_FLOOR);
 });
 
+// --- account sub-type: the actual Part A follow-up fix. A checking and a
+// credit-card statement both used to land in the same generic "transaction"
+// bucket with nothing distinguishing them; these fixtures assert they now
+// score distinct sub-kinds from content alone (never the filename).
+
+test("bank checking PDF sub-classifies as checking, not credit card", () => {
+  const c = classifyStatementText(BANK_CHECKING_PDF);
+  assert.equal(c.subKind, "checking");
+  assert.ok(!c.subKindConflict);
+});
+
+test("credit-card PDF sub-classifies as credit_card, not checking", () => {
+  const c = classifyStatementText(CREDIT_CARD_PDF);
+  assert.equal(c.subKind, "credit_card");
+  assert.ok(!c.subKindConflict);
+});
+
+const SAVINGS_PDF = `
+Chase Savings
+Regular Savings Account Summary
+DATE DESCRIPTION AMOUNT BALANCE
+Beginning Balance $10,000.00
+06/15 Interest Payment 4.12 10,004.12
+Ending Balance $10,004.12
+`;
+
+test("savings PDF sub-classifies as savings, not checking", () => {
+  const c = classifyStatementText(SAVINGS_PDF);
+  assert.equal(c.kind, "transaction");
+  assert.equal(c.subKind, "savings");
+  assert.ok(!c.subKindConflict);
+});
+
+// A statement can't honestly be both a credit card and a checking account —
+// this fixture forces both signals to fire, which must be flagged as a
+// conflict (rejected upstream in ingest.ts) rather than guessed.
+const CONFLICTING_PDF = `
+Chase Total Checking
+DATE DESCRIPTION AMOUNT BALANCE
+Beginning Balance $500.00
+Minimum Payment Due: $25.00
+New Balance: $500.00
+06/01 Some Charge -25.00 475.00
+Ending Balance $475.00
+`;
+
+test("statement with both credit-card and checking signals is flagged as a conflict", () => {
+  const c = classifyStatementText(CONFLICTING_PDF);
+  assert.equal(c.kind, "transaction");
+  assert.equal(c.subKind, undefined);
+  assert.ok(c.subKindConflict);
+});
+
+test("generic CSV with no distinguishing content is imported unlabeled, not rejected", () => {
+  const table = parseCsv("Date,Description,Amount\n2026-06-01,COFFEE,-4.50\n2026-06-02,PAYCHECK,2000\n");
+  const c = classifyStatementTable(table);
+  assert.equal(c.kind, "transaction");
+  assert.equal(c.subKind, undefined);
+  assert.ok(!c.subKindConflict);
+  assert.ok(c.confidence >= CONFIDENCE_FLOOR); // still importable — just unbadged
+});
+
+test("CSV with a running-balance column sub-classifies as checking", () => {
+  const table = parseCsv(
+    "Date,Description,Amount,Balance\n2026-06-01,COFFEE,-4.50,995.50\n2026-06-02,PAYCHECK,2000,2995.50\n"
+  );
+  const c = classifyStatementTable(table);
+  assert.equal(c.subKind, "checking");
+});
+
+test("CSV with credit-card wording sub-classifies as credit_card", () => {
+  const table = parseCsv(
+    "Date,Description,Amount\n2026-06-01,AMAZON,-14.92\nMinimum Payment Due,,40.00\n"
+  );
+  const c = classifyStatementTable(table);
+  assert.equal(c.subKind, "credit_card");
+});
+
 test("brokerage PDF classifies as brokerage via consistent holding rows", () => {
   const c = classifyStatementText(BROKERAGE_PDF);
   assert.equal(c.kind, "brokerage");

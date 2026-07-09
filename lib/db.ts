@@ -319,6 +319,13 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   { table: "statements", column: "ending_balance", ddl: "ending_balance REAL" },
   { table: "statements", column: "balance_kind", ddl: "balance_kind TEXT" },
   { table: "statements", column: "balance_label", ddl: "balance_label TEXT" },
+  // Part A follow-up — which account a transaction statement is FOR
+  // ('checking' | 'savings' | 'credit_card' | null when undetermined), from
+  // lib/finance/classify.ts's content-based sub-type detection. Lets the UI
+  // badge statements/transactions and lets the transfer matcher tell "the
+  // credit-card side" from "the checking side" of the same real payment.
+  { table: "statements", column: "account_type", ddl: "account_type TEXT" },
+  { table: "transactions", column: "account_type", ddl: "account_type TEXT" },
   // Part E — generalize `habits` into the unified Tracker model: `source` links
   // a tracker to a built-in feed (null = manual habit), `target` is the numeric
   // goal folded in from the legacy `goals` table.

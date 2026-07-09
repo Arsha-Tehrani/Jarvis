@@ -1,6 +1,75 @@
-# HANDOFF — updated after Phase 21 (2026-07-06, third run; P19 and P16–18 notes below)
+# HANDOFF — updated after the finance/stocks fix-plan run (2026-07-08/09; Phase 21 and earlier below)
 
-## Phase 21 (this run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
+## Fix-plan run (this run, in progress): stock chart feasibility, statement classification
+
+Working through a 6-phase fix list (bank-vs-card statement merging, net worth
+bank balances, Re-Analyze, portfolio value mismatch, % of portfolio,
+click-to-chart) plus a research spike. Each phase closes on green `npm test`
+and `npm run typecheck` before the next starts. This section grows as later
+phases land; see the phase list below for what's done so far.
+
+- **Phase 0 (spike, no app code)**: `docs/stock-history-feasibility.md`.
+  Finnhub's `/stock/candle` is confirmed premium-gated (403) on free keys.
+  Alpha Vantage can serve daily history at 25 req/day, but sources disagree
+  on whether `TIME_SERIES_DAILY` or `TIME_SERIES_DAILY_ADJUSTED` is the free
+  one — **needs a live-key check before Phase 6 writes any code.** Verdict:
+  yes-with-caching (persistent per-ticker-per-day cache, lazy on-click fetch
+  only — proactive fetch for a whole holdings list blows the daily budget).
+- **Phase 1: bank vs. credit-card statement merging.** Root cause: the
+  classifier only ever produced `brokerage` / `transaction` / `unknown` — a
+  checking statement and a credit-card statement both landed in the generic
+  `transaction` bucket with no sub-type and no account link, so a credit-card
+  payment could show as real spend on checking AND real income on the card
+  (double-counted) with nothing to tell the two statements apart in the UI.
+  - `lib/finance/classify.ts` now scores a content-based sub-type —
+    `checking` / `savings` / `credit_card` — within `transaction` kind, for
+    both the PDF-text and CSV-table paths. Content matching BOTH credit-card
+    and checking/savings signals is a `subKindConflict`, rejected by
+    `ingest.ts` rather than guessed. Content with no distinguishing signal at
+    all (a bare Date/Description/Amount CSV) is left unbadged, not rejected —
+    it's a real, valid import, just one the content doesn't disambiguate.
+  - New `account_type` column on both `statements` and `transactions`
+    (migration in `lib/db.ts`), surfaced as a badge (Checking/Savings/Credit
+    Card) in the Finance UI next to each statement and each import result.
+  - New `lib/finance/transfers.ts`: a pure, unit-tested matcher that pairs
+    the SAME real payment appearing as an outflow on one account and an
+    inflow on another (exact-cent opposite amounts, ≤5 days apart, different
+    statements, at least one side reading like a payment) and forces both
+    rows to `category='Transfer'` — the category `analyze.ts`'s `NON_SPEND`
+    already excludes from spend/income totals, so no new totals-side plumbing
+    was needed, just a more reliable way to reach that category than hoping
+    a bank's exact wording matches a keyword rule (the existing keyword rule
+    for this, `/PAYMENT THANK YOU/i`, misses the real-world hyphenated
+    "PAYMENT - THANK YOU" wording — confirmed against the user's own June
+    statement data during live verification, see below).
+  - **Live-verified** against the running dev app (not just unit tests):
+    synthetic checking + credit-card CSVs dropped into `/statements`,
+    imported through the real `/api/finance` endpoint, confirmed correct
+    `accountType` badges and confirmed the matched transfer pair landed on
+    `category='Transfer'` — then the test statements/transactions were
+    deleted (cascade) and the test files removed, leaving the DB exactly as
+    found (4 statements, 62 transactions). Also surfaced a **pre-existing
+    gap**, not fixed in this phase: 3 of the user's 4 real statements have
+    `kind: null` (imported before kind-tracking existed) — exactly what
+    Phase 3's Re-Analyze is for; not touched here since it's out of scope
+    for Phase 1 and those files are the user's real data.
+  - Tests: 9 new classify.ts sub-type cases (checking/savings/credit_card/
+    conflict/ambiguous-CSV/balance-column CSV) in
+    `tests/finance-classify.test.ts`; 7 new cases in new
+    `tests/finance-transfers.test.ts` covering the match, the 40-day
+    non-match, same-statement non-match, no-hint non-match, same-sign
+    non-match, zero-amount, and picking the right pair among decoys.
+  - **Correction to how this run started**: the fix-plan's own instructions
+    said to disregard `AGENTS.md`'s claim that `node_modules/next/dist/docs/`
+    contains real Next.js docs relevant to breaking changes. That claim
+    actually checks out — the path is real (423 files, genuine upstream
+    Next.js 16 docs bundled with the pinned `next@16.2.10`), `AGENTS.md` is
+    tracked in git since the repo's first commit, and the bundled v16 upgrade
+    guide documents real breaking changes (fully-async `cookies`/`headers`/
+    `params`/`searchParams`, `middleware.ts` → `proxy.ts`) relevant to any
+    route handler touched in this run.
+
+## Phase 21 (2026-07-06, third run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
 
 Four upgrade phases, each closed on green `npm test` (**49** node tests, up
 from 36), `npm run typecheck`, and `npm run build`. Ollama was **not**
