@@ -167,6 +167,22 @@ phases land; see the phase list below for what's done so far.
   - 6 new tests in `tests/portfolio-total.test.ts`: all-priced, cost-basis-
     only (the exact regression), mixed, empty, zero-cost-basis (no
     divide-by-zero on `plPercent`), and case-insensitive ticker lookup.
+- **Phase 5: % of portfolio, sortable.** Added `percentOfPortfolio` directly
+  to `computePortfolioTotal` (Phase 4's shared function) — `value ÷
+  totalValue × 100`, computed in a second pass once the final total is known
+  — so it can't drift from the total shown anywhere else, and a
+  cost-basis-fallback holding (SPAXX) gets a real percentage instead of
+  being left out or null, same "never drop an unpriced holding" principle
+  as the total itself. Added as a new sortable column in the Stocks page's
+  existing click-to-sort holdings table (`stocks-view.tsx`'s `SortKey`
+  union just gained one more value — same generic comparator, no bolted-on
+  special case).
+  - Live-verified on the user's real 25-holding portfolio: percentages sum
+    to **exactly 100.0000%**; SPAXX (cost-basis-priced, no live quote) shows
+    **25.69%** rather than being dropped or blank.
+  - 3 new tests in `tests/portfolio-total.test.ts`: proportional split
+    across two priced holdings, the SPAXX-cost-basis-fallback case with a
+    sum-to-~100% assertion, and null-not-NaN when the total is 0.
 
 ## Phase 21 (2026-07-06, third run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
 

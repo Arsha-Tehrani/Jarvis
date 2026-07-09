@@ -15,6 +15,7 @@ export type Priced = {
   priced: boolean; // true = live market quote, false = cost-basis fallback
   price: number | null;
   value: number; // price*shares (priced) or cost_basis*shares (fallback) — never dropped
+  percentOfPortfolio: number | null; // value / totalValue * 100; null only when totalValue is 0
   dayMove: number | null; // quote.change*shares; null when cost-basis-priced (no day-move concept)
   changePercent: number | null;
   pl: number | null; // (price-cost_basis)*shares; null when unpriced
@@ -46,7 +47,10 @@ export function computePortfolioTotal<T extends HoldingInput>(
   let anyMarket = false;
   let anyCostBasis = false;
 
-  const priced: (T & Priced)[] = holdings.map((h) => {
+  // First pass: per-holding value + the running total. percentOfPortfolio
+  // needs the FINAL total, which isn't known until every holding is priced,
+  // hence the second pass below rather than computing it inline here.
+  const valued = holdings.map((h) => {
     const q = getQuote(h.ticker.toUpperCase());
     const value = q ? q.price * h.shares : h.cost_basis * h.shares;
     totalValue += value;
@@ -56,17 +60,20 @@ export function computePortfolioTotal<T extends HoldingInput>(
     } else {
       anyCostBasis = true;
     }
-    return {
-      ...h,
-      priced: !!q,
-      price: q?.price ?? null,
-      value,
-      dayMove: q ? q.change * h.shares : null,
-      changePercent: q?.changePercent ?? null,
-      pl: q ? (q.price - h.cost_basis) * h.shares : null,
-      plPercent: q && h.cost_basis > 0 ? ((q.price - h.cost_basis) / h.cost_basis) * 100 : null,
-    };
+    return { h, q, value };
   });
+
+  const priced: (T & Priced)[] = valued.map(({ h, q, value }) => ({
+    ...h,
+    priced: !!q,
+    price: q?.price ?? null,
+    value,
+    percentOfPortfolio: totalValue > 0 ? (value / totalValue) * 100 : null,
+    dayMove: q ? q.change * h.shares : null,
+    changePercent: q?.changePercent ?? null,
+    pl: q ? (q.price - h.cost_basis) * h.shares : null,
+    plPercent: q && h.cost_basis > 0 ? ((q.price - h.cost_basis) / h.cost_basis) * 100 : null,
+  }));
 
   const pricedBy =
     holdings.length === 0

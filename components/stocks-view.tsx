@@ -23,6 +23,7 @@ type Holding = {
   priced: boolean;
   price: number | null;
   value: number | null;
+  percentOfPortfolio: number | null;
   pl: number | null;
   plPercent: number | null;
   dayMove: number | null;
@@ -46,7 +47,7 @@ type DividendData = {
 };
 
 // Client-side sort spec for the holdings table (D1).
-type SortKey = "ticker" | "value" | "dayMove" | "pl";
+type SortKey = "ticker" | "value" | "dayMove" | "pl" | "percentOfPortfolio";
 type SortState = { key: SortKey; dir: "asc" | "desc" };
 
 type WatchItem = {
@@ -286,6 +287,14 @@ export function StocksView() {
                     </button>
                   </TableHead>
                   <TableHead className="text-right">
+                    <button
+                      className="hover:underline"
+                      onClick={() => toggleSort("percentOfPortfolio")}
+                    >
+                      % of portfolio{caret("percentOfPortfolio")}
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right">
                     <button className="hover:underline" onClick={() => toggleSort("pl")}>
                       P/L{caret("pl")}
                     </button>
@@ -309,6 +318,9 @@ export function StocksView() {
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {h.value != null ? usd(h.value) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {h.percentOfPortfolio != null ? `${h.percentOfPortfolio.toFixed(1)}%` : "—"}
                     </TableCell>
                     <TableCell className="text-right">
                       <MoveCell value={h.pl} percent={h.plPercent} />
