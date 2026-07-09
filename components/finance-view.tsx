@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { SpendChart } from "@/components/spend-chart";
 import { TransactionTable } from "@/components/transaction-table";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ import type {
   RecurringCharge,
 } from "@/lib/finance/analyze";
 import type { RadarItem } from "@/lib/finance/radar";
+import { reanalyzeUiReducer } from "@/lib/finance/reanalyze-ui-state";
 
 type Statement = {
   id: number;
@@ -147,8 +148,11 @@ export function FinanceView() {
   const [goalTarget, setGoalTarget] = useState("");
   const [selectedRenewals, setSelectedRenewals] = useState<Set<string>>(new Set());
   const [renewalResult, setRenewalResult] = useState<string | null>(null);
-  const [reanalyzePreview, setReanalyzePreview] = useState<ReanalyzePreview | null>(null);
-  const [reanalyzeAllPreviews, setReanalyzeAllPreviews] = useState<ReanalyzePreview[] | null>(null);
+  // At most one Re-Analyze confirmation (single statement, or "all") can be
+  // pending at a time — see lib/finance/reanalyze-ui-state.ts.
+  const [reanalyzePending, dispatchReanalyzePending] = useReducer(reanalyzeUiReducer, null);
+  const [singlePreview, setSinglePreview] = useState<ReanalyzePreview | null>(null);
+  const [allPreviews, setAllPreviews] = useState<ReanalyzePreview[] | null>(null);
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
   // null = show the derived latest period; a YYYY-MM = the month paged to.
   const [month, setMonth] = useState<string | null>(null);
@@ -191,10 +195,15 @@ export function FinanceView() {
 
   // Re-Analyze: destructive (deletes + re-imports a statement's rows), so a
   // preview is always fetched first and committed only on an explicit click,
-  // per CLAUDE.md's confirm-gate rule for financial-data writes.
+  // per CLAUDE.md's confirm-gate rule for financial-data writes. Opening
+  // either confirmation (single or all) always replaces whatever was
+  // previously pending, so only one card is ever on screen at once.
   async function previewReanalyzeOne(statementId: number) {
-    setBusy(true);
+    dispatchReanalyzePending({ type: "open_single", statementId });
     setReanalyzeError(null);
+    setSinglePreview(null);
+    setAllPreviews(null);
+    setBusy(true);
     try {
       const res = await fetch("/api/finance", {
         method: "POST",
@@ -203,24 +212,25 @@ export function FinanceView() {
       });
       const body = await res.json();
       if (!res.ok) setReanalyzeError(body.error ?? "Preview failed");
-      else setReanalyzePreview(body.preview);
+      else setSinglePreview(body.preview);
     } finally {
       setBusy(false);
     }
   }
 
   async function confirmReanalyzeOne() {
-    if (!reanalyzePreview) return;
+    if (!singlePreview) return;
     setBusy(true);
     try {
       const res = await fetch("/api/finance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "reanalyze_commit", statementId: reanalyzePreview.statementId }),
+        body: JSON.stringify({ action: "reanalyze_commit", statementId: singlePreview.statementId }),
       });
       const body = await res.json();
       if (!res.ok) setReanalyzeError(body.error ?? "Re-analyze failed");
-      setReanalyzePreview(null);
+      dispatchReanalyzePending({ type: "close" });
+      setSinglePreview(null);
       await load(month);
     } finally {
       setBusy(false);
@@ -229,8 +239,11 @@ export function FinanceView() {
 
   async function previewReanalyzeAll() {
     if (!data) return;
-    setBusy(true);
+    dispatchReanalyzePending({ type: "open_all" });
     setReanalyzeError(null);
+    setSinglePreview(null);
+    setAllPreviews(null);
+    setBusy(true);
     try {
       const previews: ReanalyzePreview[] = [];
       for (const s of data.statements) {
@@ -242,24 +255,25 @@ export function FinanceView() {
         const body = await res.json();
         if (res.ok) previews.push(body.preview);
       }
-      setReanalyzeAllPreviews(previews);
+      setAllPreviews(previews);
     } finally {
       setBusy(false);
     }
   }
 
   async function confirmReanalyzeAll() {
-    if (!reanalyzeAllPreviews) return;
+    if (!allPreviews) return;
     setBusy(true);
     try {
-      for (const p of reanalyzeAllPreviews) {
+      for (const p of allPreviews) {
         await fetch("/api/finance", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "reanalyze_commit", statementId: p.statementId }),
         });
       }
-      setReanalyzeAllPreviews(null);
+      dispatchReanalyzePending({ type: "close" });
+      setAllPreviews(null);
       await load(month);
     } finally {
       setBusy(false);
@@ -429,10 +443,10 @@ export function FinanceView() {
             </span>
           </div>
           {reanalyzeError && <p className="text-destructive">{reanalyzeError}</p>}
-          {reanalyzePreview && (
+          {reanalyzePending?.type === "single" && singlePreview && (
             <div className="flex flex-col gap-2 rounded border border-border p-3">
-              <p className="font-medium">Re-analyze &quot;{reanalyzePreview.file}&quot;?</p>
-              <ReanalyzeDiff preview={reanalyzePreview} />
+              <p className="font-medium">Re-analyze &quot;{singlePreview.file}&quot;?</p>
+              <ReanalyzeDiff preview={singlePreview} />
               <div className="flex gap-2">
                 <Button size="sm" disabled={busy} onClick={confirmReanalyzeOne}>
                   Confirm Re-Analyze
@@ -441,20 +455,23 @@ export function FinanceView() {
                   size="sm"
                   variant="outline"
                   disabled={busy}
-                  onClick={() => setReanalyzePreview(null)}
+                  onClick={() => {
+                    dispatchReanalyzePending({ type: "close" });
+                    setSinglePreview(null);
+                  }}
                 >
                   Cancel
                 </Button>
               </div>
             </div>
           )}
-          {reanalyzeAllPreviews && (
+          {reanalyzePending?.type === "all" && allPreviews && (
             <div className="flex flex-col gap-2 rounded border border-border p-3">
               <p className="font-medium">
-                Re-analyze all {reanalyzeAllPreviews.length} statement(s)?
+                Re-analyze all {allPreviews.length} statement(s)?
               </p>
               <ul className="flex flex-col gap-2">
-                {reanalyzeAllPreviews.map((p) => (
+                {allPreviews.map((p) => (
                   <li key={p.statementId}>
                     <p className="text-muted-foreground">{p.file}</p>
                     <ReanalyzeDiff preview={p} />
@@ -469,7 +486,10 @@ export function FinanceView() {
                   size="sm"
                   variant="outline"
                   disabled={busy}
-                  onClick={() => setReanalyzeAllPreviews(null)}
+                  onClick={() => {
+                    dispatchReanalyzePending({ type: "close" });
+                    setAllPreviews(null);
+                  }}
                 >
                   Cancel
                 </Button>
