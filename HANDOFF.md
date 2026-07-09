@@ -135,6 +135,91 @@ misclassification, `account_type` was simply never set for any
   reflected it in the UI, then deleted the synthetic statement (back to 6
   statements / 111 transactions).
 
+## Phase 3 (2026-07-09): multi-institution parsing — signal table + confirm-gated LLM assist
+
+The user asked directly whether parsing is "dynamic" and whether the local
+model is good enough to help. `docs/multi-institution-parsing.md` has the
+full writeup; summary here.
+
+**Option A (implemented): signal table.** `lib/finance/classify.ts`'s five
+hardcoded wording regexes (brokerage/transaction headers, credit-card/
+savings/checking sub-type wording) were replaced by `tagMatches(text, tag)`
+reading a new flat data table, `lib/finance/institution-signals.ts`
+(`{institution, tag, pattern}` rows). Everything structural (holding-row
+arithmetic, transaction-row shape, CSV column names) stayed untouched — it
+already generalized across institutions before this table existed. All 22
+pre-existing `finance-classify.test.ts` cases pass unmodified after the
+refactor (confirms it's a scoring-mechanism refactor, not a behavior change).
+Two fictional institutions never seen by this codebase — "Second National
+Bank" (checking + savings) and "Summit Brokerage" — were added as pure data
+rows and proven correct via 5 new tests, including a sanity-check test that
+the *same* Summit content **without** its new row does NOT classify as
+brokerage (isolates that the row, not something else, is load-bearing).
+Deliberately no per-signal numeric weight — confidence gradation already
+comes from structural counts, not signal-weight sums; documented as a
+scope decision, not an oversight.
+
+**Option B (implemented): confirm-gated LLM assist.** New
+`lib/finance/classify-llm-assist-schema.ts` (pure: zod schema +
+`parseLlmAssistResponse`, no network import, loadable by `node --test` — same
+pure/impure split as `lib/stocks/history-core.ts`/`history.ts`) and
+`lib/finance/classify-llm-assist.ts` (`suggestClassification`: calls
+`lib/llm.ts`'s `chat()`, delegates parsing to the pure module). Called
+**only** when the deterministic scorer already returned `unknown` or
+below-floor confidence, from `ingest.ts`'s `tryLlmAssist` — never overrides a
+confident verdict. The suggestion attaches to the existing `rejected`
+`ImportResult` as an optional `llmSuggestion` (the file's status stays
+"rejected"; nothing changes automatically). New confirm action `POST
+/api/finance {action:"import_with_suggestion", file, kind, subKind}` →
+`importWithForcedKind()` re-reads the file and imports it via the exact same
+`importBrokerage`/`importTransactions` paths, built from a `confidence: 1,
+signals: ["classified via user-confirmed LLM suggestion"]` classification
+object — traceable in the statement's retained signals, and a future
+Re-Analyze re-runs the real deterministic scorer rather than remembering the
+override forever. New Finance-import UI: "this looks like a **[type]**
+statement, per the local model: *[reason]*" with **Tag it and import** /
+**Skip** buttons.
+- 14 new tests in `tests/finance-classify-llm-assist.test.ts`: the zod gate
+  (well-formed, null/omitted subKind, invalid kind/subKind enums, missing/
+  empty reason, non-object payload, wrong-keyed payload) and
+  `parseLlmAssistResponse` (clean JSON, JSON with stray prose around it, no
+  JSON object at all, brace-balanced-but-invalid JSON, valid JSON failing the
+  zod gate). `npm test`: 217 passing (up from 203).
+- **Ollama-down fallback, live-verified** (not mocked, per this project's
+  "LLM calls are never tested live" rule): temporarily pointed
+  `LLM_BASE_URL` at a closed port, restarted the dev server, confirmed
+  `suggestClassification` throws "Could not reach the LLM at
+  http://localhost:19999/v1..." — then restored the real URL and restarted
+  again before continuing.
+- **Empirical "is the model good enough" check** (real Ollama, `llama3.1:8b`,
+  via a temporary debug route deleted after use): two fixtures worded so
+  *no* signal-table row matches (confirmed first: both genuinely classify
+  `unknown, confidence: 0` through the real scorer) were sent to
+  `suggestClassification` for real. Exact responses (recorded verbatim in the
+  docs file): a "Meridian Trust Bank" checking excerpt →
+  `{"kind":"transaction","subKind":"checking","reason":"presence of 'Everyday
+  Checking' and numerical transaction records..."}` (**correct**); a
+  "Meridian Capital Partners" one-holding-row brokerage excerpt →
+  `{"kind":"brokerage","subKind":"investment","reason":"Stock listing with
+  ticker MSFT and share price"}` (**correct**). Verdict: plausible and usable
+  as a confirm-gated assist, not a classifier replacement.
+- **Live-verified end-to-end against the running app**: dropped a synthetic
+  "Second National Bank" checking CSV (no Balance column, so only the new
+  signal-table row — not the balance-column fallback — could produce
+  `checking`) into `/statements`, scanned, confirmed it imported tagged
+  `checking`. Separately posted directly to `import_with_suggestion` with a
+  normally-shaped CSV to verify the confirm action's happy path (2
+  transactions imported, `signals: ["classified via user-confirmed LLM
+  suggestion"]`). **Real finding, not a bug**: confirming an LLM suggestion
+  on a CSV with truly unrecognizable columns still correctly fails at the
+  *parsing* stage (`parseCsvStatement`'s own column check), because
+  classify.ts's and parse.ts's CSV column vocabularies are nearly identical —
+  `importWithForcedKind` skips classification, not parsing, and this is
+  exactly right. Documented in `docs/multi-institution-parsing.md` as the
+  reason Option B's real value is PDF-text statements, not CSVs. Cleaned up:
+  deleted all synthetic statements and files, back to 6 statements / 111
+  transactions.
+
 # HANDOFF — updated after the finance/stocks fix-plan run (2026-07-08/09; Phase 21 and earlier below)
 
 ## Fix-plan run (complete): stock chart feasibility + 6 finance/stocks fixes

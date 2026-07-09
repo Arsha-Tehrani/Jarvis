@@ -15,6 +15,7 @@ import {
   type AccountSubKind,
   type Classification,
 } from "@/lib/finance/classify";
+import { suggestClassification } from "@/lib/finance/classify-llm-assist";
 import { findTransferPairs, type TransferCandidate } from "@/lib/finance/transfers";
 import {
   extractPdfText,
@@ -62,6 +63,12 @@ export type ImportResult = {
   llmError?: string;
   confidence?: number;
   signals?: string[];
+  // Set only on a "rejected" result from the unknown/below-floor path (Option
+  // B, docs/multi-institution-parsing.md): a confirm-gated suggestion from
+  // the local LLM, never auto-applied. The deterministic verdict (reject)
+  // still stands unless the user explicitly confirms via
+  // POST /api/finance {action:"import_with_suggestion"}.
+  llmSuggestion?: { kind: "brokerage" | "transaction"; subKind?: AccountSubKind; reason: string };
 };
 
 export function statementsDir(): string {
@@ -139,6 +146,25 @@ function rejected(
   };
 }
 
+// Option B (docs/multi-institution-parsing.md): only ever called for content
+// the deterministic scorer already gave up on. Never throws — a down/
+// misconfigured Ollama or a malformed model reply both just mean no
+// suggestion, identical to this phase not existing at all.
+async function tryLlmAssist(rawText: string): Promise<ImportResult["llmSuggestion"]> {
+  try {
+    const suggestion = await suggestClassification(rawText);
+    if (suggestion.kind === "unknown") return undefined;
+    return {
+      kind: suggestion.kind,
+      subKind: suggestion.subKind ?? undefined,
+      reason: suggestion.reason,
+    };
+  } catch (err) {
+    console.error("[finance] LLM classification assist failed, falling back to plain rejection:", err);
+    return undefined;
+  }
+}
+
 export async function importOne(dir: string, file: string): Promise<ImportResult> {
   const fullPath = path.join(dir, file);
   const isPdf = /\.pdf$/i.test(file);
@@ -156,7 +182,7 @@ export async function importOne(dir: string, file: string): Promise<ImportResult
     : classifyStatementTable(table!);
 
   if (classification.kind === "unknown" || classification.confidence < CONFIDENCE_FLOOR) {
-    return rejected(
+    const result = rejected(
       file,
       classification.kind,
       classification.kind === "unknown"
@@ -164,6 +190,8 @@ export async function importOne(dir: string, file: string): Promise<ImportResult
         : `Low confidence (${Math.round(classification.confidence * 100)}%) that this is a ${classification.kind} statement — not importing to avoid wrong numbers (${classification.signals.join("; ")}).`,
       classification
     );
+    result.llmSuggestion = await tryLlmAssist(rawText);
+    return result;
   }
 
   // A statement can't honestly be both a credit card and a checking/savings
@@ -342,6 +370,49 @@ async function importTransactions(
     confidence: classification.confidence,
     signals: classification.signals,
   };
+}
+
+// Option B's confirm leg (docs/multi-institution-parsing.md): the file was
+// rejected by the deterministic scorer (kind unknown/below-floor) and the
+// user explicitly confirmed the LLM's suggested kind/subKind in the UI.
+// Re-reads the same file and imports it via the exact same
+// importBrokerage/importTransactions paths a confident deterministic
+// classification would use — built from a confidence:1 classification object
+// so the statement's retained signals show which path this import took, and
+// so any future Re-Analyze runs the REAL deterministic scorer again rather
+// than remembering this override forever.
+export async function importWithForcedKind(
+  file: string,
+  kind: "transaction" | "brokerage",
+  subKind?: AccountSubKind
+): Promise<ImportResult> {
+  const dir = statementsDir();
+  const fullPath = path.join(dir, file);
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`"${file}" is no longer in /statements.`);
+  }
+  const isPdf = /\.pdf$/i.test(file);
+  const rawText = isPdf
+    ? await extractPdfText(fs.readFileSync(fullPath))
+    : fs.readFileSync(fullPath, "utf8");
+  const table = isPdf ? null : parseCsv(rawText);
+
+  const classification: Classification = {
+    kind,
+    subKind: kind === "brokerage" ? "investment" : subKind,
+    confidence: 1,
+    signals: ["classified via user-confirmed LLM suggestion"],
+  };
+
+  const result =
+    kind === "brokerage"
+      ? importBrokerage(file, rawText, table, classification)
+      : await importTransactions(file, rawText, table, classification);
+  if (result.imported > 0) {
+    detectRecurring();
+    detectTransfers();
+  }
+  return result;
 }
 
 // A real-world payment (e.g. paying a credit card bill) posts as an outflow

@@ -12,6 +12,7 @@ import { categoryReference } from "@/lib/finance/categorize";
 import {
   commitReanalyze,
   importNewStatements,
+  importWithForcedKind,
   previewReanalyze,
   setStatementAccountType,
   statementsDir,
@@ -48,6 +49,16 @@ const actionSchema = z.discriminatedUnion("action", [
     action: z.literal("set_account_type"),
     statementId: z.number().int().positive(),
     accountType: z.enum(["checking", "savings", "credit_card", "investment"]).nullable(),
+  }),
+  // Option B, docs/multi-institution-parsing.md: the deterministic scorer
+  // rejected this file as unknown/below-floor, but the local LLM suggested a
+  // kind/subKind and the user explicitly confirmed it in the import UI.
+  // Never runs without this explicit confirm — nothing is auto-applied.
+  z.object({
+    action: z.literal("import_with_suggestion"),
+    file: z.string().min(1).max(300),
+    kind: z.enum(["transaction", "brokerage"]),
+    subKind: z.enum(["checking", "savings", "credit_card", "investment"]).optional(),
   }),
 ]);
 
@@ -127,6 +138,22 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       return NextResponse.json(
         { error: err instanceof Error ? err.message : "Could not update account type" },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (parsed.data.action === "import_with_suggestion") {
+    try {
+      const result = await importWithForcedKind(
+        parsed.data.file,
+        parsed.data.kind,
+        parsed.data.subKind
+      );
+      return NextResponse.json({ result });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Import failed" },
         { status: 400 }
       );
     }

@@ -236,6 +236,68 @@ test("real Fidelity letterhead PDF sub-classifies as investment", () => {
   assert.equal(c.subKind, "investment");
 });
 
+// --- Phase 3: two fictional institutions, never seen by this codebase
+// before, added purely as new rows in lib/finance/institution-signals.ts —
+// no changes to classify.ts's scoring logic. This is the concrete proof that
+// "add a bank" is a data change, not a code change.
+
+const SECOND_NATIONAL_CHECKING_PDF = `
+Second National Bank
+Second National Free Checking Statement
+DATE DESCRIPTION AMOUNT BALANCE
+Beginning Balance $1,000.00
+06/01 Grocery Store Purchase -45.20 954.80
+06/15 Payroll Deposit 1200.00 2154.80
+Ending Balance $2,154.80
+`;
+
+test("fictional Second National Bank checking statement sub-classifies as checking via its own signal-table row", () => {
+  const c = classifyStatementText(SECOND_NATIONAL_CHECKING_PDF);
+  assert.equal(c.kind, "transaction");
+  assert.equal(c.subKind, "checking");
+  assert.ok(!c.subKindConflict);
+});
+
+const SECOND_NATIONAL_SAVINGS_PDF = `
+Second National Bank
+Second National Savings Statement
+DATE DESCRIPTION AMOUNT BALANCE
+Beginning Balance $5,000.00
+06/15 Interest Payment 2.10 5,002.10
+Ending Balance $5,002.10
+`;
+
+test("fictional Second National Bank savings statement sub-classifies as savings, not checking", () => {
+  const c = classifyStatementText(SECOND_NATIONAL_SAVINGS_PDF);
+  assert.equal(c.subKind, "savings");
+});
+
+// Deliberately only ONE holding row (below the holdingRows>=2 structural
+// threshold), no column-header line, and no generic brokerage wording at all
+// (parseFidelityPdfHoldings scans for "(TICKER) <numbers>" directly — it
+// doesn't need a header row) — the ONLY thing that gets this recognized as
+// brokerage (rather than rejected as unknown) is the new "Summit Brokerage"
+// letterhead row in the signal table.
+const SUMMIT_BROKERAGE_PDF = `
+Summit Brokerage Statement
+MICROSOFT CORP (MSFT) 450.24 2.000 373.0200 746.04 770.47 -24.43 7.28
+`;
+
+test("fictional Summit Brokerage letterhead (one holding row, no generic brokerage wording) classifies as brokerage via its own signal-table row", () => {
+  const c = classifyStatementText(SUMMIT_BROKERAGE_PDF);
+  assert.equal(c.kind, "brokerage");
+  assert.equal(c.subKind, "investment");
+  assert.ok(c.confidence >= CONFIDENCE_FLOOR, `confidence was ${c.confidence}`);
+});
+
+test("the same Summit Brokerage content WITHOUT its signal-table row would be unrecognized (sanity check that the row is load-bearing)", () => {
+  // Strip the one line that only matches via the new table row, leaving
+  // content that's brokerage-shaped in every other way (one holding row).
+  const withoutLetterhead = SUMMIT_BROKERAGE_PDF.replace("Summit Brokerage Statement\n", "");
+  const c = classifyStatementText(withoutLetterhead);
+  assert.notEqual(c.kind, "brokerage");
+});
+
 test("brokerage letterhead with no extractable holdings is rejected (low confidence)", () => {
   const c = classifyStatementText(BROKERAGE_UNPARSEABLE_PDF);
   // It's recognized as brokerage-shaped, but we can't parse it, so confidence
