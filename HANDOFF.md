@@ -1,12 +1,60 @@
 # HANDOFF — updated after the finance/stocks fix-plan run (2026-07-08/09; Phase 21 and earlier below)
 
-## Fix-plan run (this run, in progress): stock chart feasibility, statement classification
+## Fix-plan run (complete): stock chart feasibility + 6 finance/stocks fixes
 
-Working through a 6-phase fix list (bank-vs-card statement merging, net worth
-bank balances, Re-Analyze, portfolio value mismatch, % of portfolio,
-click-to-chart) plus a research spike. Each phase closes on green `npm test`
-and `npm run typecheck` before the next starts. This section grows as later
-phases land; see the phase list below for what's done so far.
+Six phases plus a research spike, each closed on green `npm test` (169 → 187
+node tests) and `npm run typecheck`; `npm run build` and `npm run doctor`
+also run clean at the end with no new breakage. Every phase was root-caused
+in writing before the fix landed, and every DB-touching change was
+live-verified against the actually-running dev app (not just unit tests) —
+synthetic statements/accounts/cache rows inserted, exercised through the
+real API, then deleted, leaving the user's real data (4 statements, 62
+transactions) exactly as found.
+
+**What changed, in one paragraph per phase:** (1) statements now get a
+content-based checking/savings/credit-card sub-type instead of one generic
+bucket, and a transfer matcher stops the same payment from double-counting
+as both spend and income; (2) net-worth balance suggestions are labeled by
+that real sub-type instead of a hardcoded "Checking", which used to make a
+savings statement collide with a checking suggestion; (3) a confirm-gated
+Re-Analyze button lets a classifier/parser fix reach statements imported
+under older code, plus manual triggers for textbook-RAG re-ingest and
+GoodNotes sync; (4) one shared `portfolio-total.ts` function replaced three
+independent (and disagreeing) portfolio-total implementations — the Today
+card was silently dropping any cost-basis-fallback holding (confirmed live:
+it would have shown ~$13,954 instead of the correct $18,776.75 on the user's
+real portfolio); (5) that same shared function now also reports each
+holding's % of portfolio, sortable; (6) click-to-chart daily price history
+via Alpha Vantage (Finnhub's history endpoint is confirmed premium-gated),
+cached at most once per ticker per day.
+
+**Correction made at the start of this run**: the fix-plan's own instructions
+said `AGENTS.md`'s claim about `node_modules/next/dist/docs/` didn't check
+out. It does — that path holds 423 files of genuine upstream Next.js 16
+docs bundled with the pinned `next@16.2.10`, `AGENTS.md` is tracked in git
+since the repo's first commit, and the bundled v16 upgrade guide documents
+real breaking changes (fully-async `cookies`/`headers`/`params`/
+`searchParams`, `middleware.ts` → `proxy.ts`) relevant to the route handlers
+touched in this run.
+
+**Deferred — needs a human with live keys/models, not guessable from here:**
+- **Alpha Vantage key**: this box has none configured (only `FINNHUB_API_KEY`
+  is set). Phase 6's click-to-chart code is built and unit-tested, but which
+  of `TIME_SERIES_DAILY` / `TIME_SERIES_DAILY_ADJUSTED` is actually free
+  could not be settled — public reports disagree, and there's no key here to
+  test with. First live session: add `ALPHAVANTAGE_API_KEY`, click a ticker,
+  confirm the chart renders real prices (not a premium-error message).
+- **The 3 pre-existing real statements** with `kind: null` (imported before
+  this run's classifier/balance-label tracking existed) were deliberately
+  left untouched — they're the user's real data, and Phase 3's Re-Analyze
+  button is the intended path to backfill them, one click each, whenever
+  convenient. Not urgent; just noting they won't self-heal.
+- Ollama's chat model is pulled and responding on this box (`npm run doctor`
+  confirms), so LLM-dependent categorization was exercised live during
+  verification, not just through its rules fallback — no LLM item deferred
+  from this run.
+
+This section documents the whole run; see per-phase detail below.
 
 - **Phase 0 (spike, no app code)**: `docs/stock-history-feasibility.md`.
   Finnhub's `/stock/candle` is confirmed premium-gated (403) on free keys.
