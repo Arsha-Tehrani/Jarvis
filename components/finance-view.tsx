@@ -47,6 +47,7 @@ const ACCOUNT_TYPE_LABEL: Record<string, string> = {
   checking: "Checking",
   savings: "Savings",
   credit_card: "Credit Card",
+  investment: "Investment",
 };
 
 type ReanalyzeCounts = { count: number; categories: Record<string, number> };
@@ -198,6 +199,34 @@ export function FinanceView() {
   // per CLAUDE.md's confirm-gate rule for financial-data writes. Opening
   // either confirmation (single or all) always replaces whatever was
   // previously pending, so only one card is ever on screen at once.
+  // Manual account-type correction (Phase 2, Symptom A): no keyword
+  // heuristic is 100% across every bank's wording forever, so let the user
+  // fix a wrong/missing badge directly. Scoped to just this statement — see
+  // lib/finance/ingest.ts's setStatementAccountType for why there's no
+  // stable cross-statement key to remember it by instead.
+  async function setAccountType(statementId: number, accountType: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_account_type",
+          statementId,
+          accountType: accountType === "" ? null : accountType,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Failed to update account type");
+      }
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function previewReanalyzeOne(statementId: number) {
     dispatchReanalyzePending({ type: "open_single", statementId });
     setReanalyzeError(null);
@@ -549,6 +578,19 @@ export function FinanceView() {
                   ) : s.kind === "transaction" ? (
                     <Badge variant="outline">Statement</Badge>
                   ) : null}
+                  <select
+                    className="rounded border border-border bg-transparent px-1 py-0.5 text-xs text-foreground"
+                    value={s.account_type ?? ""}
+                    disabled={busy}
+                    onChange={(e) => void setAccountType(s.id, e.target.value)}
+                    aria-label={`Correct account type for ${s.file_path}`}
+                  >
+                    <option value="">Unlabeled</option>
+                    <option value="checking">Checking</option>
+                    <option value="savings">Savings</option>
+                    <option value="credit_card">Credit Card</option>
+                    <option value="investment">Investment</option>
+                  </select>
                   <Button
                     size="sm"
                     variant="ghost"

@@ -16,19 +16,24 @@ import { parseFidelityPdfHoldings, looksLikeBrokerageTable } from "./brokerage-p
 
 export type StatementKind = "brokerage" | "transaction" | "unknown";
 
-// Sub-type within "transaction" — which account this statement is FOR. Never
-// derived from the filename, only from content, same as `kind` above. A
+// Sub-type — which account this statement is FOR. Never derived from the
+// filename, only from content, same as `kind` above. Within "transaction", a
 // bank/card statement with no distinguishing signal (a generic Date/
 // Description/Amount CSV with no balance column or card-specific wording)
 // is left undetermined rather than guessed — it still imports, just without
-// an account badge, per classifyStatementText/Table's callers.
-export type AccountSubKind = "checking" | "savings" | "credit_card";
+// an account badge, per classifyStatementText/Table's callers. "investment"
+// is set unconditionally whenever kind === "brokerage": unlike
+// checking/savings/credit_card there's no ambiguity to resolve — any
+// brokerage-classified statement (Fidelity or otherwise) IS an investment
+// account, so no per-institution detection is needed for this badge alone.
+export type AccountSubKind = "checking" | "savings" | "credit_card" | "investment";
 
 export type Classification = {
   kind: StatementKind;
-  // Only meaningful when kind === "transaction". `subKindConflict: true` means
-  // BOTH credit-card and checking/savings signals fired — a statement can't
-  // honestly be both, so the caller rejects rather than picking one.
+  // "investment" is always set when kind === "brokerage"; the other three
+  // values only apply when kind === "transaction". `subKindConflict: true`
+  // means BOTH credit-card and checking/savings signals fired — a statement
+  // can't honestly be both, so the caller rejects rather than picking one.
   subKind?: AccountSubKind;
   subKindConflict?: boolean;
   // 0..1 — how sure we are. Below CONFIDENCE_FLOOR the caller rejects the
@@ -52,7 +57,14 @@ const TXN_HEADER =
 // as checking; only the account-name wording tells them apart.
 const CREDIT_CARD_SIGNAL =
   /Minimum Payment Due|New Balance:?\s*\$|Credit Limit|Available Credit|Payment Due Date/i;
-const SAVINGS_SIGNAL = /Savings Account|Regular Savings|Statement Savings|Total Savings/i;
+// Deliberately NOT a bare "Savings Account" match: a real Chase checking
+// statement's standard overdraft-protection disclosure reads "...a link to a
+// Chase savings account..." — a mention of a DIFFERENT, linked account, not
+// this statement's own type. That incidental phrase was confirmed (against
+// the user's real May/June statements — same account, two different real
+// PDFs) to be the actual cause of a checking statement scoring as savings.
+// These phrases only appear as this statement's own account-type header.
+const SAVINGS_SIGNAL = /Regular Savings|Statement Savings|Total Savings|Savings Summary/i;
 const CHECKING_STRUCTURE_SIGNAL =
   /DATE\s+DESCRIPTION\s+AMOUNT\s+BALANCE|Beginning Balance\s*\$?[\d,]+\.\d{2}|Ending Balance\s*\$?[\d,]+\.\d{2}|Total Checking|Checking Account/i;
 
@@ -89,6 +101,13 @@ function countTransactionRecords(text: string): number {
   return n;
 }
 
+// Every brokerage-kind result carries subKind "investment" unconditionally —
+// unlike checking/savings/credit_card there's no ambiguity to resolve here,
+// any brokerage statement IS an investment account.
+function brokerage(confidence: number, signals: string[]): Classification {
+  return { kind: "brokerage", subKind: "investment", confidence, signals };
+}
+
 // Classify already-extracted PDF (or any flat) text.
 export function classifyStatementText(text: string): Classification {
   const brokerageHeader = BROKERAGE_HEADER.test(text);
@@ -108,10 +127,10 @@ export function classifyStatementText(text: string): Classification {
   // they dominate. A statement can carry both (a brokerage report may list
   // activity), so compare magnitudes rather than treating either as binary.
   if (holdingRows >= 2 && holdingRows >= txnRows) {
-    return { kind: "brokerage", confidence: 0.95, signals };
+    return brokerage(0.95, signals);
   }
   if (brokerageHeader && holdingRows >= 1 && !txnHeader) {
-    return { kind: "brokerage", confidence: 0.8, signals };
+    return brokerage(0.8, signals);
   }
   if (txnHeader || txnRows >= 3) {
     // A brokerage report with no extractable holdings but transaction-shaped
@@ -119,7 +138,7 @@ export function classifyStatementText(text: string): Classification {
     // lacks brokerage letterhead; otherwise it's an unparseable brokerage doc.
     if (brokerageHeader && holdingRows === 0 && txnRows < 3) {
       signals.push("looks like a brokerage report but no holdings could be extracted");
-      return { kind: "brokerage", confidence: 0.3, signals };
+      return brokerage(0.3, signals);
     }
     const { subKind, subKindConflict, subKindSignal } = detectSubKind(text);
     if (subKindSignal) signals.push(subKindSignal);
@@ -134,7 +153,7 @@ export function classifyStatementText(text: string): Classification {
   }
   if (brokerageHeader) {
     signals.push("brokerage letterhead but no holdings extracted");
-    return { kind: "brokerage", confidence: 0.3, signals };
+    return brokerage(0.3, signals);
   }
   signals.push("no recognizable holdings or transaction structure");
   return { kind: "unknown", confidence: 0, signals };
@@ -147,11 +166,7 @@ export function classifyStatementTable(table: string[][]): Classification {
     return { kind: "unknown", confidence: 0, signals: ["empty file"] };
   }
   if (looksLikeBrokerageTable(table)) {
-    return {
-      kind: "brokerage",
-      confidence: 0.9,
-      signals: ["CSV has Symbol + Quantity/Shares/Action columns"],
-    };
+    return brokerage(0.9, ["CSV has Symbol + Quantity/Shares/Action columns"]);
   }
   // Bank/credit-card CSV needs date + description + an amount (or debit/credit).
   const header = table[0].map((h) => h.trim().toLowerCase());
@@ -163,7 +178,7 @@ export function classifyStatementTable(table: string[][]): Classification {
   if (hasDate && hasDesc && hasAmount) {
     // Flatten the whole table (header + cells) through the same prose signals
     // used for PDFs — a CSV export can carry "Minimum Payment Due" or
-    // "Savings Account" in a summary row or column value. A bare "Balance"
+    // "Total Savings" in a summary row or column value. A bare "Balance"
     // column (no prose match) is still a checking/savings signal on its own,
     // since running-balance columns are how bank exports look structurally
     // different from card exports.
