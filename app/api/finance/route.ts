@@ -13,6 +13,7 @@ import {
   commitReanalyze,
   importNewStatements,
   previewReanalyze,
+  setStatementAccountType,
   statementsDir,
 } from "@/lib/finance/ingest";
 import { getComparisonPeriod, getLatestPeriod, periodsWithData } from "@/lib/finance/query";
@@ -40,6 +41,14 @@ const actionSchema = z.discriminatedUnion("action", [
   // an explicit user confirm click.
   z.object({ action: z.literal("reanalyze_preview"), statementId: z.number().int().positive() }),
   z.object({ action: z.literal("reanalyze_commit"), statementId: z.number().int().positive() }),
+  // Manual account-type correction (Phase 2, Symptom A) — scoped to one
+  // statement, not confirm-gated: a lightweight, freely-reversible relabel,
+  // the same class of action as the transaction category PATCH.
+  z.object({
+    action: z.literal("set_account_type"),
+    statementId: z.number().int().positive(),
+    accountType: z.enum(["checking", "savings", "credit_card", "investment"]).nullable(),
+  }),
 ]);
 
 export async function GET(req: NextRequest) {
@@ -106,6 +115,18 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       return NextResponse.json(
         { error: err instanceof Error ? err.message : "Re-analyze failed" },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (parsed.data.action === "set_account_type") {
+    try {
+      const result = setStatementAccountType(parsed.data.statementId, parsed.data.accountType);
+      return NextResponse.json(result);
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Could not update account type" },
         { status: 400 }
       );
     }

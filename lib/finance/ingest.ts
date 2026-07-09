@@ -43,6 +43,9 @@ const SUBKIND_LABEL: Record<AccountSubKind, string> = {
   checking: "Checking",
   savings: "Savings",
   credit_card: "Credit Card",
+  investment: "Investment", // never actually looked up: brokerage statements
+  // don't call extractStatementBalance. Present only so this Record stays
+  // total over AccountSubKind.
 };
 
 export type ImportStatus = "imported" | "warning" | "rejected";
@@ -220,13 +223,14 @@ function importBrokerage(
 
   const { year, month } = inferPeriodEnd(rawText);
   const statementMonth = `${year}-${String(month).padStart(2, "0")}`;
-  recordStatement(file, statementMonth, "brokerage", rawText);
+  recordStatement(file, statementMonth, "brokerage", rawText, classification.subKind);
   const result = importBrokerageHoldings(holdings, source.includes("history") ? "history" : "positions");
   return {
     file,
     status: warnings.length > 0 ? "warning" : "imported",
     imported: result.upserted,
     kind: "brokerage",
+    accountType: classification.subKind,
     categorizedBy: source,
     warnings: warnings.length > 0 ? warnings : undefined,
     confidence: classification.confidence,
@@ -514,6 +518,7 @@ export async function previewReanalyze(statementId: number): Promise<ReanalyzePr
         statementId,
         file: stmt.file_path,
         kind: "brokerage",
+        accountType: classification.subKind,
         current,
         next: { count: holdings.length, categories: {} },
       };
@@ -574,4 +579,36 @@ export async function commitReanalyze(statementId: number): Promise<ImportResult
     detectTransfers();
   }
   return result;
+}
+
+// --- Manual account-type override: no keyword heuristic will be 100%
+// across every bank's wording forever (Phase 2, Symptom A). Unlike
+// category_overrides (keyed by merchant, so it survives re-import and
+// applies to future statements from the same merchant), there's no stable,
+// non-account-number fingerprint to key a global override off of — README
+// deliberately never persists account numbers. So this correction is scoped
+// to just this one statement: it directly sets what's already stored,
+// exactly as the classifier would have, had it guessed right. Re-Analyzing
+// this statement later re-runs the classifier fresh and can overwrite it
+// again, same as category_overrides interacting with re-categorization.
+export function setStatementAccountType(
+  statementId: number,
+  accountType: AccountSubKind | null
+): { statementId: number; accountType: AccountSubKind | null } {
+  const db = getDb();
+  const stmt = db.prepare("SELECT id FROM statements WHERE id = ?").get(statementId) as
+    | { id: number }
+    | undefined;
+  if (!stmt) throw new Error("Statement not found");
+
+  const apply = db.transaction(() => {
+    db.prepare("UPDATE statements SET account_type = ? WHERE id = ?").run(accountType, statementId);
+    db.prepare("UPDATE transactions SET account_type = ? WHERE statement_id = ?").run(
+      accountType,
+      statementId
+    );
+  });
+  apply();
+
+  return { statementId, accountType };
 }

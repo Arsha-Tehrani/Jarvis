@@ -51,6 +51,90 @@ replaces whatever was pending. The component now gates each card's render on
   confirmed back to the exact pre-test baseline (6 statements / 111
   transactions).
 
+## Phase 2 (2026-07-09): account-type tagging — checking↔savings mislabel, Fidelity untagged
+
+Two symptoms, one shared root: `lib/finance/classify.ts`'s `account_type`
+sub-type scoring.
+
+**Symptom A investigation:** dumped the user's actual (account-number-redacted)
+`raw_text` for the real May statement (id 23, classified `savings`) and the
+real June statement (id 28, classified `checking`) — confirmed by their own
+running-balance chain (May's Ending Balance $4,573.81 = June's Beginning
+Balance $4,573.81) that these are literally the **same Chase Total Checking
+account**, two consecutive cycles. Grepping May's full extracted text for
+`/savings?/i` found the trigger: page 4 carries Chase's standard
+overdraft-protection disclosure, "*We offer Overdraft Protection through a
+link to a Chase savings account, which may be less expensive...*" — a mention
+of a **different, linked** account, not this statement's own type. June's
+statement (6,737 chars, fully captured — no truncation) simply didn't include
+that disclosure page that cycle. `SAVINGS_SIGNAL`'s old
+`/Savings Account|Regular Savings|Statement Savings|Total Savings/i` matched
+the boilerplate's "savings account" substring directly, and `detectSubKind`
+checked `isSavings` before `hasCheckingStructure`, so the incidental phrase
+won over "Chase Total Checking" + a full Beginning/Ending Balance structure.
+Real content difference, not a logic bug — confirmed per the fix-plan's own
+instruction to settle which before fixing.
+
+**Symptom B investigation:** `lib/finance/ingest.ts`'s `importBrokerage`
+called `recordStatement(file, statementMonth, "brokerage", rawText)` — no
+5th (`accountType`) argument, ever. Confirmed directly: not a
+misclassification, `account_type` was simply never set for any
+`brokerage`-kind statement, full stop.
+
+**Fixes:**
+1. `SAVINGS_SIGNAL` tightened to `/Regular Savings|Statement Savings|Total Savings|Savings Summary/i`
+   — header-style phrases that name *this* statement's own account, never a
+   bare "Savings Account" mention that can appear in unrelated prose. The
+   existing `SAVINGS_PDF` fixture ("Chase Savings" / "Regular Savings Account
+   Summary") still matches via "Regular Savings", so genuine savings
+   detection is unaffected.
+2. **Manual override**: a small `<select>` next to each statement's badge
+   (Unlabeled/Checking/Savings/Credit Card/Investment) → new
+   `POST /api/finance {action:"set_account_type"}` →
+   `setStatementAccountType()` in `ingest.ts`, which writes `account_type`
+   directly on that statement AND all its transactions. Not confirm-gated —
+   same class of lightweight, freely-reversible correction as the existing
+   transaction-category PATCH, not a delete. Scoped to one statement rather
+   than a global by-merchant override (like `category_overrides`) because
+   README's no-account-numbers-persisted rule means there's no stable
+   cross-statement key to remember it by; noted in the README.
+3. `AccountSubKind` gained a 4th value, `"investment"`, set **unconditionally**
+   whenever `kind === "brokerage"` (a new `brokerage()` helper in
+   `classify.ts` wraps every brokerage return path) — this isn't
+   Fidelity-specific detection, any brokerage statement structurally IS an
+   investment account, so no per-institution signal was needed for this
+   badge alone. `importBrokerage` now passes `classification.subKind` through
+   to `recordStatement` and the returned `ImportResult`.
+   **Bug caught during live-verification**, not by a unit test:
+   `previewReanalyze`'s brokerage branch built its own return object and
+   also omitted `accountType` (same class of oversight, different call
+   site) — the preview card showed "25 → 25 holdings" with no "— Investment"
+   suffix even though the commit path was already fixed. Added the missing
+   field; a fresh preview then showed the suffix correctly.
+- 8 new tests in `tests/finance-classify.test.ts`: the real May/June excerpts
+  (reproduced with the load-bearing sentences only — names, address, and
+  transaction detail are the user's real PII and were deliberately **not**
+  committed to a git-tracked fixture) both now classify `checking`; the
+  existing synthetic savings fixture still classifies `savings` (regression
+  guard against Symptom-A's fix making savings unreachable); a brokerage PDF
+  and a Fidelity-letterhead PDF and a brokerage positions CSV all
+  sub-classify `investment`. `npm test`: 199 passing (up from 193).
+- **Live-verified against the running app, on the user's real data** (per
+  the fix-plan's explicit instruction for this phase — the fix stays live,
+  not cleaned up): Re-Analyzed the real May statement (id 23→32) — preview
+  showed "Checking" instead of "Savings", confirmed. Re-Analyzed both real
+  Fidelity statements (id 25→33, 26→34) — previews now show "— Investment"
+  (after the previewReanalyze fix above), confirmed. Final real state: 2
+  checking, 2 credit_card, 2 investment across the 6 real statements; 111
+  transactions and 25 holdings unchanged in count. Screenshotted the
+  Statements list showing all six badges + correction dropdowns.
+  Separately, live-verified the **manual override** with disposable synthetic
+  data (a no-signal CSV that imports unlabeled): set it to "Savings" via the
+  dropdown, confirmed both `statements.account_type` and every one of its
+  `transactions.account_type` rows updated in the DB and the badge/dropdown
+  reflected it in the UI, then deleted the synthetic statement (back to 6
+  statements / 111 transactions).
+
 # HANDOFF — updated after the finance/stocks fix-plan run (2026-07-08/09; Phase 21 and earlier below)
 
 ## Fix-plan run (complete): stock chart feasibility + 6 finance/stocks fixes
