@@ -1,3 +1,56 @@
+# HANDOFF — fix-plan-2 run (2026-07-09; runs before this are below)
+
+Continuous run, no pause between phases (per this run's own instructions). Each
+phase: root-caused in writing, fixed, tested (`node --test`), live-verified
+against the actually-running dev app with synthetic data (inserted, exercised,
+cleaned up — real data confirmed untouched unless a phase says otherwise), and
+committed separately.
+
+Baseline at the start of this run: 6 real statements / 111 real transactions
+(grown since the previous run's 4/62 baseline — the user imported more real
+statements between runs; not touched by this run except where a phase says
+so).
+
+## Phase 1 (2026-07-09): Re-Analyze vs Re-Analyze All — dual-open confirmation
+
+**Bug:** clicking Re-Analyze on one statement opened its confirm card; then
+clicking Re-Analyze All opened a *second* card alongside it instead of
+replacing the first. Confirming All didn't dismiss the leftover single card,
+which could then be confirmed against already-changed data.
+
+**Root cause, confirmed by reading `components/finance-view.tsx`:** pending
+confirmation state was two independent variables — `reanalyzePreview` (single)
+and `reanalyzeAllPreviews` (all) — so both could be simultaneously non-null.
+Nothing modeled "at most one pending action."
+
+**Fix:** replaced both booleans with one pending-action value,
+`{type:'single',statementId}|{type:'all'}|null`, via a small pure reducer in
+new `lib/finance/reanalyze-ui-state.ts` (`reanalyzeUiReducer`, actions
+`open_single`/`open_all`/`close`) — opening either kind of confirmation always
+replaces whatever was pending. The component now gates each card's render on
+`reanalyzePending?.type`, and confirm/cancel both dispatch `close`.
+
+- 6 new tests in `tests/finance-reanalyze-ui-state.test.ts`: open single →
+  open single on a different statement (first closes); open single → open
+  all (single closes, all opens); open all → open single (all closes);
+  confirm/close on all leaves nothing pending, no stale single card; cancel
+  one → the other type opens cleanly afterward; close on an already-null
+  state is a no-op. `npm test`: 193 passing (up from 187).
+- **Live-verified** against the running dev app: dropped two synthetic
+  checking CSVs into `/statements`, scanned, confirmed they imported (8
+  statements total). Clicked Re-Analyze on one — single card showed. Clicked
+  Re-Analyze All — screenshotted proof that **only the "all" card was
+  visible**, the single card gone (the exact reported bug, now fixed).
+  Clicked Cancel on the all-card — confirmed zero cards pending. Reopened a
+  single card on the other synthetic statement, clicked Confirm — confirmed
+  it cleared with no leftover card after. Deliberately did **not** click
+  "Confirm Re-Analyze All" for real, since that would have re-run the
+  (still-buggy, pre-Phase-2) classifier over all 6 real statements as a side
+  effect of a Phase 1 UI test — out of scope for this phase. Cleaned up:
+  deleted both synthetic statements (DB cascade) and their CSV files;
+  confirmed back to the exact pre-test baseline (6 statements / 111
+  transactions).
+
 # HANDOFF — updated after the finance/stocks fix-plan run (2026-07-08/09; Phase 21 and earlier below)
 
 ## Fix-plan run (complete): stock chart feasibility + 6 finance/stocks fixes
