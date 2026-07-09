@@ -98,6 +98,9 @@ type ImportResult = {
   llmError?: string;
   confidence?: number;
   signals?: string[];
+  // Option B, docs/multi-institution-parsing.md: a confirm-gated suggestion
+  // from the local LLM on a rejected (unknown/below-floor) file.
+  llmSuggestion?: { kind: "brokerage" | "transaction"; subKind?: string; reason: string };
 };
 
 type MonthComparison = { current: MonthSummary; comparison: MonthSummary | null };
@@ -350,6 +353,48 @@ export function FinanceView() {
     }
   }
 
+  // Option B, docs/multi-institution-parsing.md: confirm a local-LLM
+  // suggestion on a file the deterministic scorer rejected. Never runs
+  // without this explicit click — nothing is auto-applied.
+  async function confirmLlmSuggestion(index: number) {
+    const r = importResults?.[index];
+    if (!r?.llmSuggestion) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "import_with_suggestion",
+          file: r.file,
+          kind: r.llmSuggestion.kind,
+          subKind: r.llmSuggestion.subKind,
+        }),
+      });
+      const body = await res.json();
+      setImportResults((prev) => {
+        if (!prev) return prev;
+        const next = [...prev];
+        next[index] = res.ok
+          ? body.result
+          : { ...r, reason: body.error ?? "Import failed", llmSuggestion: undefined };
+        return next;
+      });
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function dismissLlmSuggestion(index: number) {
+    setImportResults((prev) => {
+      if (!prev) return prev;
+      const next = [...prev];
+      next[index] = { ...next[index], llmSuggestion: undefined };
+      return next;
+    });
+  }
+
   async function saveGoal(e: React.FormEvent) {
     e.preventDefault();
     const target = Number(goalTarget);
@@ -562,6 +607,32 @@ export function FinanceView() {
                       ))}
                     </ul>
                   ) : null}
+                  {r.llmSuggestion && (
+                    <div className="mt-1 flex flex-col gap-1 rounded border border-border p-2 text-foreground">
+                      <p>
+                        This looks like a{" "}
+                        <span className="font-medium">
+                          {r.llmSuggestion.subKind && ACCOUNT_TYPE_LABEL[r.llmSuggestion.subKind]
+                            ? ACCOUNT_TYPE_LABEL[r.llmSuggestion.subKind]
+                            : r.llmSuggestion.kind}
+                        </span>{" "}
+                        statement, per the local model: <em>{r.llmSuggestion.reason}</em>
+                      </p>
+                      <div className="flex gap-2">
+                        <Button size="sm" disabled={busy} onClick={() => confirmLlmSuggestion(i)}>
+                          Tag it and import
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => dismissLlmSuggestion(i)}
+                        >
+                          Skip
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

@@ -13,6 +13,7 @@
 // `node --test` runner, like the other unit-tested finance modules it builds on.
 import { groupRecords } from "./parse.ts";
 import { parseFidelityPdfHoldings, looksLikeBrokerageTable } from "./brokerage-parse.ts";
+import { tagMatches } from "./institution-signals.ts";
 
 export type StatementKind = "brokerage" | "transaction" | "unknown";
 
@@ -46,27 +47,12 @@ export type Classification = {
 // A file classified below this is rejected rather than guessed-and-imported.
 export const CONFIDENCE_FLOOR = 0.5;
 
-const BROKERAGE_HEADER =
-  /INVESTMENT REPORT|Brokerage services provided|Your Account Value|Ending Account Value|Holdings?\s+as of|Positions?\s+as of|Realized Gain\/Loss|Symbol\/?\s*CUSIP/i;
-const TXN_HEADER =
-  /DATE\s+DESCRIPTION\s+AMOUNT\s+BALANCE|Minimum Payment Due|Beginning Balance\s*\$?[\d,]+\.\d{2}|Payment Due Date/i;
-
-// Sub-type signals within "transaction" — same content-based approach as the
-// kind classification above. Savings is checked before the generic balance
-// structure because a savings statement has the SAME running-balance layout
-// as checking; only the account-name wording tells them apart.
-const CREDIT_CARD_SIGNAL =
-  /Minimum Payment Due|New Balance:?\s*\$|Credit Limit|Available Credit|Payment Due Date/i;
-// Deliberately NOT a bare "Savings Account" match: a real Chase checking
-// statement's standard overdraft-protection disclosure reads "...a link to a
-// Chase savings account..." — a mention of a DIFFERENT, linked account, not
-// this statement's own type. That incidental phrase was confirmed (against
-// the user's real May/June statements — same account, two different real
-// PDFs) to be the actual cause of a checking statement scoring as savings.
-// These phrases only appear as this statement's own account-type header.
-const SAVINGS_SIGNAL = /Regular Savings|Statement Savings|Total Savings|Savings Summary/i;
-const CHECKING_STRUCTURE_SIGNAL =
-  /DATE\s+DESCRIPTION\s+AMOUNT\s+BALANCE|Beginning Balance\s*\$?[\d,]+\.\d{2}|Ending Balance\s*\$?[\d,]+\.\d{2}|Total Checking|Checking Account/i;
+// Wording signals (which phrase means "this is a brokerage statement" /
+// "this is a checking account", etc.) live in institution-signals.ts as a
+// data table, not as hardcoded regexes here — see that file's header comment.
+// Everything below stays STRUCTURAL (holding-row arithmetic, transaction-row
+// shape, CSV column names), which already generalizes across institutions
+// without needing a table entry.
 
 // Returns undefined subKind (not a conflict) when the content gives no
 // distinguishing signal at all — e.g. a generic Date/Description/Amount CSV
@@ -76,9 +62,9 @@ const CHECKING_STRUCTURE_SIGNAL =
 function detectSubKind(text: string): Pick<Classification, "subKind" | "subKindConflict"> & {
   subKindSignal?: string;
 } {
-  const isCard = CREDIT_CARD_SIGNAL.test(text);
-  const isSavings = SAVINGS_SIGNAL.test(text);
-  const hasCheckingStructure = CHECKING_STRUCTURE_SIGNAL.test(text);
+  const isCard = tagMatches(text, "credit_card");
+  const isSavings = tagMatches(text, "savings");
+  const hasCheckingStructure = tagMatches(text, "checking");
   if (isCard && (isSavings || hasCheckingStructure)) {
     return { subKindConflict: true };
   }
@@ -110,8 +96,8 @@ function brokerage(confidence: number, signals: string[]): Classification {
 
 // Classify already-extracted PDF (or any flat) text.
 export function classifyStatementText(text: string): Classification {
-  const brokerageHeader = BROKERAGE_HEADER.test(text);
-  const txnHeader = TXN_HEADER.test(text);
+  const brokerageHeader = tagMatches(text, "brokerage_header");
+  const txnHeader = tagMatches(text, "transaction_header");
   // Strongest signal available: how many holding rows survive the arithmetic
   // self-check (qty×price ≈ market value). Prose/disclaimer lines can't.
   const holdingRows = parseFidelityPdfHoldings(text).length;
