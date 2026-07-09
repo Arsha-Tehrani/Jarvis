@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { InvestmentHoldings } from "@/components/investment-holdings";
 import type {
   CategorySpend,
   CutbackSuggestion,
@@ -33,6 +35,7 @@ import type {
 } from "@/lib/finance/analyze";
 import type { RadarItem } from "@/lib/finance/radar";
 import { reanalyzeUiReducer } from "@/lib/finance/reanalyze-ui-state";
+import type { FinanceTab } from "@/lib/finance/finance-tabs";
 
 type Statement = {
   id: number;
@@ -162,6 +165,8 @@ export function FinanceView() {
   const [month, setMonth] = useState<string | null>(null);
   // Category filter shared by the chips, the spend chart, and the txn table.
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  // Phase 4: which of the four account-type tabs the Transactions section shows.
+  const [financeTab, setFinanceTab] = useState<FinanceTab>("total");
 
   const load = useCallback(async (ym: string | null) => {
     try {
@@ -853,12 +858,66 @@ export function FinanceView() {
           <CardTitle>Transactions — {monthLabel(data.currentPeriod)}</CardTitle>
         </CardHeader>
         <CardContent>
-          <TransactionTable
-            month={data.currentPeriod}
-            categoryFilter={categoryFilter}
-            onClearFilter={() => setCategoryFilter(null)}
-            onChanged={() => void load(month)}
-          />
+          {/* Built on Phase 2/3's account_type tagging — a tab is only as
+              good as the classification feeding it. */}
+          <Tabs value={financeTab} onValueChange={(v) => setFinanceTab(v as FinanceTab)}>
+            <TabsList>
+              <TabsTrigger value="total">Total</TabsTrigger>
+              <TabsTrigger value="checking">Checking & Savings</TabsTrigger>
+              <TabsTrigger value="credit_card">Credit Card</TabsTrigger>
+              <TabsTrigger value="investment">Investment</TabsTrigger>
+            </TabsList>
+            <TabsContent value="total" className="mt-3">
+              <TransactionTable
+                month={data.currentPeriod}
+                tab="total"
+                categoryFilter={categoryFilter}
+                onClearFilter={() => setCategoryFilter(null)}
+                onChanged={() => void load(month)}
+              />
+            </TabsContent>
+            <TabsContent value="checking" className="mt-3">
+              <p className="mb-2 text-sm font-medium text-muted-foreground">
+                Checking & Savings
+              </p>
+              <TransactionTable
+                month={data.currentPeriod}
+                tab="checking"
+                categoryFilter={categoryFilter}
+                onClearFilter={() => setCategoryFilter(null)}
+                onChanged={() => void load(month)}
+              />
+            </TabsContent>
+            <TabsContent value="credit_card" className="mt-3">
+              <TransactionTable
+                month={data.currentPeriod}
+                tab="credit_card"
+                categoryFilter={categoryFilter}
+                onClearFilter={() => setCategoryFilter(null)}
+                onChanged={() => void load(month)}
+              />
+            </TabsContent>
+            <TabsContent value="investment" className="mt-3 flex flex-col gap-4">
+              <div>
+                <p className="mb-2 text-sm font-medium text-muted-foreground">
+                  Current holdings
+                </p>
+                <InvestmentHoldings />
+              </div>
+              <div>
+                <p className="mb-2 text-sm font-medium text-muted-foreground">
+                  Investment-related transactions
+                </p>
+                <TransactionTable
+                  month={data.currentPeriod}
+                  tab="investment"
+                  categoryFilter={categoryFilter}
+                  onClearFilter={() => setCategoryFilter(null)}
+                  onChanged={() => void load(month)}
+                />
+              </div>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
 
