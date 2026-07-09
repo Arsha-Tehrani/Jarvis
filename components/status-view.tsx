@@ -160,10 +160,47 @@ export function StatusView() {
                 onChanged={() => load(true)}
               />
             )}
+            {check.id === "google-drive" && check.status === "ok" && <GoodNotesSyncButton />}
           </Card>
         ))}
       </div>
       {data?.sync && <SyncSection sync={data.sync} />}
+    </div>
+  );
+}
+
+// Manual trigger for the hourly GoodNotes->Drive->RAG poll (lib/goodnotes.ts),
+// which otherwise only runs on its own schedule + launch catch-up. Shown
+// next to Google Drive since that's the dependency GoodNotes sync needs.
+function GoodNotesSyncButton() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function syncNow() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/goodnotes/sync", { method: "POST" });
+      const body = await res.json();
+      setResult(
+        res.ok
+          ? `${body.ingested} ingested, ${body.skipped} unchanged of ${body.scanned} scanned` +
+              (body.failed?.length ? `, ${body.failed.length} failed` : "")
+          : (body.error ?? "Sync failed")
+      );
+    } catch {
+      setResult("Could not reach the app's API.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border pt-2">
+      <Button size="sm" variant="outline" disabled={busy} onClick={syncNow} className="self-start">
+        {busy ? "Syncing…" : "Sync GoodNotes now"}
+      </Button>
+      {result && <p className="text-xs text-muted-foreground">{result}</p>}
     </div>
   );
 }
@@ -183,6 +220,35 @@ function SidecarControls({
   const [actionError, setActionError] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState<string[] | null>(null);
+  const [reingestPath, setReingestPath] = useState("");
+  const [reingestResult, setReingestResult] = useState<string | null>(null);
+
+  // Manual re-ingest: the sidecar's /ingest is already idempotent (replaces
+  // rather than duplicates a book's chunks), so this is just a UI trigger
+  // for it — no confirm gate needed, nothing is deleted or overwritten
+  // destructively.
+  async function reingestTextbook() {
+    if (!reingestPath.trim()) return;
+    setBusy(true);
+    setReingestResult(null);
+    try {
+      const res = await fetch("/api/textbook/reingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: reingestPath.trim() }),
+      });
+      const body = await res.json();
+      setReingestResult(
+        res.ok
+          ? `Ingested ${body.chunks} chunk(s) from ${body.source} (${body.collection_total} total in the collection).`
+          : (body.error ?? "Re-ingest failed")
+      );
+    } catch {
+      setReingestResult("Could not reach the app's API.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const needsSetup =
     sidecar.kind === "bundled" &&
@@ -312,6 +378,23 @@ function SidecarControls({
         <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 text-[10px] leading-relaxed whitespace-pre-wrap">
           {logs === null ? "loading…" : logs.length > 0 ? logs.join("\n") : "(no output captured yet)"}
         </pre>
+      )}
+      {sidecar.id === "textbook-rag" && sidecar.state === "running" && (
+        <div className="flex flex-col gap-1 border-t border-border pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              placeholder="Absolute path to a book (.pdf/.md/.txt) to re-ingest"
+              value={reingestPath}
+              onChange={(e) => setReingestPath(e.target.value)}
+              className="min-w-64 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+            />
+            <Button size="sm" variant="outline" disabled={busy || !reingestPath.trim()} onClick={reingestTextbook}>
+              Re-ingest
+            </Button>
+          </div>
+          {reingestResult && <p className="text-xs text-muted-foreground">{reingestResult}</p>}
+        </div>
       )}
     </div>
   );

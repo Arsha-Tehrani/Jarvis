@@ -9,7 +9,12 @@ import {
   spendByCategory,
 } from "@/lib/finance/analyze";
 import { categoryReference } from "@/lib/finance/categorize";
-import { importNewStatements, statementsDir } from "@/lib/finance/ingest";
+import {
+  commitReanalyze,
+  importNewStatements,
+  previewReanalyze,
+  statementsDir,
+} from "@/lib/finance/ingest";
 import { getComparisonPeriod, getLatestPeriod, periodsWithData } from "@/lib/finance/query";
 import { billRadar } from "@/lib/finance/radar";
 import { getTool } from "@/lib/tools";
@@ -30,6 +35,11 @@ const actionSchema = z.discriminatedUnion("action", [
       .min(1)
       .max(20),
   }),
+  // Re-Analyze: a destructive financial-data write (CLAUDE.md rule 2), so the
+  // UI must call reanalyze_preview first and only send reanalyze_commit after
+  // an explicit user confirm click.
+  z.object({ action: z.literal("reanalyze_preview"), statementId: z.number().int().positive() }),
+  z.object({ action: z.literal("reanalyze_commit"), statementId: z.number().int().positive() }),
 ]);
 
 export async function GET(req: NextRequest) {
@@ -75,6 +85,30 @@ export async function POST(req: NextRequest) {
   if (parsed.data.action === "import") {
     const results = await importNewStatements();
     return NextResponse.json({ results });
+  }
+
+  if (parsed.data.action === "reanalyze_preview") {
+    try {
+      const preview = await previewReanalyze(parsed.data.statementId);
+      return NextResponse.json({ preview });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Preview failed" },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (parsed.data.action === "reanalyze_commit") {
+    try {
+      const result = await commitReanalyze(parsed.data.statementId);
+      return NextResponse.json({ result });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Re-analyze failed" },
+        { status: 400 }
+      );
+    }
   }
 
   // create_renewal_events — executes only after the user's explicit

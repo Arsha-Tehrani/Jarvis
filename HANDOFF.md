@@ -99,6 +99,50 @@ phases land; see the phase list below for what's done so far.
     transactions / 0 accounts).
   - New test in `tests/finance-pdf.test.ts` for the label override + default
     fallback.
+- **Phase 3: Re-Analyze.** `importNewStatements()` only ever scans for files
+  NOT already in the `statements` table, so Phase 1/2's classifier and
+  balance-label fixes could never reach the user's 3 real pre-existing
+  statements without hand-deleting DB rows. Added:
+  - `lib/finance/ingest.ts`: exported `importOne` (was private), plus new
+    `previewReanalyze(statementId)` (zero-write — re-reads and re-classifies
+    the original file, diffs against current DB counts/categories; category
+    counts use the deterministic rules only, fast and side-effect-free) and
+    `commitReanalyze(statementId)` (deletes the statement — cascades its
+    transactions via the existing FK — then calls `importOne` for a full
+    fresh import, reusing 100% of existing classify/parse/categorize logic).
+    `category_overrides` survives automatically since it's untouched by the
+    per-statement delete.
+  - `app/api/finance/route.ts`: two new confirm-gated actions,
+    `reanalyze_preview` and `reanalyze_commit` (CLAUDE.md rule 2 — a
+    destructive financial-data write needs an explicit confirm step; split
+    into preview/commit rather than one action so the UI has something real
+    to show before committing).
+  - `components/finance-view.tsx`: **Re-Analyze** button per statement +
+    **Re-Analyze All**, both showing a before/after diff card (count +
+    estimated category breakdown, or the rejection reason) with
+    Confirm/Cancel before anything is deleted.
+  - **Live-verified** end-to-end against the running app: imported a test
+    checking statement, previewed re-analyze (confirmed zero DB writes,
+    correct 2→2 count + category estimate), committed (confirmed old
+    statement row replaced by a fresh one, transaction count unchanged), then
+    specifically proved **category_overrides survives**: set a manual
+    override on a merchant, re-analyzed again, confirmed the override — not
+    the LLM/rules category — won. Cleaned up after (DB back to 4 statements
+    / 62 transactions).
+  - **Textbook RAG & GoodNotes manual triggers**: the plan assumed a
+    "page that lists ingested textbooks" to put a per-book Re-Analyze button
+    on — no such page exists (textbooks are ingested by absolute path via a
+    CLI/agent tool only, no book-tracking table). Rather than build a whole
+    book-management UI that was never asked for elsewhere, added the
+    minimal real fix: a path field + **Re-ingest** button on `/status`'s
+    existing textbook-rag sidecar card (new `POST /api/textbook/reingest`,
+    a thin proxy to the sidecar's already-idempotent `/ingest`), and a
+    **Sync GoodNotes now** button next to the Google Drive check (new
+    `POST /api/goodnotes/sync`, calling the exact same `syncGoodNotes()`
+    core the hourly cron uses). Both live-verified to fail gracefully
+    (clear message, not a crash) when the sidecar is down / Drive isn't
+    connected — the sidecar wasn't running and GoodNotes' Drive folder
+    doesn't exist on this box, both surfaced correctly.
 
 ## Phase 21 (2026-07-06, third run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
 

@@ -7,7 +7,7 @@ import {
   validateHoldings,
 } from "@/lib/finance/brokerage";
 import { parseFidelityPdfHoldings } from "@/lib/finance/brokerage-parse";
-import { categorizeTransactions } from "@/lib/finance/categorize";
+import { categorizeByRules, categorizeTransactions, forcedCategory } from "@/lib/finance/categorize";
 import {
   classifyStatementTable,
   classifyStatementText,
@@ -136,7 +136,7 @@ function rejected(
   };
 }
 
-async function importOne(dir: string, file: string): Promise<ImportResult> {
+export async function importOne(dir: string, file: string): Promise<ImportResult> {
   const fullPath = path.join(dir, file);
   const isPdf = /\.pdf$/i.test(file);
 
@@ -412,4 +412,166 @@ export function detectRecurring(): void {
     for (const id of recurringIds) mark.run(id);
   });
   apply();
+}
+
+// --- Re-Analyze: re-run classify -> parse -> categorize on a file already in
+// the statements table, so a classifier/parser fix (like the sub-type work
+// above) can reach statements imported before the fix existed, without
+// hand-deleting DB rows. This is a destructive financial-data write (CLAUDE.md
+// rule 2), so it's split into a non-destructive preview and a separate
+// commit — the UI shows the preview and requires an explicit confirm click
+// before commit runs.
+
+export type ReanalyzeCounts = { count: number; categories: Record<string, number> };
+
+export type ReanalyzePreview = {
+  statementId: number;
+  file: string;
+  kind: "transaction" | "brokerage" | "unknown";
+  accountType?: AccountSubKind;
+  // What's currently in the DB for this statement, about to be replaced.
+  current: ReanalyzeCounts;
+  // What re-parsing the original file today would produce. Category counts
+  // here use the deterministic rules only (never the LLM) — a preview must
+  // be fast and side-effect-free; the actual commit still runs the full
+  // LLM-first categorization, so final categories can differ slightly.
+  next: ReanalyzeCounts | { rejected: true; reason: string };
+};
+
+function categoryCountsFor(statementId: number): Record<string, number> {
+  const rows = getDb()
+    .prepare("SELECT category, COUNT(*) AS n FROM transactions WHERE statement_id = ? GROUP BY category")
+    .all(statementId) as { category: string; n: number }[];
+  return Object.fromEntries(rows.map((r) => [r.category, r.n]));
+}
+
+// Read + classify + parse the original file WITHOUT writing anything, so the
+// UI can show a real before/after diff before the user commits to it.
+export async function previewReanalyze(statementId: number): Promise<ReanalyzePreview> {
+  const db = getDb();
+  const stmt = db
+    .prepare("SELECT file_path, kind FROM statements WHERE id = ?")
+    .get(statementId) as { file_path: string; kind: string | null } | undefined;
+  if (!stmt) throw new Error("Statement not found");
+
+  const dir = statementsDir();
+  const fullPath = path.join(dir, stmt.file_path);
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(
+      `"${stmt.file_path}" is no longer in /statements — the original file must be present to re-analyze.`
+    );
+  }
+
+  const current: ReanalyzeCounts = {
+    count:
+      stmt.kind === "brokerage"
+        ? (db.prepare("SELECT COUNT(*) AS n FROM holdings").get() as { n: number }).n
+        : (
+            db.prepare("SELECT COUNT(*) AS n FROM transactions WHERE statement_id = ?").get(statementId) as {
+              n: number;
+            }
+          ).n,
+    categories: stmt.kind === "brokerage" ? {} : categoryCountsFor(statementId),
+  };
+
+  const isPdf = /\.pdf$/i.test(stmt.file_path);
+  const rawText = isPdf
+    ? await extractPdfText(fs.readFileSync(fullPath))
+    : fs.readFileSync(fullPath, "utf8");
+  const table = isPdf ? null : parseCsv(rawText);
+  const classification = isPdf ? classifyStatementText(rawText) : classifyStatementTable(table!);
+
+  if (classification.kind === "unknown" || classification.confidence < CONFIDENCE_FLOOR) {
+    return {
+      statementId,
+      file: stmt.file_path,
+      kind: classification.kind,
+      current,
+      next: {
+        rejected: true,
+        reason: `Re-parsing today would REJECT this file (${classification.signals.join("; ")}) — committing would delete the existing ${current.count} row(s) and import 0.`,
+      },
+    };
+  }
+  if (classification.kind === "transaction" && classification.subKindConflict) {
+    return {
+      statementId,
+      file: stmt.file_path,
+      kind: "transaction",
+      current,
+      next: {
+        rejected: true,
+        reason: `Re-parsing today would REJECT this file — content matches both credit-card and checking/savings patterns (${classification.signals.join("; ")}).`,
+      },
+    };
+  }
+
+  if (classification.kind === "brokerage") {
+    try {
+      const extracted = table ? parseBrokerageCsv(rawText).holdings : parseFidelityPdfHoldings(rawText);
+      const { holdings } = validateHoldings(extracted);
+      return {
+        statementId,
+        file: stmt.file_path,
+        kind: "brokerage",
+        current,
+        next: { count: holdings.length, categories: {} },
+      };
+    } catch (err) {
+      return {
+        statementId,
+        file: stmt.file_path,
+        kind: "brokerage",
+        current,
+        next: { rejected: true, reason: err instanceof Error ? err.message : "could not parse brokerage file" },
+      };
+    }
+  }
+
+  try {
+    const rows = table ? parseCsvStatement(rawText) : parsePdfText(rawText);
+    const categories: Record<string, number> = {};
+    for (const r of rows) {
+      const cat = forcedCategory(r.raw_description) ?? categorizeByRules(r.raw_description, r.amount);
+      categories[cat] = (categories[cat] ?? 0) + 1;
+    }
+    return {
+      statementId,
+      file: stmt.file_path,
+      kind: "transaction",
+      accountType: classification.subKind,
+      current,
+      next: { count: rows.length, categories },
+    };
+  } catch (err) {
+    return {
+      statementId,
+      file: stmt.file_path,
+      kind: "transaction",
+      current,
+      next: { rejected: true, reason: err instanceof Error ? err.message : "could not parse transactions" },
+    };
+  }
+}
+
+// Commit: delete the statement row (cascades its transactions for
+// transaction-kind statements; brokerage holdings aren't statement-scoped,
+// so nothing to cascade there) and re-run the exact same import path a fresh
+// file would take — same classification, same categorization (LLM-first,
+// rules fallback), and category_overrides re-applies automatically since
+// it's a global merchant-keyed table untouched by this delete.
+export async function commitReanalyze(statementId: number): Promise<ImportResult> {
+  const db = getDb();
+  const stmt = db.prepare("SELECT file_path FROM statements WHERE id = ?").get(statementId) as
+    | { file_path: string }
+    | undefined;
+  if (!stmt) throw new Error("Statement not found");
+
+  db.prepare("DELETE FROM statements WHERE id = ?").run(statementId);
+  const result = await importOne(statementsDir(), stmt.file_path);
+  if (result.imported > 0) {
+    detectRecurring();
+    detectTransfers();
+  }
+  return result;
 }
