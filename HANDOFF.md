@@ -220,7 +220,72 @@ statement, per the local model: *[reason]*" with **Tag it and import** /
   deleted all synthetic statements and files, back to 6 statements / 111
   transactions.
 
-# HANDOFF — updated after the finance/stocks fix-plan run (2026-07-08/09; Phase 21 and earlier below)
+## Phase 4 (2026-07-09): four Finance-page tabs (Checking, Credit Card, Investment, Total)
+
+Built on Phase 2/3's now-correct, now-extensible `account_type` tagging, per
+the plan's instruction not to start this phase before those landed.
+
+- New pure module `lib/finance/finance-tabs.ts`: `transactionsForTab(txns,
+  tab)` — Checking groups `checking` + `savings` together (one tab, both
+  sub-types, per the plan); Credit Card is `credit_card` only; Investment is
+  `account_type === "investment"` **OR** `category === "Investment"` (the
+  existing ACH-transfer detection), so a checking-account row can validly
+  appear in both the Checking tab and the Investment tab — that's by design,
+  not a bug (an ACH transfer into brokerage is real activity on both sides);
+  Total is unfiltered, unchanged. `unclassifiedCount` counts null-account_type
+  rows for a small "N unclassified by account type" badge on Total, so
+  untagged transactions (already a documented valid state) stay visible
+  rather than silently vanishing from the whole-picture view.
+- Added shadcn's `tabs.tsx` (`npx shadcn add tabs`, matching the project's
+  existing `components.json` style/theme exactly — no hand-rolled tab
+  component). `components/finance-view.tsx`'s Transactions card is now a
+  4-tab `Tabs`/`TabsList`/`TabsContent`; `components/transaction-table.tsx`
+  gained a `tab` prop (defaults to `"total"`, so any other caller is
+  unaffected) that runs `transactionsForTab` before the existing category/
+  search filters. `app/api/finance/transactions/route.ts`'s `GET` now selects
+  `account_type` (previously omitted entirely — the table couldn't have
+  filtered by something the API never sent). New
+  `components/investment-holdings.tsx` fetches `/api/stocks` directly and
+  renders a compact ticker/shares/value/% table — the **same**
+  `computePortfolioTotal` valuation the previous run's "one valuation
+  function, three call sites" work already established (see that run's
+  Phase 4 above), now a fourth consumer, not a new parallel computation.
+- 7 new tests in `tests/finance-tabs.test.ts`: a fixture spanning all four
+  sub-types plus one unclassified row, asserting each tab's exact filtered
+  ids (including the checking/investment overlap case above), the
+  regression guard that Total's row count still equals the full input length
+  unchanged, and empty-input safety for all four tabs. `npm test`: 224
+  passing (up from 217).
+- **Live-verified against the running app, on the real now-correctly-tagged
+  data**: confirmed via the real `/api/finance/transactions?month=2026-06`
+  response and a direct DB count that June has 36 checking + 12 credit_card
+  transactions (48 total, matching Total's count); forcing each tab's
+  default value in turn and reloading showed **exactly** 36 / 12 / 4
+  (Investment: real ACH-transfer rows) / 48 rows respectively — proving the
+  filtering and rendering are correct against real data, not just the
+  synthetic unit-test fixture. The Investment tab's holdings table rendered
+  the user's real 25 holdings (including SPAXX correctly labeled "(cost
+  basis)"), matching the Stocks page.
+  - **Genuine environment limitation, not a product bug, honestly flagged**:
+    this session's automated browser tab reports `document.hidden: true` /
+    `hasFocus: false` (confirmed directly) — a backgrounded tab, which is
+    known to break Radix UI's focus-driven tab-activation model (clicking a
+    `TabsTrigger` moves focus, and a separate `onFocus` handler is what
+    actually fires `onValueChange`). Neither a raw DOM `.click()`, a full
+    pointerdown/mouseup/click event sequence, nor the dedicated
+    `preview_click` tool's real CDP-dispatched click changed the active tab
+    in this session, while `document.activeElement` confirmed `.focus()`
+    itself DID move correctly — isolating the gap to the focus→activation
+    hookup specifically failing in a backgrounded tab, not click delivery.
+    Ruled out as an app bug by forcing `useState<FinanceTab>` to each of the
+    four values directly (bypassing the click path entirely) and reloading:
+    every single one rendered the exact correct, real, filtered data (see
+    above) — so the tab **content** is proven correct independent of the
+    interactive switch. **Next live session**: click through the four tabs
+    once in a normal, focused desktop browser to confirm the switch itself
+    (this is standard, heavily-used Radix/shadcn behavior — low risk, but
+    not literally interactively clicked in this session for the reason
+    above).
 
 ## Fix-plan run (complete): stock chart feasibility + 6 finance/stocks fixes
 

@@ -15,13 +15,13 @@ export async function GET(req: NextRequest) {
     month && /^\d{4}-\d{2}$/.test(month)
       ? db
           .prepare(
-            `SELECT id, date, amount, merchant, category, raw_description, is_recurring
+            `SELECT id, date, amount, merchant, category, raw_description, is_recurring, account_type
              FROM transactions WHERE substr(date, 1, 7) = ? ORDER BY date DESC, id DESC`
           )
           .all(month)
       : db
           .prepare(
-            `SELECT id, date, amount, merchant, category, raw_description, is_recurring
+            `SELECT id, date, amount, merchant, category, raw_description, is_recurring, account_type
              FROM transactions ORDER BY date DESC, id DESC LIMIT 500`
           )
           .all()
@@ -33,6 +33,7 @@ export async function GET(req: NextRequest) {
     category: string;
     raw_description: string;
     is_recurring: number;
+    account_type: string | null;
   }>;
 
   return NextResponse.json({

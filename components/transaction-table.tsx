@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { transactionsForTab, unclassifiedCount, type FinanceTab } from "@/lib/finance/finance-tabs";
 
 type Why = { source: "keyword"; keyword: string } | { source: "model" };
 type Txn = {
@@ -29,6 +30,7 @@ type Txn = {
   category: string;
   raw_description: string;
   is_recurring: number;
+  account_type: string | null;
   why: Why;
 };
 
@@ -52,11 +54,15 @@ export function TransactionTable({
   categoryFilter,
   onClearFilter,
   onChanged,
+  tab = "total",
 }: {
   month: string | null;
   categoryFilter: string | null;
   onClearFilter: () => void;
   onChanged: () => void;
+  // Phase 4: which of the four Finance-page tabs this table is scoped to.
+  // Defaults to "total" (today's unfiltered behavior) for any other caller.
+  tab?: FinanceTab;
 }) {
   const [txns, setTxns] = useState<Txn[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -95,7 +101,7 @@ export function TransactionTable({
   const caret = (key: SortKey) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
 
   const q = search.trim().toLowerCase();
-  const filtered = txns
+  const filtered = transactionsForTab(txns, tab)
     .filter((t) => !categoryFilter || t.category === categoryFilter)
     .filter(
       (t) =>
@@ -130,6 +136,11 @@ export function TransactionTable({
           </Badge>
         )}
         <span className="text-xs text-muted-foreground">{filtered.length} shown</span>
+        {tab === "total" && unclassifiedCount(txns) > 0 && (
+          <Badge variant="outline" className="text-xs">
+            {unclassifiedCount(txns)} unclassified by account type
+          </Badge>
+        )}
       </div>
 
       {filtered.length === 0 ? (
