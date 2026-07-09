@@ -281,6 +281,17 @@ const MIGRATIONS: string[] = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+  // Part D6 — click-to-chart daily price history, cached at most once per
+  // ticker per day (Alpha Vantage free tier is 25 req/day; see
+  // docs/stock-history-feasibility.md). `series` is the whole daily-close
+  // array as one JSON blob, replaced wholesale on each fetch rather than
+  // queried by date range, since the whole point is "serve today's cached
+  // copy or fetch once" — no partial-range SQL access is needed.
+  `CREATE TABLE IF NOT EXISTS stock_history_cache (
+    ticker TEXT PRIMARY KEY,
+    fetched_date TEXT NOT NULL,
+    series TEXT NOT NULL
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

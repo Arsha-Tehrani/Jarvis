@@ -1,8 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -88,6 +103,29 @@ export function StocksView() {
   const [divTicker, setDivTicker] = useState("");
   const [divDate, setDivDate] = useState("");
   const [divAmount, setDivAmount] = useState("");
+  const [historyTicker, setHistoryTicker] = useState<string | null>(null);
+  const [historyData, setHistoryData] = useState<{ date: string; close: number }[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Click a ticker → fetch its cached-or-fresh daily history (lazy, never
+  // proactive for the whole table — see docs/stock-history-feasibility.md).
+  async function openHistory(t: string) {
+    setHistoryTicker(t);
+    setHistoryData(null);
+    setHistoryError(null);
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/stocks/history?ticker=${encodeURIComponent(t)}`);
+      const body = await res.json();
+      if (!res.ok || body.error) setHistoryError(body.error ?? "Failed to load price history");
+      else setHistoryData(body.series);
+    } catch {
+      setHistoryError("Could not reach the API.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -310,7 +348,11 @@ export function StocksView() {
               <TableBody>
                 {sortedHoldings.map((h) => (
                   <TableRow key={h.id}>
-                    <TableCell className="font-medium">{h.ticker}</TableCell>
+                    <TableCell className="font-medium">
+                      <button className="hover:underline" onClick={() => openHistory(h.ticker)}>
+                        {h.ticker}
+                      </button>
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">{h.shares}</TableCell>
                     <TableCell className="text-right tabular-nums">{usd(h.cost_basis)}</TableCell>
                     <TableCell className="text-right tabular-nums">
@@ -458,6 +500,55 @@ export function StocksView() {
           </form>
         </CardContent>
       </Card>
+
+      <Dialog open={historyTicker != null} onOpenChange={(open) => !open && setHistoryTicker(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{historyTicker} — daily close</DialogTitle>
+          </DialogHeader>
+          {historyLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : historyError ? (
+            <p className="text-sm text-destructive">{historyError}</p>
+          ) : historyData && historyData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={historyData}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  minTickGap={40}
+                />
+                <YAxis
+                  domain={["auto", "auto"]}
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  tickFormatter={(v) => `$${v}`}
+                  width={56}
+                />
+                <Tooltip
+                  formatter={(v) => [`$${Number(v).toFixed(2)}`, "Close"]}
+                  contentStyle={{
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--background)",
+                    color: "var(--foreground)",
+                    fontSize: 12,
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="close"
+                  stroke="var(--primary)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-sm text-muted-foreground">No data.</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
