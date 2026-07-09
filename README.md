@@ -220,6 +220,8 @@ Quotes come from Finnhub (preferred, 60 req/min free) or Alpha Vantage (fallback
 
 The holdings table is **click-to-sort** (ticker, value, day move, overall P/L — click a header, click again to reverse; pure client-side over already-fetched data). Every P/L figure shows its **percentage** next to the dollar amount — daily from previous close, overall from cost basis, e.g. `+$1,204 (+13.7%)`.
 
+**One valuation function, three call sites.** `lib/stocks/portfolio-total.ts` computes per-holding value + day move + P/L (falling back to cost basis for a holding with no live quote, e.g. the SPAXX money-market core) and the aggregate total, and `/api/stocks`, the Today page's Portfolio card, and `lib/networth.ts`'s `computeNetWorth()` all call it. Before this existed, the Today card had its own inline sum that only totaled *quote-priced* holdings and silently dropped anything unpriced instead of falling back — a real, always-reproducible mismatch against the Stocks page total whenever any holding lacked a live quote, not a timing race. Pure and unit-tested (`tests/portfolio-total.test.ts`): all-priced, cost-basis-only, and mixed sets, plus the zero-cost-basis and case-insensitive-ticker edge cases.
+
 **Dividends** are logged manually: Finnhub's dividend endpoint is premium and Alpha Vantage dropped free dividend data, so — like LeetCode's manual entry — you enter ex-date + amount/share and the app computes payout (`shares × amount/share`) into a running total and per-holding breakdown. Without a recorded share count for the ex-date it uses the current share count, clearly flagged `≈` as an approximation. Payout math is pure and unit-tested (`lib/dividends-math.ts`).
 
 ### Net worth

@@ -8,6 +8,7 @@ import {
   trackedTickers,
   type Quote,
 } from "@/lib/stocks";
+import { computePortfolioTotal } from "@/lib/stocks/portfolio-total";
 
 const tickerField = z
   .string()
@@ -50,29 +51,16 @@ export async function GET() {
     }
   }
 
+  // Same computePortfolioTotal the Today card and net worth use, so a
+  // holding with no live quote (e.g. the SPAXX money-market core, which has
+  // no Finnhub symbol) is valued at cost basis identically everywhere
+  // instead of three independent implementations drifting apart.
+  const { holdings: priced } = computePortfolioTotal(holdings, (t) => quotes.get(t));
+
   return NextResponse.json({
     configured: isStocksConfigured(),
     quotesError,
-    holdings: holdings.map((h) => {
-      const q = quotes.get(h.ticker.toUpperCase());
-      return {
-        ...h,
-        // A holding with no live quote (e.g. the SPAXX money-market core, which
-        // has no Finnhub symbol) is valued at cost basis so the portfolio total
-        // stays honest instead of silently dropping it — same fallback net
-        // worth uses. `priced` flags which rows are market vs. cost-basis.
-        priced: !!q,
-        price: q?.price ?? null,
-        value: q ? q.price * h.shares : h.cost_basis * h.shares,
-        pl: q ? (q.price - h.cost_basis) * h.shares : null,
-        // Overall return % vs cost basis (null when unpriced or cost basis is 0,
-        // e.g. the money-market core, where a % return is meaningless).
-        plPercent:
-          q && h.cost_basis > 0 ? ((q.price - h.cost_basis) / h.cost_basis) * 100 : null,
-        dayMove: q ? q.change * h.shares : null,
-        changePercent: q?.changePercent ?? null,
-      };
-    }),
+    holdings: priced,
     watchlist: watchlist.map((w) => {
       const q = quotes.get(w.ticker.toUpperCase());
       return {

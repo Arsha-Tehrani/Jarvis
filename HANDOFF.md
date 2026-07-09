@@ -143,6 +143,30 @@ phases land; see the phase list below for what's done so far.
     (clear message, not a crash) when the sidecar is down / Drive isn't
     connected — the sidecar wasn't running and GoodNotes' Drive folder
     doesn't exist on this box, both surfaced correctly.
+- **Phase 4: portfolio value mismatch (Today vs. Stocks).** Root-caused by
+  reading all three places a portfolio total gets computed: `/api/stocks`
+  and `lib/networth.ts`'s `computeNetWorth()` both correctly fell back to
+  cost basis per holding (e.g. SPAXX, which has no Finnhub symbol), but the
+  Today page's inline "Portfolio" card summed ONLY quote-priced holdings and
+  silently DROPPED anything unpriced from the total — not a timing race, a
+  real always-reproducible under-count whenever any holding lacked a live
+  quote. New `lib/stocks/portfolio-total.ts` (`computePortfolioTotal`, pure,
+  generic over extra fields like `/api/stocks`'s `id`) is now the one
+  valuation function all three call sites use.
+  - **Live-verified on the user's real portfolio** (25 holdings incl.
+    SPAXX): `/api/stocks` totals **$18,776.75** (SPAXX alone contributes
+    $4,823.03 at cost basis, `priced:false`). Before this fix, the Today
+    card's old logic would have shown **~$13,954** — missing exactly SPAXX's
+    contribution. After the fix, curled the Today page's server-rendered
+    HTML directly and confirmed **both** the Net Worth card and the
+    Portfolio card render `$18,777` (rounded) — matching each other and
+    the Stocks page. Also confirmed the day-move sub-label still shows a
+    real figure (`▲ $64 today`) for this mixed priced/cost-basis case,
+    not a misleading `$0` — `dayMove` is deliberately `null` (not 0) only
+    when NO holding has a live quote, so "unknown" is never shown as "zero".
+  - 6 new tests in `tests/portfolio-total.test.ts`: all-priced, cost-basis-
+    only (the exact regression), mixed, empty, zero-cost-basis (no
+    divide-by-zero on `plPercent`), and case-insensitive ticker lookup.
 
 ## Phase 21 (2026-07-06, third run): README, agent memory + undo, budgets + restore, hybrid search, PWA + auth
 
