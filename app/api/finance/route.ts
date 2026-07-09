@@ -35,7 +35,9 @@ const actionSchema = z.discriminatedUnion("action", [
 export async function GET(req: NextRequest) {
   const db = getDb();
   const statements = db
-    .prepare("SELECT id, month, file_path, imported_at FROM statements ORDER BY imported_at DESC")
+    .prepare(
+      "SELECT id, month, file_path, imported_at, kind, account_type FROM statements ORDER BY imported_at DESC"
+    )
     .all();
   const txCount = (db.prepare("SELECT COUNT(*) AS n FROM transactions").get() as { n: number }).n;
 

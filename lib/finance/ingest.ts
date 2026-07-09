@@ -12,8 +12,10 @@ import {
   classifyStatementTable,
   classifyStatementText,
   CONFIDENCE_FLOOR,
+  type AccountSubKind,
   type Classification,
 } from "@/lib/finance/classify";
+import { findTransferPairs, type TransferCandidate } from "@/lib/finance/transfers";
 import {
   extractPdfText,
   extractStatementBalance,
@@ -42,6 +44,7 @@ export type ImportResult = {
   status: ImportStatus;
   imported: number;
   kind: "transaction" | "brokerage" | "unknown";
+  accountType?: AccountSubKind;
   categorizedBy?: string;
   warnings?: string[];
   reason?: string; // set when status === "rejected"
@@ -83,17 +86,28 @@ export async function importNewStatements(): Promise<ImportResult[]> {
       });
     }
   }
-  if (results.some((r) => r.imported > 0)) detectRecurring();
+  if (results.some((r) => r.imported > 0)) {
+    detectRecurring();
+    detectTransfers();
+  }
   return results;
 }
 
 // Record a file in the statements table (so the scan doesn't retry it) with
 // the classified kind and a redacted excerpt of what we actually parsed.
-function recordStatement(file: string, month: string, kind: string, rawText: string): number {
+function recordStatement(
+  file: string,
+  month: string,
+  kind: string,
+  rawText: string,
+  accountType?: AccountSubKind
+): number {
   const excerpt = redactAccountNumbers(rawText).slice(0, 8000);
   const info = getDb()
-    .prepare("INSERT INTO statements (month, file_path, kind, raw_text) VALUES (?, ?, ?, ?)")
-    .run(month, file, kind, excerpt);
+    .prepare(
+      "INSERT INTO statements (month, file_path, kind, raw_text, account_type) VALUES (?, ?, ?, ?, ?)"
+    )
+    .run(month, file, kind, excerpt, accountType ?? null);
   return info.lastInsertRowid as number;
 }
 
@@ -137,6 +151,18 @@ async function importOne(dir: string, file: string): Promise<ImportResult> {
       classification.kind === "unknown"
         ? `Couldn't recognize this as a bank statement or a brokerage statement (${classification.signals.join("; ")}).`
         : `Low confidence (${Math.round(classification.confidence * 100)}%) that this is a ${classification.kind} statement — not importing to avoid wrong numbers (${classification.signals.join("; ")}).`,
+      classification
+    );
+  }
+
+  // A statement can't honestly be both a credit card and a checking/savings
+  // account — this is the conflict classify.ts flags rather than guessing,
+  // e.g. a PDF with both "Minimum Payment Due" and "Beginning Balance" text.
+  if (classification.kind === "transaction" && classification.subKindConflict) {
+    return rejected(
+      file,
+      "transaction",
+      `Content matches both credit-card and checking/savings statement patterns — can't tell which account this is for (${classification.signals.join("; ")}). Not importing to avoid mislabeling or double-counting a transfer.`,
       classification
     );
   }
@@ -237,18 +263,25 @@ async function importTransactions(
   const insertedIds: number[] = [];
   let statementId = -1;
   const insertAll = db.transaction(() => {
-    statementId = recordStatement(file, month, "transaction", rawText);
+    statementId = recordStatement(file, month, "transaction", rawText, classification.subKind);
     if (balance) {
       db.prepare(
         "UPDATE statements SET ending_balance = ?, balance_kind = ?, balance_label = ? WHERE id = ?"
       ).run(balance.balance, balance.kind, balance.label, statementId);
     }
     const insert = db.prepare(
-      `INSERT INTO transactions (date, amount, merchant, category, raw_description, statement_id)
-       VALUES (?, ?, ?, 'Uncategorized', ?, ?)`
+      `INSERT INTO transactions (date, amount, merchant, category, raw_description, statement_id, account_type)
+       VALUES (?, ?, ?, 'Uncategorized', ?, ?, ?)`
     );
     for (const r of rows) {
-      const rowInfo = insert.run(r.date, r.amount, r.merchant, r.raw_description, statementId);
+      const rowInfo = insert.run(
+        r.date,
+        r.amount,
+        r.merchant,
+        r.raw_description,
+        statementId,
+        classification.subKind ?? null
+      );
       insertedIds.push(rowInfo.lastInsertRowid as number);
     }
   });
@@ -283,6 +316,7 @@ async function importTransactions(
     status: outcome.llmError ? "warning" : "imported",
     imported: rows.length,
     kind: "transaction",
+    accountType: classification.subKind,
     categorizedBy: outcome.source,
     llmError: outcome.llmError,
     warnings: outcome.llmError
@@ -291,6 +325,35 @@ async function importTransactions(
     confidence: classification.confidence,
     signals: classification.signals,
   };
+}
+
+// A real-world payment (e.g. paying a credit card bill) posts as an outflow
+// on one account and an inflow on another — two rows for one dollar amount
+// moving, not spend and not income. Runs over ALL transactions (like
+// detectRecurring below), not just newly-imported ones, so a checking
+// statement imported today still matches a card statement imported weeks
+// ago. Forces category='Transfer' on matched pairs — the same category
+// lib/finance/analyze.ts's NON_SPEND already excludes from spend/income.
+export function detectTransfers(): void {
+  const db = getDb();
+  // Not filtered by category: a row a keyword rule already caught as
+  // 'Transfer' must still be a candidate, or its actual pair (which the
+  // keyword rules may have missed — bank wording varies) never finds it.
+  const rows = db
+    .prepare(
+      `SELECT id, date, amount, raw_description, statement_id FROM transactions
+       WHERE statement_id IS NOT NULL`
+    )
+    .all() as TransferCandidate[];
+
+  const matchedIds = findTransferPairs(rows);
+  if (matchedIds.length === 0) return;
+
+  const mark = db.prepare("UPDATE transactions SET category = 'Transfer' WHERE id = ?");
+  const apply = db.transaction(() => {
+    for (const id of matchedIds) mark.run(id);
+  });
+  apply();
 }
 
 // Same merchant + similar amount + roughly monthly cadence → subscription.
