@@ -23,6 +23,7 @@ type Tracker = {
   target: number | null;
   goal: number;
   label: string;
+  logCount: number;
 };
 
 type Suggestion = { id: number; name: string; score: number };
@@ -85,6 +86,29 @@ export function HabitsView() {
       setCadence("daily");
       setSuggestion(null);
       setError(null);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Manual vs sourced deletes are different things (lib/tracker-delete.ts):
+  // the confirm copy must say which one is about to happen — what data is
+  // lost for a manual habit, and what data survives for a sourced tracker.
+  async function remove(t: Tracker) {
+    const message = t.source
+      ? `Remove the "${t.name}" tracker? Only its target/cadence config is deleted — the underlying ${t.source} data stays untouched, and a new tracker can point at it again later.`
+      : `Delete "${t.name}" and its ${t.logCount} logged entr${t.logCount === 1 ? "y" : "ies"}? This can't be undone.`;
+    if (!window.confirm(message)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/habits?id=${t.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to delete tracker");
+      } else {
+        setError(null);
+      }
       await load();
     } finally {
       setBusy(false);
@@ -201,6 +225,15 @@ export function HabitsView() {
                     <span className="text-muted-foreground">target {t.goal}/week</span>
                   )}
                   <span className="ml-auto text-muted-foreground">{t.label}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void remove(t)}
+                    aria-label={`Delete tracker ${t.name}`}
+                  >
+                    ✕
+                  </Button>
                 </li>
               ))}
             </ul>

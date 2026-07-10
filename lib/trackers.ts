@@ -35,6 +35,9 @@ export type Tracker = {
   thisWeek: number;
   doneToday: boolean;
   dates: string[];
+  // All-time logged-entry count (manual trackers only; 0 for sourced) — the
+  // delete confirmation says exactly how many entries would be lost.
+  logCount: number;
   href: string;
 };
 
@@ -140,6 +143,7 @@ export function listTrackers(): Tracker[] {
         thisWeek: 0,
         doneToday: false,
         dates: [],
+        logCount: 0,
         href,
       };
     }
@@ -159,6 +163,11 @@ export function listTrackers(): Tracker[] {
     }
     const thisWeek = dates.filter((d) => d > isoDaysAgo(7)).length;
     const doneToday = set.has(today);
+    const logCount = (
+      db.prepare("SELECT COUNT(*) AS n FROM habit_logs WHERE habit_id = ?").get(r.id) as {
+        n: number;
+      }
+    ).n;
     const stats = { streak, thisWeek, goal: r.goal, doneToday };
     return {
       ...r,
@@ -174,6 +183,7 @@ export function listTrackers(): Tracker[] {
       thisWeek,
       doneToday,
       dates,
+      logCount,
       href: "/trackers",
     };
   });

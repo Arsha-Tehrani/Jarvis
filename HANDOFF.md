@@ -5,6 +5,68 @@ system clock, Yahoo-Finance stock history, automated dividend tracking. Same
 discipline as prior runs: investigate → root-cause note → implement → test →
 typecheck → live-verify → document → commit, one phase at a time.
 
+## Phase 3 (2026-07-10): Trackers/Habits — deletion
+
+**Ask:** let the user remove a tracker or habit.
+
+**Current state:** `DELETE /api/habits?id=` already existed — a bare
+`DELETE FROM habits WHERE id = ?` with no UI affordance, no agent path, and
+no manual-vs-sourced distinction. The `habit_logs` FK does declare
+`ON DELETE CASCADE` (and `lib/db.ts` sets `foreign_keys = ON`), so logs were
+already cascading at the DB level; what was missing was everything around it:
+the confirmation semantics, the "what kind of delete is this" copy, and any
+way to actually trigger it.
+
+**Design decision (flagged, per the plan):**
+- Manual habit (`source IS NULL`): full delete, cascades `habit_logs`
+  explicitly inside a transaction (explicit rather than FK-reliant so the
+  behavior is visible and pragma-independent). Real data loss → confirm copy
+  states the exact entry count being lost.
+- Sourced tracker (`source IS NOT NULL`): deletes only the `habits` config
+  row. The underlying feed (`gym_logs`, `leetcode_stats`, …) belongs to its
+  own feature; deleting it would silently break Gym/LeetCode/health logging
+  elsewhere. Confirm copy states the data survives and a new tracker can
+  point at the same source later.
+- `delete_habit` is excluded from `revert-plan.ts`'s planners (added to
+  NOT_REVERTIBLE with a reason): a manual-habit delete is not cleanly
+  invertible — the logs are gone — and per the existing rule a lossy/fake
+  inverse is refused, not faked.
+
+**Fix:** new `lib/tracker-delete.ts` (db-as-param, the `trackers-migrate.ts`
+pattern, so `node --test` covers it): `deleteTracker(db, id)` branching as
+above, plus `findHabitByName(db, name)` — the case-insensitive
+fail-with-known-list lookup extracted from `logHabitByName`, which now calls
+it, so log and delete share one lookup path. One handler backs all three
+entry points: the upgraded `DELETE /api/habits` route (kept the existing
+query-param verb convention; returns the branch result), a ✕ button per row
+on the Habits page behind a `window.confirm` whose copy differs by kind
+(matching the career page's confirm convention), and a new confirm-gated
+`delete_habit` agent tool. `listTrackers()` now also returns `logCount`
+(all-time, not the 370-day heatmap window) so the UI confirm can state the
+real number. README's "Current tools" line updated (that line is the tool
+list per docs/adding-a-tool.md).
+
+**Tests:** 241 → 248 (`tests/tracker-delete.test.ts`): manual delete removes
+habit + all its logs; another habit's logs survive; sourced delete removes
+only the config row while a populated `gym_logs` table survives untouched;
+unknown id throws; name lookup matches case-insensitively, fails with the
+known-trackers list, and names the fix on an empty table.
+
+**Live-verified** against the running dev app (real state: 3 manual trackers
+— Gym, NeetCode, Job Application — 5 habit_logs, 1 gym_log; none touched):
+created synthetic "SyntheticDeleteMe" with 3 logged dates, deleted via the
+UI's endpoint → `{kind:'manual', deletedLogs:3}`, DB confirmed habit and all
+3 logs gone, the 5 real logs intact. Inserted a synthetic sourced tracker
+(`source='gym_logs'`), deleted → `{kind:'sourced'}`, DB confirmed the real
+gym_logs row survived. Agent path: "delete my SyntheticAgentDelete tracker"
+returned a **pending confirmation** (not executed — rule 2 held), the
+confirm leg executed and replied `Deleted "SyntheticAgentDelete" and its 0
+logged entries.`, DB confirmed. All synthetic rows cleaned up; ending state
+identical to baseline. **Known limitation:** device sync is additive
+(deletes don't propagate), so on a multi-device setup a deleted tracker can
+be resurrected by a pull from a device that still has it — pre-existing sync
+semantics, noted rather than changed here.
+
 ## Phase 2 (2026-07-10): Finance — imported-statement list behind a click
 
 **Ask:** the imported statements' file names and import dates sat in the open
