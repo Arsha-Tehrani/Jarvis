@@ -5,6 +5,62 @@ system clock, Yahoo-Finance stock history, automated dividend tracking. Same
 discipline as prior runs: investigate → root-cause note → implement → test →
 typecheck → live-verify → document → commit, one phase at a time.
 
+## Phase 2 (2026-07-10): Finance — imported-statement list behind a click
+
+**Ask:** the imported statements' file names and import dates sat in the open
+on the main Finance page; move them into a log you open on click.
+
+**Current state:** confirmed in `components/finance-view.tsx` — the list was
+inline at the bottom of the Statements card, and (as the plan warned) it is
+not just a static list: each row carries the account-type badge, the manual
+correction `<select>`, and a per-row Re-Analyze button; the card also hosts
+the Re-Analyze All control and both confirmation cards, all gated on the
+`reanalyzeUiReducer` pending value from the prior run's Phase 1.
+
+**Design decision (flagged): `Dialog`, not `Sheet`.** The repo's shadcn set
+has `components/ui/dialog.tsx` and no sheet component — adding a new ui
+primitive for one use is worse than a `max-h-[80vh] overflow-y-auto` dialog,
+and the import log is a glance-and-close surface, not a side-panel workflow.
+
+**Fix:**
+- The inline block (statement rows + badge + correction select + Re-Analyze
+  buttons + Re-Analyze All + both confirmation cards + the reanalyze error
+  line) moved as one subtree into the dialog — relocated, not rebuilt.
+  Transient import results (post-Import/Scan feedback) stay on the main card;
+  they're a different thing from the import log.
+- Trigger: the existing "N imported · M transactions" summary span became a
+  clickable "N statements imported · M transactions · view import log" line
+  (plain span again when 0 statements).
+- **Reducer extended, not a second boolean:** `reanalyzeUiReducer`'s state is
+  now `{ logOpen, pending }` with `open_log`/`close_log` actions added;
+  `close_log` clears any pending confirmation, so closing the dialog can
+  never strand a hidden confirm card that could later run against
+  already-changed data — the exact failure mode the original reducer fixed,
+  prevented in the same place. The dialog's `onOpenChange(false)` also nulls
+  the preview payloads.
+
+**Tests:** 238 → 241. The original 6 reducer tests rewritten to the new state
+shape (same scenarios, assertions now on `.pending`, plus "closing a card
+doesn't close the log"), and 3 new log cases: open log → open single inside →
+close log clears the pending single; close log with pending all → reopen
+shows nothing pending; open_log idempotent.
+
+**Live-verified — with a stated gap.** Real data (the user's 6 statements /
+111 transactions): this phase writes nothing, and `/api/finance` confirmed 6
+statements / 111 transactions after the change, identical to before. The
+Finance page compiles and serves 200 through the user's own hot-reloading dev
+server. **Not exercised: the actual click-through** (open log → open a
+Re-Analyze → cancel → close → reopen shows nothing pending). Port 3000 is
+held by the user's own `next dev` (the preview pane can't attach to an
+unmanaged server, and killing/restarting the user's process was — correctly —
+denied), the Chrome extension wasn't connected, and a second dev instance
+would share `.next` with the running one (corruption risk), so no browser was
+available this session. The interaction logic is exactly the unit-tested
+reducer; the JSX is the pre-existing subtree relocated. **First live
+session:** click the summary line, open a single Re-Analyze, cancel it, close
+the dialog, reopen — confirm no stray card. Same caveat class as the prior
+run's Phase 4 tab-click note.
+
 ## Phase 1 (2026-07-10): Career — date applied on job applications
 
 **Ask:** company/role/status already work; add the date the application was
