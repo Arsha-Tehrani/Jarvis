@@ -5,6 +5,52 @@ system clock, Yahoo-Finance stock history, automated dividend tracking. Same
 discipline as prior runs: investigate → root-cause note → implement → test →
 typecheck → live-verify → document → commit, one phase at a time.
 
+**All six phases complete.** Closing gates all green: `npm test` (233 →
+**267**, +34 across the run), `npm run typecheck`, `npm run build`,
+`npm run doctor` (exit 0; its one ✗ is the pre-existing
+`nomic-embed-text` item below). One commit per phase, each pushed on green:
+
+| Phase | Commit | What |
+|---|---|---|
+| 1 | `ddee780` | Career: `date_applied` on job applications |
+| 2 | `dda8d2a` | Finance: statement list → import-log dialog, reducer extended |
+| 3 | `320a179` | Trackers: deletion (UI + API + confirm-gated `delete_habit`) |
+| 4 | `63f9ead` | System: server-sourced clock in header + /status |
+| 5 | `8c7656b` | Stocks: history via `yahoo-finance2`, no API key, audited client |
+| 6 | `36639af` | Stocks: automated dividend tracker (pending → confirmed) |
+
+Real-data footprint of the whole run: zero net change — every phase's
+synthetic rows were deleted after use (career apps, trackers + logs,
+dividend + holding rows), ending state re-confirmed each time. The only
+additions that remain are genuinely operational: one GOOGL row in
+`stock_history_cache` (a real cached fetch) and a handful of genuine
+`yahoo-finance` entries in the network audit log.
+
+**Deferred / carries forward:**
+- **`nomic-embed-text` still isn't pulled** (`ollama pull nomic-embed-text`)
+  — pre-existing across three runs now; semantic search/RAG degrade to
+  exact-match until pulled. Deliberately left to the user (a model download
+  on their machine).
+- **No browser was available this session** (port 3000 held by the user's
+  own `next dev`, which I was correctly not permitted to restart; Chrome
+  extension disconnected; a second dev instance would corrupt the shared
+  `.next`). Everything verifiable over HTTP/DB was verified against the
+  live app; what wasn't clickable is listed per-phase. **First live
+  session, ~2 minutes of clicking:** (a) Finance → click the "6 statements
+  imported · view import log" line, open a Re-Analyze, cancel, close the
+  dialog, reopen — no stray card (Phase 2); (b) glance at the header clock
+  ticking and matching the taskbar clock across a page navigation (Phase
+  4); (c) Stocks → click a ticker, see the Yahoo-fed chart render (Phase
+  5 — the data path underneath was fully verified live).
+- **Dividend automation's first real event**: the field mapping was
+  verified against Apple IR (docs/dividend-automation.md), and the cycle
+  proven with synthetic data — but no real holding goes ex-dividend until
+  ~September (GOOGL/META). When the first real `pending` row appears,
+  sanity-check its amount against the broker's notice once.
+- The new `dividend-scan` cron registers in the running dev server on its
+  **next restart** (the in-process cron guard) — catch-up-on-launch fires
+  it immediately then.
+
 ## Phase 6 (2026-07-10): automated dividend tracker via yahoo-finance2
 
 **Ask:** automate the manual dividend log — scan portfolio tickers for
