@@ -103,7 +103,7 @@ Configure `.env.local` (all optional except the LLM if you want the agent). For 
 | `LLM_MODEL` | chat model name |
 | `EMBED_MODEL` | embedding model for semantic search (default `nomic-embed-text`) |
 | `ANTHROPIC_API_KEY` | only if `LLM_PROVIDER=anthropic` |
-| `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY` | stock quotes |
+| `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY` | live stock quotes (price history needs no key — it uses `yahoo-finance2`) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar + Gmail OAuth |
 | `LEETCODE_USERNAME` | daily LeetCode auto-pull |
 | `OBSIDIAN_VAULT_PATH` | notes + weekly digest |
@@ -229,7 +229,7 @@ The holdings table is **click-to-sort** (ticker, value, % of portfolio, day move
 
 **Dividends** are logged manually: Finnhub's dividend endpoint is premium and Alpha Vantage dropped free dividend data, so — like LeetCode's manual entry — you enter ex-date + amount/share and the app computes payout (`shares × amount/share`) into a running total and per-holding breakdown. Without a recorded share count for the ex-date it uses the current share count, clearly flagged `≈` as an approximation. Payout math is pure and unit-tested (`lib/dividends-math.ts`).
 
-**Click a ticker for its price history.** Finnhub's `/stock/candle` is premium-gated on free keys (confirmed — see `docs/stock-history-feasibility.md`), so this is **Alpha Vantage only** (`ALPHAVANTAGE_API_KEY`), fetched lazily on click and cached in `stock_history_cache` **once per ticker per calendar day** — the free tier is 25 requests/day, and EOD data doesn't change until market close regardless of when it was first cached. A stale (prior-day) cache entry triggers exactly one fresh fetch; a same-day hit never touches the network. No key, a spent daily quota, an unknown symbol, or a premium-gated response are all the same calm degraded state in the chart dialog — never a crash. `lib/stocks/history-core.ts` is the pure, unit-tested half (caching decision + response parsing); `lib/stocks/history.ts` is the DB/network glue, same split as `lib/sync/core.ts` vs. `lib/sync/client.ts`.
+**Click a ticker for its price history.** Daily EOD history comes from **`yahoo-finance2`** — no API key required (this replaced the original Alpha-Vantage-only path; Finnhub's `/stock/candle` remains premium-gated on free keys — see `docs/stock-history-feasibility.md` for the full history). Fetched lazily on click through a shared, audit-logged Yahoo client (`lib/stocks/yahoo-client.ts` — every call shows up in `/network-log`) and cached in `stock_history_cache` **once per ticker per calendar day**: EOD data doesn't change until market close, and an unofficial endpoint shouldn't be hammered for identical data. A stale (prior-day) cache entry triggers exactly one fresh fetch; a same-day hit never touches the network. A fetch failure or an unknown/delisted symbol (delisted tickers stop returning history entirely, even for ranges that used to work) is the same calm degraded state in the chart dialog — never a crash. `lib/stocks/history-core.ts` is the pure, unit-tested half (caching decision + response parsing); `lib/stocks/history.ts` is the DB/network glue, same split as `lib/sync/core.ts` vs. `lib/sync/client.ts`.
 
 ### Net worth
 
