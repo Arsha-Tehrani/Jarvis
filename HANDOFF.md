@@ -5,6 +5,49 @@ system clock, Yahoo-Finance stock history, automated dividend tracking. Same
 discipline as prior runs: investigate → root-cause note → implement → test →
 typecheck → live-verify → document → commit, one phase at a time.
 
+## Phase 4 (2026-07-10): visible system clock/date
+
+**Ask:** always be able to see what date/time the system is running at and
+logging against.
+
+**Current state:** no clock anywhere. The header (`components/top-bar.tsx`)
+had title + backup + identity; `/status` has the integration grid. One
+plan-vs-reality correction: the plan suggested pairing the clock with
+"/status's existing per-job schedule table" — **no such table exists on
+/status** (the cron schedule table lives in README only), so on /status the
+clock sits in the header row next to Network log/Refresh instead.
+
+**Design decision (per the plan, followed):** the displayed time comes from
+the **server** — new `GET /api/system/clock` (its own route, not a field on
+`/api/system`, which does heavier `systeminformation` probes on an 8s poll;
+the clock needs a featherweight endpoint on a different cadence) returning
+`{ now, timezone (IANA via Intl), offsetMinutes }`. `<SystemClock />` syncs
+once on mount + every 60s (storing `serverNow − clientNow` as an offset) and
+ticks locally once per second in between — drift-corrected without hammering
+the route. Renders with the **server's** IANA zone so a server/browser
+timezone mismatch shows the server's truth; tooltip names the zone and what
+the clock governs. Degrades to the browser clock labeled "(browser)" if the
+route is unreachable; returns null pre-hydration (no SSR "now" mismatch);
+clears both intervals on unmount, same as `<SystemMonitor />`.
+
+**Fix:** `lib/clock.ts` (pure: `utcOffsetLabel`, `zoneAbbreviation` with
+bogus-zone fallback), the route, the component, mounted in `TopBar` (every
+page) and `StatusView`'s header.
+
+**Tests:** 248 → 253 (`tests/clock.test.ts`): whole-hour offsets both signs,
+zero → "UTC", half/quarter-hour zones (India/Nepal/Newfoundland), EDT
+resolution for America/New_York on a July date, numeric fallback for a bogus
+zone.
+
+**Live-verified:** `GET /api/system/clock` through the running dev app
+returned `2026-07-10T16:02:26Z / America/New_York / -240` — exactly matching
+the laptop's own `date` output (12:02:26 EDT) at the same second. `/` and
+`/status` both compile and serve 200 with the component mounted. The
+per-second visual tick and cross-page persistence weren't browser-clicked
+(same no-browser-this-session constraint as Phase 2; the interval logic
+matches the existing SystemMonitor pattern and the formatting is
+unit-tested).
+
 ## Phase 3 (2026-07-10): Trackers/Habits — deletion
 
 **Ask:** let the user remove a tracker or habit.
