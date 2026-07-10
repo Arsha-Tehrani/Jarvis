@@ -5,6 +5,78 @@ system clock, Yahoo-Finance stock history, automated dividend tracking. Same
 discipline as prior runs: investigate → root-cause note → implement → test →
 typecheck → live-verify → document → commit, one phase at a time.
 
+## Phase 5 (2026-07-10): stock history — Alpha Vantage → yahoo-finance2
+
+**Ask:** stop gating ticker-click price history behind
+`ALPHAVANTAGE_API_KEY`; use `yahoo-finance2` instead.
+
+**Verified before writing code (per the plan's own instruction):**
+- `npm view yahoo-finance2 version` → **3.15.4**, matching the plan's
+  guess; installed as `^3.15.4` (caret matches every other dep in
+  package.json; the lockfile pins the exact version).
+- v3 requires instantiation (`new YahooFinance()`) — confirmed against the
+  installed package's own d.ts, which marks the v2 call-on-default-export
+  style deprecated-and-throwing.
+- **Plan correction:** `yahooFinance.errors.HTTPError` /
+  `.FailedYahooValidationError` are NOT "exposed on yahooFinance.errors" in
+  3.15.4 — no `errors` namespace exists on the class, instance, or module
+  root (checked all three, plus the exports map: no subpath access either).
+  The classes exist internally with stable `.name` values, so
+  `isYahooError()` in the new wrapper matches on `err.name` for log
+  specificity; the degraded behavior is identical for any thrown error.
+- Live smoke (investigation, not the test suite): `chart("AAPL", {period1,
+  period2, interval:"1d"})` returns `quotes[]` with `date` as a JS Date at
+  the market-open timestamp (13:30Z in summer) plus `close`/`adjclose`;
+  a bogus symbol throws a plain `Error("No data found, symbol may be
+  delisted")`.
+
+**Fix:**
+- `lib/stocks/yahoo-client.ts` — the shared singleton (Phase 6 imports this
+  same instance). Two properties worth noting: it injects a custom `fetch`
+  (a *public* constructor option) that routes through `loggedFetch`, so
+  Yahoo calls appear in the `/network-log` audit like every other outbound
+  request — without this, yahoo-finance2's internal fetching would have
+  silently bypassed the audit log the README calls "provable rather than
+  asserted". Purpose strings are derived from the Yahoo API path (chart vs
+  quoteSummary).
+- `history-core.ts`: `shouldFetch` (the caching decision) **byte-for-byte
+  unchanged**, its 3 tests unmodified. `parseAlphaVantageDaily` and
+  `HistoryNotConfiguredError` removed with the AV path (dead code otherwise);
+  new `parseYahooChart` adapter maps `quotes[]` → the existing `PricePoint`
+  shape. Writing its unit test caught a real bug before it shipped:
+  `Number(null)` is `0`, so a null-close/null-adjclose day would have become
+  a phantom $0 point instead of being dropped — fixed to NaN-and-filter.
+- `history.ts`: same cache reads/writes, fetch replaced with one `chart()`
+  call (150-calendar-day lookback ≈ the ~100 trading days AV "compact"
+  served). Errors propagate to the route → 502 with the plain message → the
+  dialog's existing calm degraded state (UI needed zero changes).
+- Route: the "not configured" 200-state is gone (no key exists to be
+  missing); `ALPHAVANTAGE_API_KEY` untouched everywhere else (live-quote
+  fallback in `lib/stocks.ts` — separate path, out of scope, confirmed
+  unmodified).
+- Docs: feasibility doc got a superseded-banner (the AV-era analysis kept
+  for the record, the unresolved "which AV endpoint is free" question now
+  moot); README + .env.example say history needs no key.
+
+**Tests:** 253 → 253 net (6 AV-parse tests replaced by 6 Yahoo-adapter
+fixture tests — Date and ISO-string dates, adjclose fallback, the
+NaN-not-$0 drop, empty/missing quotes throw; the 3 cache-decision tests
+pass unmodified, which is the refactor-not-behavior-change bar this
+migration held itself to).
+
+**Live-verified** against the running dev app with the user's real
+holdings: `GET /api/stocks/history?ticker=GOOGL` returned ~100 days of real
+Yahoo closes; the cache row landed (`fetched_date 2026-07-10`) and exactly
+**one** `yahoo-finance` entry appeared in the network audit log
+(query2.finance.yahoo.com, 200, 74ms). A second same-day click: 200 from
+cache, audit log still at 1 — **no second outbound call**. Backdated the
+cache row to 2026-07-09 (disposable manipulation of a row this session
+created), clicked again: exactly one fresh fetch (audit 1→2), cache
+re-stamped today. `ZZZZBOGUS123` → calm 502 `{"error":"No data found,
+symbol may be delisted"}`, the dialog's degraded state. The GOOGL cache row
+and the 2 genuine audit entries were left in place — they're real,
+correct operational data, not synthetic.
+
 ## Phase 4 (2026-07-10): visible system clock/date
 
 **Ask:** always be able to see what date/time the system is running at and

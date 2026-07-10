@@ -1,23 +1,27 @@
 import { getDb } from "@/lib/db";
-import { loggedFetch } from "@/lib/network-log";
+import { yahooFinance } from "@/lib/stocks/yahoo-client";
 import {
-  HistoryNotConfiguredError,
-  parseAlphaVantageDaily,
+  parseYahooChart,
   shouldFetch,
-  type AlphaVantageDailyResponse,
+  type YahooChartResult,
   type PricePoint,
 } from "./history-core";
 
-// Click-to-chart daily price history. See docs/stock-history-feasibility.md
-// for why this is Alpha Vantage only (Finnhub's /stock/candle is confirmed
-// premium-gated on free keys) and why fetching is lazy (on click) with a
-// persistent per-ticker-per-day cache rather than proactive on page load —
-// the free tier is 25 requests/day, shared with quote-fallback usage.
+// Click-to-chart daily price history via yahoo-finance2 (no API key needed —
+// see docs/stock-history-feasibility.md for the history of this path: it was
+// Alpha Vantage-only until fix-plan-3 Phase 5). Fetching stays lazy (on
+// click) with a persistent per-ticker-per-day cache: the reason shifted from
+// "stay inside a 25-req/day free tier" to "don't hammer an unofficial
+// endpoint and keep ticker clicks fast", but the mechanism is unchanged.
 // Pure decision/parsing logic lives in history-core.ts (unit-tested there);
 // this file is the DB + network glue, same split as lib/sync/core.ts vs.
 // lib/sync/client.ts.
 
-export { HistoryNotConfiguredError, type PricePoint } from "./history-core";
+export { type PricePoint } from "./history-core";
+
+// ~100 most recent trading days (what Alpha Vantage "compact" served) —
+// plenty for the chart dialog.
+const LOOKBACK_DAYS = 150;
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -40,30 +44,22 @@ function cacheHistory(ticker: string, series: PricePoint[]): void {
     .run(ticker.toUpperCase(), todayIso(), JSON.stringify(series));
 }
 
-// Serves the same-day cache when warm; otherwise fetches Alpha Vantage and
-// caches for the rest of today. TIME_SERIES_DAILY_ADJUSTED is tried first —
-// see history-core.ts's parseAlphaVantageDaily for why the endpoint choice
-// doesn't matter for correctness, only for whether this succeeds at all on
-// a given key.
+// Serves the same-day cache when warm; otherwise one chart() call through
+// the shared Yahoo client (lib/stocks/yahoo-client.ts — audited via
+// loggedFetch), cached for the rest of today. Any thrown error (HTTP,
+// validation, delisted/unknown symbol) propagates to the API route, which
+// renders it as the chart dialog's calm degraded state — never a crash.
 export async function getStockHistory(ticker: string): Promise<PricePoint[]> {
   const cached = getCachedHistory(ticker);
   if (cached) return cached;
 
-  if (!process.env.ALPHAVANTAGE_API_KEY) throw new HistoryNotConfiguredError();
-
-  const params = new URLSearchParams({
-    function: "TIME_SERIES_DAILY_ADJUSTED",
-    symbol: ticker.toUpperCase(),
-    outputsize: "compact", // ~100 most recent trading days — plenty for a chart
-    apikey: process.env.ALPHAVANTAGE_API_KEY,
+  const period1 = new Date(Date.now() - LOOKBACK_DAYS * 86400_000);
+  const result = await yahooFinance.chart(ticker.toUpperCase(), {
+    period1,
+    period2: new Date(),
+    interval: "1d",
   });
-  const res = await loggedFetch(`https://www.alphavantage.co/query?${params}`, undefined, {
-    feature: "stock-history",
-    purpose: "fetch daily price history",
-  });
-  if (!res.ok) throw new Error(`Alpha Vantage responded ${res.status} for ${ticker}`);
-  const data = (await res.json()) as AlphaVantageDailyResponse;
-  const points = parseAlphaVantageDaily(data, ticker);
+  const points = parseYahooChart(result as YahooChartResult, ticker);
   cacheHistory(ticker, points);
   return points;
 }

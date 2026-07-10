@@ -1,5 +1,29 @@
 # Stock chart feasibility spike (Phase 0)
 
+> **Superseded (2026-07-10, fix-plan-3 Phase 5): history now comes from
+> `yahoo-finance2`, not Alpha Vantage.** The blocker this spike worked
+> around — Finnhub's `/stock/candle` being premium-gated, leaving Alpha
+> Vantage's 25-req/day free tier as the only option — no longer applies:
+> the `yahoo-finance2` npm package (v3, instantiated client, `chart()`
+> module) serves daily EOD history with **no API key at all**, so
+> `ALPHAVANTAGE_API_KEY` stops being required for the history path
+> (it remains the documented fallback for **live quotes** behind Finnhub —
+> a separate code path, untouched). Everything below about the
+> per-ticker-per-day cache stays true and implemented — the *reason*
+> shifted from "stay inside 25 req/day" to "don't hammer an unofficial
+> endpoint and keep ticker clicks fast", but the mechanism is identical
+> (`shouldFetch` and its tests passed the migration unmodified). The
+> never-resolved "which Alpha Vantage endpoint is free" question below is
+> now moot. Yahoo is an *unofficial* API, so the LeetCode-puller posture
+> applies: every call is try/caught, failures (including delisted symbols,
+> which stop returning history entirely) degrade to the chart dialog's calm
+> no-data state, and the suite never tests it live. Calls route through the
+> shared audited client (`lib/stocks/yahoo-client.ts`), so they appear in
+> `/network-log` like every other outbound request.
+
+The remainder of this document is the original Alpha Vantage-era analysis,
+kept for the record.
+
 **Question:** can clicking a holding on the Stocks page open a historical price
 chart, given the app only has free-tier Finnhub/Alpha Vantage keys?
 
