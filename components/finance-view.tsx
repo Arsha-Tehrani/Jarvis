@@ -24,6 +24,13 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InvestmentHoldings } from "@/components/investment-holdings";
 import type {
@@ -34,7 +41,7 @@ import type {
   RecurringCharge,
 } from "@/lib/finance/analyze";
 import type { RadarItem } from "@/lib/finance/radar";
-import { reanalyzeUiReducer } from "@/lib/finance/reanalyze-ui-state";
+import { importLogInitialState, reanalyzeUiReducer } from "@/lib/finance/reanalyze-ui-state";
 import type { FinanceTab } from "@/lib/finance/finance-tabs";
 
 type Statement = {
@@ -155,9 +162,15 @@ export function FinanceView() {
   const [goalTarget, setGoalTarget] = useState("");
   const [selectedRenewals, setSelectedRenewals] = useState<Set<string>>(new Set());
   const [renewalResult, setRenewalResult] = useState<string | null>(null);
-  // At most one Re-Analyze confirmation (single statement, or "all") can be
-  // pending at a time — see lib/finance/reanalyze-ui-state.ts.
-  const [reanalyzePending, dispatchReanalyzePending] = useReducer(reanalyzeUiReducer, null);
+  // The imported-statement list lives behind a click (an import-log dialog);
+  // at most one Re-Analyze confirmation (single statement, or "all") can be
+  // pending at a time, and closing the log clears any pending confirmation —
+  // one reducer models both, see lib/finance/reanalyze-ui-state.ts.
+  const [importLog, dispatchReanalyzePending] = useReducer(
+    reanalyzeUiReducer,
+    importLogInitialState
+  );
+  const reanalyzePending = importLog.pending;
   const [singlePreview, setSinglePreview] = useState<ReanalyzePreview | null>(null);
   const [allPreviews, setAllPreviews] = useState<ReanalyzePreview[] | null>(null);
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
@@ -512,69 +525,22 @@ export function FinanceView() {
             <Button variant="outline" onClick={runImport} disabled={busy}>
               Scan folder
             </Button>
-            {data.statements.length > 0 && (
-              <Button variant="outline" onClick={previewReanalyzeAll} disabled={busy}>
-                Re-Analyze All…
-              </Button>
+            {data.statements.length > 0 ? (
+              <button
+                type="button"
+                className="text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => dispatchReanalyzePending({ type: "open_log" })}
+              >
+                {data.statements.length} statement
+                {data.statements.length === 1 ? "" : "s"} imported ·{" "}
+                {data.transactionCount} transactions · view import log
+              </button>
+            ) : (
+              <span className="text-muted-foreground">
+                {data.statements.length} imported · {data.transactionCount} transactions
+              </span>
             )}
-            <span className="text-muted-foreground">
-              {data.statements.length} imported · {data.transactionCount} transactions
-            </span>
           </div>
-          {reanalyzeError && <p className="text-destructive">{reanalyzeError}</p>}
-          {reanalyzePending?.type === "single" && singlePreview && (
-            <div className="flex flex-col gap-2 rounded border border-border p-3">
-              <p className="font-medium">Re-analyze &quot;{singlePreview.file}&quot;?</p>
-              <ReanalyzeDiff preview={singlePreview} />
-              <div className="flex gap-2">
-                <Button size="sm" disabled={busy} onClick={confirmReanalyzeOne}>
-                  Confirm Re-Analyze
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    dispatchReanalyzePending({ type: "close" });
-                    setSinglePreview(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-          {reanalyzePending?.type === "all" && allPreviews && (
-            <div className="flex flex-col gap-2 rounded border border-border p-3">
-              <p className="font-medium">
-                Re-analyze all {allPreviews.length} statement(s)?
-              </p>
-              <ul className="flex flex-col gap-2">
-                {allPreviews.map((p) => (
-                  <li key={p.statementId}>
-                    <p className="text-muted-foreground">{p.file}</p>
-                    <ReanalyzeDiff preview={p} />
-                  </li>
-                ))}
-              </ul>
-              <div className="flex gap-2">
-                <Button size="sm" disabled={busy} onClick={confirmReanalyzeAll}>
-                  Confirm Re-Analyze All
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    dispatchReanalyzePending({ type: "close" });
-                    setAllPreviews(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
           {importResults && (
             <ul className="flex flex-col gap-1">
               {importResults.length === 0 && (
@@ -642,43 +608,131 @@ export function FinanceView() {
               ))}
             </ul>
           )}
-          {data.statements.length > 0 && (
-            <ul className="text-muted-foreground">
-              {data.statements.map((s) => (
-                <li key={s.id} className="flex items-center gap-2">
-                  <span>
-                    {s.file_path} — {s.month ?? "?"} (imported {s.imported_at.slice(0, 10)})
-                  </span>
-                  {s.account_type && ACCOUNT_TYPE_LABEL[s.account_type] ? (
-                    <Badge variant="outline">{ACCOUNT_TYPE_LABEL[s.account_type]}</Badge>
-                  ) : s.kind === "transaction" ? (
-                    <Badge variant="outline">Statement</Badge>
-                  ) : null}
-                  <select
-                    className="rounded border border-border bg-transparent px-1 py-0.5 text-xs text-foreground"
-                    value={s.account_type ?? ""}
-                    disabled={busy}
-                    onChange={(e) => void setAccountType(s.id, e.target.value)}
-                    aria-label={`Correct account type for ${s.file_path}`}
-                  >
-                    <option value="">Unlabeled</option>
-                    <option value="checking">Checking</option>
-                    <option value="savings">Savings</option>
-                    <option value="credit_card">Credit Card</option>
-                    <option value="investment">Investment</option>
-                  </select>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => previewReanalyzeOne(s.id)}
-                  >
-                    Re-Analyze
+          {/* The per-statement list (file/month, account-type badge +
+              correction, Re-Analyze) lives behind the summary-line click
+              above — an import log you open, not an always-visible block.
+              Closing this dialog also clears any pending re-analyze
+              confirmation (see lib/finance/reanalyze-ui-state.ts). */}
+          <Dialog
+            open={importLog.logOpen}
+            onOpenChange={(open) => {
+              if (open) {
+                dispatchReanalyzePending({ type: "open_log" });
+              } else {
+                dispatchReanalyzePending({ type: "close_log" });
+                setSinglePreview(null);
+                setAllPreviews(null);
+              }
+            }}
+          >
+            <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Import log</DialogTitle>
+                <DialogDescription>
+                  Every imported statement: file, month, account type (correctable), and
+                  Re-Analyze.
+                </DialogDescription>
+              </DialogHeader>
+              {data.statements.length > 0 && (
+                <div>
+                  <Button variant="outline" size="sm" onClick={previewReanalyzeAll} disabled={busy}>
+                    Re-Analyze All…
                   </Button>
-                </li>
-              ))}
-            </ul>
-          )}
+                </div>
+              )}
+              {reanalyzeError && <p className="text-destructive">{reanalyzeError}</p>}
+              {reanalyzePending?.type === "single" && singlePreview && (
+                <div className="flex flex-col gap-2 rounded border border-border p-3">
+                  <p className="font-medium">Re-analyze &quot;{singlePreview.file}&quot;?</p>
+                  <ReanalyzeDiff preview={singlePreview} />
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={busy} onClick={confirmReanalyzeOne}>
+                      Confirm Re-Analyze
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => {
+                        dispatchReanalyzePending({ type: "close" });
+                        setSinglePreview(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {reanalyzePending?.type === "all" && allPreviews && (
+                <div className="flex flex-col gap-2 rounded border border-border p-3">
+                  <p className="font-medium">
+                    Re-analyze all {allPreviews.length} statement(s)?
+                  </p>
+                  <ul className="flex flex-col gap-2">
+                    {allPreviews.map((p) => (
+                      <li key={p.statementId}>
+                        <p className="text-muted-foreground">{p.file}</p>
+                        <ReanalyzeDiff preview={p} />
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={busy} onClick={confirmReanalyzeAll}>
+                      Confirm Re-Analyze All
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => {
+                        dispatchReanalyzePending({ type: "close" });
+                        setAllPreviews(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {data.statements.length > 0 && (
+                <ul className="text-muted-foreground">
+                  {data.statements.map((s) => (
+                    <li key={s.id} className="flex items-center gap-2 py-0.5">
+                      <span>
+                        {s.file_path} — {s.month ?? "?"} (imported {s.imported_at.slice(0, 10)})
+                      </span>
+                      {s.account_type && ACCOUNT_TYPE_LABEL[s.account_type] ? (
+                        <Badge variant="outline">{ACCOUNT_TYPE_LABEL[s.account_type]}</Badge>
+                      ) : s.kind === "transaction" ? (
+                        <Badge variant="outline">Statement</Badge>
+                      ) : null}
+                      <select
+                        className="rounded border border-border bg-transparent px-1 py-0.5 text-xs text-foreground"
+                        value={s.account_type ?? ""}
+                        disabled={busy}
+                        onChange={(e) => void setAccountType(s.id, e.target.value)}
+                        aria-label={`Correct account type for ${s.file_path}`}
+                      >
+                        <option value="">Unlabeled</option>
+                        <option value="checking">Checking</option>
+                        <option value="savings">Savings</option>
+                        <option value="credit_card">Credit Card</option>
+                        <option value="investment">Investment</option>
+                      </select>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => previewReanalyzeOne(s.id)}
+                      >
+                        Re-Analyze
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
 
