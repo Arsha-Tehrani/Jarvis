@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { SystemClock } from "@/components/system-clock";
 import { cn } from "@/lib/utils";
 import type { HealthCheck, HealthSummary } from "@/lib/status-core";
 import type { SyncStatus } from "@/lib/sync/client";
@@ -120,6 +121,9 @@ export function StatusView() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Cron-timing questions get debugged here — pair "what time does
+              the server think it is" with the integration checks. */}
+          <SystemClock />
           <Link href="/network-log" className="action-link text-xs">
             Network log
           </Link>
