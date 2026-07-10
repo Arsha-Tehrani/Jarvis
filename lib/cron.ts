@@ -10,6 +10,7 @@ import { slackCheckinJob } from "@/lib/slack";
 import { refreshSearchIndexJob } from "@/lib/search-index";
 import { refreshStocksJob } from "@/lib/stocks";
 import { syncJob } from "@/lib/sync/client";
+import { dividendScanJob } from "@/lib/dividends-scan";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
 // once at startup (catch-up-on-launch) so gaps self-heal after sleep.
@@ -22,6 +23,10 @@ type Job = {
 
 const JOBS: Job[] = [
   { name: "leetcode-daily-pull", schedule: "0 8 * * *", run: pullLeetCodeJob },
+  // Daily, ahead of market open — an ex-dividend date changes at most once
+  // a day, so this deliberately does NOT ride the 15-minute stocks-refresh
+  // (docs/dividend-automation.md).
+  { name: "dividend-scan", schedule: "0 7 * * *", run: dividendScanJob },
   { name: "stocks-refresh", schedule: "*/15 * * * *", run: refreshStocksJob },
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
   // Offset from the calendar poll so the two Google calls don't stack.

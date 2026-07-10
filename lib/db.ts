@@ -342,6 +342,14 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   // goal folded in from the legacy `goals` table.
   { table: "habits", column: "source", ddl: "source TEXT" },
   { table: "habits", column: "target", ddl: "target REAL" },
+  // fix-plan-3 Phase 6 — automated dividend detection (docs/dividend-automation.md).
+  // status: 'pending' (ex-date passed, cash not landed) | 'confirmed' (counts
+  // toward the running total). Existing manual rows default to 'confirmed' —
+  // a human typed them in after the fact. payment_date nullable (manual rows
+  // may not have one). Dedupe rides the table's original UNIQUE(ticker, ex_date).
+  { table: "dividend_log", column: "status", ddl: "status TEXT NOT NULL DEFAULT 'confirmed'" },
+  { table: "dividend_log", column: "payment_date", ddl: "payment_date TEXT" },
+  { table: "dividend_log", column: "source", ddl: "source TEXT NOT NULL DEFAULT 'manual'" },
   // fix-plan-3 Phase 1 — the date a job application was submitted (ISO date,
   // set once at creation; distinct from created_at, which is when the row was
   // tracked). Pre-existing rows keep NULL — no guessed backfill.

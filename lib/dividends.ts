@@ -1,11 +1,12 @@
 import { getDb } from "@/lib/db";
-import { dividendPayout, round2 } from "@/lib/dividends-math";
+import { dividendPayout, summarizeDividends, type DividendStatus } from "@/lib/dividends-math";
 
-// Dividend income tracking. The configured free-tier quote providers don't
-// expose dividends (Finnhub's dividend endpoint is premium; Alpha Vantage
-// dropped free dividend-adjusted data), so — same philosophy as the LeetCode
-// manual entry — dividends are logged by hand and this module does the math.
-// The payout math lives in the pure dividends-math.ts (unit-tested).
+// Dividend income tracking. Manual entry is the always-working base path
+// (same philosophy as LeetCode manual entry); the daily dividend-scan cron
+// (lib/dividends-scan.ts, docs/dividend-automation.md) adds `pending` rows
+// automatically on a holding's ex-date and promotes them to `confirmed` on
+// the payment date. Only `confirmed` rows count toward the running total —
+// the pure math lives in dividends-math.ts (unit-tested).
 
 export { dividendPayout } from "@/lib/dividends-math";
 
@@ -16,12 +17,16 @@ export type DividendEvent = {
   amount_per_share: number;
   shares_at_date: number | null;
   note: string | null;
+  status: DividendStatus;
+  payment_date: string | null;
+  source: "manual" | "yahoo_auto";
   payout: number;
   approximate: boolean; // true when payout used the current share count
 };
 
 export type DividendSummary = {
-  total: number;
+  total: number; // confirmed only
+  pendingTotal: number; // entitlements not yet paid — never in `total`
   byHolding: Array<{ ticker: string; total: number; events: number; approximate: boolean }>;
   events: DividendEvent[];
 };
@@ -30,7 +35,7 @@ export function dividendSummary(): DividendSummary {
   const db = getDb();
   const rows = db
     .prepare(
-      "SELECT id, ticker, ex_date, amount_per_share, shares_at_date, note FROM dividend_log ORDER BY ex_date DESC, ticker"
+      "SELECT id, ticker, ex_date, amount_per_share, shares_at_date, note, status, payment_date, source FROM dividend_log ORDER BY ex_date DESC, ticker"
     )
     .all() as Array<{
     id: number;
@@ -39,6 +44,9 @@ export function dividendSummary(): DividendSummary {
     amount_per_share: number;
     shares_at_date: number | null;
     note: string | null;
+    status: DividendStatus;
+    payment_date: string | null;
+    source: "manual" | "yahoo_auto";
   }>;
   const currentShares = new Map(
     (db.prepare("SELECT ticker, shares FROM holdings").all() as {
@@ -56,23 +64,7 @@ export function dividendSummary(): DividendSummary {
     return { ...r, payout, approximate };
   });
 
-  const byTicker = new Map<string, { total: number; events: number; approximate: boolean }>();
-  for (const e of events) {
-    const prev = byTicker.get(e.ticker) ?? { total: 0, events: 0, approximate: false };
-    byTicker.set(e.ticker, {
-      total: round2(prev.total + e.payout),
-      events: prev.events + 1,
-      approximate: prev.approximate || e.approximate,
-    });
-  }
-
-  return {
-    total: round2(events.reduce((s, e) => s + e.payout, 0)),
-    byHolding: [...byTicker.entries()]
-      .map(([ticker, v]) => ({ ticker, ...v }))
-      .sort((a, b) => b.total - a.total),
-    events,
-  };
+  return { ...summarizeDividends(events), events };
 }
 
 export function logDividend(
