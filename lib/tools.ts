@@ -3,6 +3,7 @@ import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
 import { createCalendarEvent } from "@/lib/google";
 import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
+import { applicationDateSchema } from "@/lib/career-dates";
 import { CATEGORIES } from "@/lib/finance/categorize";
 import { formatFinanceAnswer, runFinanceQuery } from "@/lib/finance/query";
 import { logHabitByName } from "@/lib/habits";
@@ -296,6 +297,7 @@ const addApplicationSchema = z.object({
   next_action_at: dateField,
   contact: z.string().max(200).optional().describe("Recruiter / referral contact"),
   link: z.string().max(1000).optional().describe("Job-posting URL"),
+  date_applied: applicationDateSchema,
 });
 
 const addApplicationTool: Tool<typeof addApplicationSchema> = {

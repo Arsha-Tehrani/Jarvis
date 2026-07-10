@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { resolveDateApplied } from "@/lib/career-dates";
 
 export const STAGES = [
   "wishlist",
@@ -22,6 +23,7 @@ export type Application = {
   contact: string | null;
   link: string | null;
   notes: string | null;
+  date_applied: string | null;
   created_at: string;
 };
 
@@ -60,11 +62,12 @@ export function addApplication(fields: {
   contact?: string;
   link?: string;
   notes?: string;
+  date_applied?: string;
 }): number {
   const info = getDb()
     .prepare(
-      `INSERT INTO applications (company, role, stage, next_action, next_action_at, contact, link, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO applications (company, role, stage, next_action, next_action_at, contact, link, notes, date_applied)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.company,
@@ -74,7 +77,8 @@ export function addApplication(fields: {
       fields.next_action_at ?? null,
       fields.contact ?? null,
       fields.link ?? null,
-      fields.notes ?? null
+      fields.notes ?? null,
+      resolveDateApplied(fields.date_applied)
     );
   return info.lastInsertRowid as number;
 }

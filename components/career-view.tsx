@@ -34,8 +34,12 @@ type Application = {
   contact: string | null;
   link: string | null;
   notes: string | null;
+  date_applied: string | null;
   created_at: string;
 };
+
+// Same "today" convention the due-badge comparison below already uses.
+const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const STAGE_ORDER: Record<string, number> = Object.fromEntries(
   STAGES.map((s, i) => [s, i])
@@ -50,6 +54,7 @@ export function CareerView() {
   const [role, setRole] = useState("");
   const [nextAction, setNextAction] = useState("");
   const [nextActionAt, setNextActionAt] = useState("");
+  const [dateApplied, setDateApplied] = useState(todayIso);
 
   const load = useCallback(async () => {
     try {
@@ -79,6 +84,7 @@ export function CareerView() {
       };
       if (nextAction.trim()) body.next_action = nextAction.trim();
       if (nextActionAt) body.next_action_at = nextActionAt;
+      if (dateApplied) body.date_applied = dateApplied;
       const res = await fetch("/api/career", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -92,6 +98,7 @@ export function CareerView() {
         setRole("");
         setNextAction("");
         setNextActionAt("");
+        setDateApplied(todayIso());
         setError(null);
       }
       await load();
@@ -201,6 +208,18 @@ export function CareerView() {
                 className="w-40"
               />
             </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="ca-applied" className="text-xs">
+                Applied
+              </Label>
+              <Input
+                id="ca-applied"
+                type="date"
+                value={dateApplied}
+                onChange={(e) => setDateApplied(e.target.value)}
+                className="w-40"
+              />
+            </div>
             <Button type="submit" disabled={busy || !company.trim() || !role.trim()}>
               Add
             </Button>
@@ -244,8 +263,10 @@ export function CareerView() {
                           — {a.role}
                         </p>
                         <p className="text-xs text-muted-foreground">
+                          <>applied {a.date_applied ?? "—"}</>
                           {a.next_action && (
                             <>
+                              {" · "}
                               {a.next_action}
                               {a.next_action_at && ` · due ${a.next_action_at.slice(0, 10)}`}
                             </>
