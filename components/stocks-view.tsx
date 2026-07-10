@@ -10,6 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -52,11 +53,15 @@ type DividendEvent = {
   amount_per_share: number;
   shares_at_date: number | null;
   note: string | null;
+  status: "pending" | "confirmed";
+  payment_date: string | null;
+  source: "manual" | "yahoo_auto";
   payout: number;
   approximate: boolean;
 };
 type DividendData = {
-  total: number;
+  total: number; // confirmed only — pending never counts until it pays
+  pendingTotal: number;
   byHolding: Array<{ ticker: string; total: number; events: number; approximate: boolean }>;
   events: DividendEvent[];
 };
@@ -439,16 +444,26 @@ export function StocksView() {
         <CardHeader>
           <CardTitle className="flex items-baseline justify-between">
             Dividend income
-            <span className="text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-500">
-              {usd(dividends?.total ?? 0)}
+            <span className="flex items-baseline gap-2">
+              <span className="text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-500">
+                {usd(dividends?.total ?? 0)}
+              </span>
+              {(dividends?.pendingTotal ?? 0) > 0 && (
+                <span className="text-sm font-normal tabular-nums text-muted-foreground">
+                  +{usd(dividends!.pendingTotal)} pending
+                </span>
+              )}
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <p className="text-xs text-muted-foreground">
-            Free-tier quote APIs don&apos;t provide dividends, so log them here. Payout =
-            shares × amount/share; without a share count for the ex-date it uses your
-            current shares, marked <span className="italic">≈</span>.
+            Upcoming dividends on your holdings are detected automatically each morning
+            (amounts estimated from the last payment); a <span className="italic">pending</span>{" "}
+            payout counts toward the total only on its payment date, when the cash actually
+            lands. Manual logging below always works. Payout = shares × amount/share;
+            without a share count for the ex-date it uses your current shares, marked{" "}
+            <span className="italic">≈</span>.
           </p>
           {dividends && dividends.byHolding.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -473,7 +488,13 @@ export function StocksView() {
                   <span className="tabular-nums">
                     ${e.amount_per_share.toFixed(2)}/sh → {usd(e.payout)}
                     {e.approximate && " ≈"}
+                    {e.source === "yahoo_auto" && " (est.)"}
                   </span>
+                  {e.status === "pending" && (
+                    <Badge variant="secondary">
+                      pending{e.payment_date ? ` · pays ${e.payment_date}` : ""}
+                    </Badge>
+                  )}
                   <button className="underline-offset-2 hover:underline" onClick={() => removeDividend(e.id)}>
                     remove
                   </button>

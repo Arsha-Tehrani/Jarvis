@@ -5,6 +5,119 @@ system clock, Yahoo-Finance stock history, automated dividend tracking. Same
 discipline as prior runs: investigate → root-cause note → implement → test →
 typecheck → live-verify → document → commit, one phase at a time.
 
+## Phase 6 (2026-07-10): automated dividend tracker via yahoo-finance2
+
+**Ask:** automate the manual dividend log — scan portfolio tickers for
+today's ex-dividend date, lock in the held share count, insert a pending
+payout that only counts on the payment date.
+
+**Plan corrections found by reading the real code first:**
+- The table is **`dividend_log`**, not `dividends`, and it already had
+  `ex_date` AND the exact `(ticker, ex_date)` uniqueness guard the plan
+  asked to add (`UNIQUE(ticker, ex_date)`, used by `logDividend`'s upsert
+  since Part D3). Extended, not replaced.
+- **Net worth never folded dividend cash in at all** — `networth.ts` and
+  `portfolio-total.ts` were grepped and contain no dividend term. The
+  "pending must contribute zero" requirement therefore lands on
+  `dividendSummary()`'s running total and per-holding breakdown (the
+  Dividends card), the only aggregate that exists.
+
+**Step 0 — field mapping verified empirically before wiring (full record in
+`docs/dividend-automation.md`):** `quoteSummary(calendarEvents)` for AAPL /
+GOOGL / META (the latter two are real holdings) on 2026-07-10, cross-checked
+against **Apple's own IR dividend-history page** fetched the same day:
+Yahoo's `dividendDate` (2026-05-14) is exactly Apple's stated **payment
+date**, `exDividendDate` (2026-05-11) matches the record/ex date (T+1
+coincidence), and `summaryDetail.dividendRate` (1.08) is the **annualized**
+forward rate — 4 × the real $0.27 quarterly payment, NOT usable per-payment.
+Per-payment amounts come from `chart(events:"dividends")`, whose most recent
+AAPL event ($0.27 on 2026-05-11) matches Apple IR exactly. So: amounts are
+**estimated from the last actual payment**, labeled `(est.)` in the UI and
+in the row's note — the photo-macro honesty rule.
+
+**Design decision (flagged, deviating from the ask's "tie into the
+15-minute stock cron"):** a new daily 07:00 job + catch-up-on-launch. An
+ex-date changes at most once a day; 15-minute checks would be ~96
+unofficial-API calls per ticker per day for information stale after the
+first.
+
+**Confirm-gating (rule 2), reasoned explicitly:** the cron writes financial
+data with no interactive confirm — deliberately. It sits with the existing
+unconfirmed automatic financial writes (daily net-worth snapshot, quote
+cache warm), not with `set_goal`/`revert_action`: a `pending` insert moves
+no total and is trivially hand-deletable, and the promotion is a pure date
+comparison. Documented in docs/dividend-automation.md; revisit if wrong in
+practice.
+
+**Fix:**
+- Migrations: `dividend_log.status` (`'confirmed'` default — existing manual
+  rows were typed in after the fact), `payment_date` (nullable),
+  `source` (`'manual'` default).
+- `lib/dividends-auto.ts` — testable core (db-param + injected deps, the
+  sync-core pattern): `toIsoDate`, `calendarFromQuoteSummary`,
+  `lastPaymentFromChart`, `isPromotionDue`, and `runDividendScan` (per-ticker
+  try/catch — one failure never blocks the rest; insert with
+  `ON CONFLICT DO NOTHING` so an existing row of either source wins;
+  promotion pass runs through `isPromotionDue` row-by-row so the decision
+  has exactly one implementation). `shares_at_date` is the last-imported-
+  statement count — a stated known limitation (no live brokerage feed), in
+  both the code comment and the doc.
+- `lib/dividends-scan.ts` — cron glue reusing Phase 5's shared audited
+  Yahoo client (no second instance); `dividend-scan` in `lib/cron.ts` at
+  07:00 daily + launch catch-up.
+- `lib/dividends-math.ts` gains pure `summarizeDividends`: total and
+  byHolding from **confirmed rows only**, pending surfaced separately as
+  `pendingTotal`. `dividendSummary()` now carries status/payment_date/source
+  per event and delegates its totals to it.
+- UI (Dividends card): pending rows get a badge ("pending · pays <date>"),
+  auto rows get "(est.)", the header shows the confirmed total plus a
+  separate muted "+$X pending", and the blurb explains the pending rule.
+  Manual entry form untouched.
+
+**Tests:** 253 → 267 (`tests/dividends-auto.test.ts`, no live Yahoo
+anywhere): field extraction against the recorded Step-0 shapes (Date and
+string dates, missing modules → nulls), last-payment selection and junk
+filtering, the promotion decision (today/past/future/no-date), and the scan
+against an in-memory DB with stubbed deps — pending insert with locked
+shares/payment date/source, ex-date-not-today no-op, existing manual row
+wins (no duplicate, amount not clobbered), same-day tick idempotent, one
+ticker's simulated connection failure logged + skipped while the other
+ticker still inserts, promotion flips only due rows. Plus the
+number-a-user-could-act-on tests: mixed pending/confirmed fixture → total
+and byHolding reflect confirmed only; all-pending → $0 total.
+
+**Live-verified** (no real holding has a genuine ex-dividend date this
+session — GOOGL/META went ex in June, next ~September — so per the plan's
+explicit instruction the insert/promote logic was proven end-to-end by
+calling the underlying functions directly with a synthetic ticker+date, then
+deleting the synthetic rows):
+- Migration reached the real DB via dev hot-reload; `GET /api/stocks/dividends`
+  returned the new shape (`pendingTotal` present) on a clean 0-row table.
+- Synthetic cycle against the **real** jarvis.db (`runDividendScan` with
+  stubbed deps, synthetic holding ZZSYNTEST ×10 shares): ex-date=today →
+  `{inserted:['ZZSYNTEST']}`, row landed exactly as designed (status
+  `pending`, `payment_date 2026-07-12`, `source yahoo_auto`, shares locked
+  at 10, note "amount estimated from last payment ($0.5/sh on 2026-04-10)").
+  Same-day second tick: `{inserted:[]}` — idempotent. The app's own API then
+  showed **`total: 0, pendingTotal: 5`, byHolding empty** — the pending row
+  visibly did not move the running total. Promote scan with
+  today=payment-date: `{promoted: 1}` → API flipped to **`total: 5,
+  pendingTotal: 0`**, byHolding populated, status `confirmed`.
+- **Real-Yahoo pass over the real portfolio**: the same `runDividendScan`
+  core with live-Yahoo deps ran over all 25 real holdings' tickers — every
+  real ticker (including OTC KRKNF) fetched successfully, none has an
+  ex-date today, zero inserts (correct), and the still-present synthetic
+  ZZSYNTEST failed its Yahoo lookup ("Quote not found") and was **logged and
+  skipped while the rest of the run completed** — the per-ticker failure
+  isolation demonstrated with a genuine failure, not just the stubbed test.
+- Cleanup confirmed: 0 dividend rows, 25 holdings, API back to all-zeros —
+  exact baseline.
+- **Note for the next session:** the running dev server's cron guard
+  (`__jarvisCronStarted`) means the new `dividend-scan` job registers on the
+  **next app restart**, at which point catch-up-on-launch fires it once
+  immediately — no action needed, just don't be surprised it isn't in the
+  current process's schedule.
+
 ## Phase 5 (2026-07-10): stock history — Alpha Vantage → yahoo-finance2
 
 **Ask:** stop gating ticker-click price history behind
