@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { STAGES, addApplication, followUpsDue, listApplications } from "@/lib/career";
+import { applicationDateSchema } from "@/lib/career-dates";
 
 const createSchema = z.object({
   company: z.string().trim().min(1).max(200),
@@ -12,6 +13,7 @@ const createSchema = z.object({
   contact: z.string().max(200).optional(),
   link: z.string().max(1000).optional(),
   notes: z.string().max(5000).optional(),
+  date_applied: applicationDateSchema,
 });
 
 const updateSchema = z.object({

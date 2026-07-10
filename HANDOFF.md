@@ -1,4 +1,67 @@
-# HANDOFF — fix-plan-2 run (2026-07-09; runs before this are below)
+# HANDOFF — fix-plan-3 run (2026-07-10; runs before this are below)
+
+Six phases: career date-applied, finance import-log dialog, tracker deletion,
+system clock, Yahoo-Finance stock history, automated dividend tracking. Same
+discipline as prior runs: investigate → root-cause note → implement → test →
+typecheck → live-verify → document → commit, one phase at a time.
+
+## Phase 1 (2026-07-10): Career — date applied on job applications
+
+**Ask:** company/role/status already work; add the date the application was
+submitted.
+
+**Current state (investigated before changing anything):** `applications` in
+`lib/db.ts` is `(id, company, role, stage, next_action, next_action_at,
+contact, link, notes, created_at)` — the plan's guess was right except it
+missed `next_action_at` and `notes`, both already present. `created_at` exists
+but is "when the row was tracked," not "when the application was submitted"
+(a backdated entry or a wishlist row tracked weeks before applying diverge),
+so a separate `date_applied` column is correct rather than repurposing it.
+Note: `applications` predates CLAUDE.md's data-model list entirely (Phase 6c
+addition) — CLAUDE.md's schema section was left as-is since it documents the
+original core tables, and README is the living per-feature doc.
+
+**Fix:**
+- Idempotent column migration `applications.date_applied TEXT` in
+  `lib/db.ts`'s `COLUMN_MIGRATIONS` (pragma-checked ALTER, same style as the
+  `account_type` adds). Pre-existing rows keep NULL — no guessed backfill.
+- New pure module `lib/career-dates.ts` (kept DB-free so `node --test` can
+  import it): `applicationDateSchema` (strict `YYYY-MM-DD`, optional) shared
+  by both the `add_application` tool schema and `/api/career`'s create schema,
+  and `resolveDateApplied()` (missing → today, applied at execution time in
+  `addApplication`, not baked into the zod schema).
+- `add_application` gains optional `date_applied` — same pattern as
+  `add_task`'s due date: the agent resolves relative dates itself; omitted
+  defaults to today. **Design note:** a `wishlist`-stage entry arguably hasn't
+  been "applied" yet, but the plan's explicit call ("default to today, not
+  null; advance never touches it") was followed literally — the UI form is
+  rarely used for wishlist (no stage picker; agent-only path), the field is
+  editable at creation, and set-once semantics stay simple. Flagged here
+  rather than silently deviating.
+- `advance_application` untouched — `date_applied` is set-once at creation.
+- Career page: "Applied" date field on the add form (defaults to today,
+  editable), and each row's muted line now leads with `applied <date>` (or
+  `applied —` for legacy rows with no date).
+
+**Tests:** 233 → 238 (`tests/career-dates.test.ts`): valid ISO accepted,
+undefined accepted (default is execution-time), garbage strings rejected
+(`"last Tuesday"`, `07/01/2026`, `2026-7-1`, datetime, empty), pass-through
+of a provided date, missing/null → today.
+
+**Live-verified** against the user's own running `next dev` on :3000 (hot
+reload picked up the change; the dev-reconnect migration path in `getDb()`
+applied the new column without a restart). Career table confirmed empty
+before starting. Via `/api/career` (the exact request the UI form sends):
+picked past date `2026-06-15` stored verbatim; omitted date defaulted to
+`2026-07-10`; `"last Tuesday"` rejected 400 with the zod message. Via the
+agent (`POST /api/agent`, real Ollama turn): "I applied to Foo Corp for a
+Backend Engineer role today" → tool call executed, row landed with
+`date_applied: 2026-07-10`. All three synthetic rows deleted by id
+afterwards; confirmed `/api/career` back to empty. **Caveat:** the rendered
+page wasn't screenshotted — port 3000 is held by the user's live dev server
+(preview pane can't attach) and the Chrome extension wasn't connected; the
+row/form JSX is typechecked and the API contract it renders from was verified
+end-to-end.
 
 Continuous run, no pause between phases (per this run's own instructions). Each
 phase: root-caused in writing, fixed, tested (`node --test`), live-verified

@@ -256,7 +256,7 @@ Each person can have a contact cadence in days and a birthday. The People page c
 
 ### Career
 
-Applications move through fixed stages (`wishlist → applied → screening → interview → offer / rejected / accepted`) with optional next action, contact, and link. The agent tracks new applications (`add_application`) and stage changes (`advance_application`); overdue follow-ups feed the morning brief.
+Applications move through fixed stages (`wishlist → applied → screening → interview → offer / rejected / accepted`) with optional next action, contact, and link. Each application records the **date it was submitted** (`date_applied`): the add form defaults it to today (editable), the agent resolves relative dates itself ("applied last Tuesday" → a concrete ISO date) and defaults to today when unstated, and it's set once at creation — stage moves never touch it. Rows tracked before this field existed show "—" rather than a guessed date. The agent tracks new applications (`add_application`) and stage changes (`advance_application`); overdue follow-ups feed the morning brief.
 
 ### Reading list
 

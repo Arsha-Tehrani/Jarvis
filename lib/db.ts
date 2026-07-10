@@ -342,6 +342,10 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   // goal folded in from the legacy `goals` table.
   { table: "habits", column: "source", ddl: "source TEXT" },
   { table: "habits", column: "target", ddl: "target REAL" },
+  // fix-plan-3 Phase 1 — the date a job application was submitted (ISO date,
+  // set once at creation; distinct from created_at, which is when the row was
+  // tracked). Pre-existing rows keep NULL — no guessed backfill.
+  { table: "applications", column: "date_applied", ddl: "date_applied TEXT" },
   // Phase 23 — sync bookkeeping columns on every allowlisted table,
   // generated from the allowlist itself (lib/sync/tables.ts).
   ...syncColumnMigrations(),
