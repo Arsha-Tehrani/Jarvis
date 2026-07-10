@@ -117,6 +117,8 @@ const NOT_REVERTIBLE: Record<string, string> = {
   set_reminder:
     "reminders are Google Calendar events — delete the event in Google Calendar",
   log_contact: "the previous last-contacted date was overwritten and can't be restored",
+  delete_habit:
+    "a deleted manual habit's logged entries are gone with it — recreate the tracker and re-log instead",
   advance_application: "the previous stage was overwritten — move it back explicitly",
   query_finance: "read-only, nothing to revert",
   ask_textbook: "read-only, nothing to revert",

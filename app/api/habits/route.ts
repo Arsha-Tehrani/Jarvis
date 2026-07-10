@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { queueSyncPush } from "@/lib/sync/client";
 import { checkTrackerDuplicate, listTrackers } from "@/lib/trackers";
+import { deleteTracker } from "@/lib/tracker-delete";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -82,12 +83,23 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ trackers: listTrackers() });
 }
 
+// Deletion branches on manual vs sourced (lib/tracker-delete.ts): a manual
+// habit's logs cascade with it; a sourced tracker's underlying feed
+// (gym_logs, leetcode_stats, ...) is never touched. The UI's confirm dialog
+// is the gate — its copy differs by kind for exactly that reason.
 export async function DELETE(req: NextRequest) {
   const id = Number(req.nextUrl.searchParams.get("id"));
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-  const info = getDb().prepare("DELETE FROM habits WHERE id = ?").run(id);
-  if (info.changes === 0) return NextResponse.json({ error: "Tracker not found" }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  try {
+    const result = deleteTracker(getDb(), id);
+    return NextResponse.json({ ok: true, result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Delete failed";
+    return NextResponse.json(
+      { error: message },
+      { status: message === "Tracker not found" ? 404 : 500 }
+    );
+  }
 }

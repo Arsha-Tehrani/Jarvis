@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { findHabitByName } from "@/lib/tracker-delete";
 
 // Generic habits: daily cadence tracks a consecutive-day streak; weekly
 // cadence tracks this week's count against `goal` per week.
@@ -58,17 +59,9 @@ export function listHabits(): HabitWithStats[] {
 
 export function logHabitByName(name: string, date?: string): string {
   const db = getDb();
-  const habit = db
-    .prepare("SELECT id, name FROM habits WHERE LOWER(name) = LOWER(?)")
-    .get(name.trim()) as { id: number; name: string } | undefined;
-  if (!habit) {
-    const names = (db.prepare("SELECT name FROM habits ORDER BY name").all() as { name: string }[])
-      .map((r) => r.name)
-      .join(", ");
-    throw new Error(
-      `No habit named "${name}". Existing habits: ${names || "(none — create one on the Habits page first)"}`
-    );
-  }
+  // Shared name→tracker lookup (lib/tracker-delete.ts) — same
+  // fail-with-known-list behavior for log_habit and delete_habit.
+  const habit = findHabitByName(db, name);
   const day = date ?? new Date().toISOString().slice(0, 10);
   db.prepare("INSERT OR IGNORE INTO habit_logs (habit_id, date) VALUES (?, ?)").run(
     habit.id,

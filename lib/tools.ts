@@ -7,6 +7,7 @@ import { applicationDateSchema } from "@/lib/career-dates";
 import { CATEGORIES } from "@/lib/finance/categorize";
 import { formatFinanceAnswer, runFinanceQuery } from "@/lib/finance/query";
 import { logHabitByName } from "@/lib/habits";
+import { deleteTracker, findHabitByName } from "@/lib/tracker-delete";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { logContactByName } from "@/lib/people";
 import { READING_KINDS, addReadingItem } from "@/lib/reading";
@@ -289,6 +290,34 @@ const logHabitTool: Tool<typeof logHabitSchema> = {
   handler: (args) => logHabitByName(args.name, args.date),
 };
 
+const deleteHabitSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .describe("The tracker/habit's name (matched case-insensitively; fails with the known list)"),
+});
+
+// Deleting a manual habit cascades its logged entries — real data loss, so
+// this is confirm-gated and deliberately NOT revertible via revert_action
+// (the logs are gone; a fake/lossy inverse would be worse than refusing).
+const deleteHabitTool: Tool<typeof deleteHabitSchema> = {
+  name: "delete_habit",
+  description:
+    "Delete a tracker/habit by name. A manual habit is removed along with ALL its logged entries (irreversible); a sourced tracker (linked to gym/LeetCode/sleep/calories/savings data) only removes the tracker config — the underlying data stays. Use when the user wants to stop tracking something.",
+  schema: deleteHabitSchema,
+  requiresConfirm: true,
+  handler: (args) => {
+    const db = getDb();
+    const habit = findHabitByName(db, args.name);
+    const result = deleteTracker(db, habit.id);
+    return result.kind === "manual"
+      ? `Deleted "${result.name}" and its ${result.deletedLogs} logged entr${result.deletedLogs === 1 ? "y" : "ies"}.`
+      : `Removed the "${result.name}" tracker. The underlying ${result.source} data is untouched — a new tracker can point at it again later.`;
+  },
+};
+
 const addApplicationSchema = z.object({
   company: z.string().trim().min(1).max(200).describe("Company name"),
   role: z.string().trim().min(1).max(200).describe("Role / job title"),
@@ -529,6 +558,7 @@ export const tools: Tool[] = [
   setReminderTool as Tool,
   logMetricTool as Tool,
   logHabitTool as Tool,
+  deleteHabitTool as Tool,
   addApplicationTool as Tool,
   advanceApplicationTool as Tool,
   addToReadingListTool as Tool,
