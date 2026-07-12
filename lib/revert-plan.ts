@@ -11,6 +11,9 @@ export type RevertPlan = {
   params: (string | number)[];
   // Shown to the user in the confirmation/result text.
   description: string;
+  // Optional non-SQL follow-up the executor (lib/revert.ts) runs after the
+  // inverse commits — kept as plain data so this module stays pure.
+  after?: { kind: "reopen-task-event"; taskId: number };
 };
 
 type Planner = (args: Record<string, unknown>, fallbackDate: string) => RevertPlan;
@@ -19,6 +22,14 @@ function str(args: Record<string, unknown>, key: string): string {
   const v = args[key];
   if (typeof v !== "string" || v.length === 0) {
     throw new Error(`logged args are missing "${key}" — cannot build a safe inverse`);
+  }
+  return v;
+}
+
+function num(args: Record<string, unknown>, key: string): number {
+  const v = args[key];
+  if (typeof v !== "number" || !Number.isInteger(v)) {
+    throw new Error(`logged args are missing numeric "${key}" — cannot build a safe inverse`);
   }
   return v;
 }
@@ -95,6 +106,20 @@ const PLANNERS: Record<string, Planner> = {
       description: `delete the tracked application ${company} — ${role}`,
     };
   },
+  // Inverse of completing a task: clear completed_at (and the mirrored
+  // status), then have the executor rename the calendar event back from
+  // "✓ {title}" to "Task: {title}". The WHERE guard makes an already-open
+  // task a zero-change no-op, which executeRevert reports as such.
+  complete_task: (args) => {
+    const taskId = num(args, "task_id");
+    return {
+      sql: `UPDATE tasks SET completed_at = NULL, status = 'open'
+            WHERE id = ? AND completed_at IS NOT NULL`,
+      params: [taskId],
+      description: `reopen task #${taskId} (clear its completion)`,
+      after: { kind: "reopen-task-event", taskId },
+    };
+  },
   add_to_reading_list: (args) => {
     const title = str(args, "title");
     return {
@@ -120,6 +145,7 @@ const NOT_REVERTIBLE: Record<string, string> = {
   delete_habit:
     "a deleted manual habit's logged entries are gone with it — recreate the tracker and re-log instead",
   advance_application: "the previous stage was overwritten — move it back explicitly",
+  update_task: "the previous field values were overwritten — edit the task back explicitly",
   query_finance: "read-only, nothing to revert",
   ask_textbook: "read-only, nothing to revert",
   revert_action: "a revert can't be reverted",

@@ -5,6 +5,7 @@ import { computeGoalsProgress } from "@/lib/goals-progress";
 import { chat } from "@/lib/llm";
 import { getSetting, setSetting } from "@/lib/settings";
 import { isSlackConfigured, sendDm } from "@/lib/slack";
+import { recordDigest } from "@/lib/slack/task-digest";
 
 // Morning brief: today's events, top tasks, overdue follow-ups, important
 // unread mail, and any goal/streak at risk. Assembled deterministically;
@@ -24,7 +25,7 @@ export type StreakRisk = {
 type BriefFacts = {
   date: string;
   events: Array<{ title: string; start: string }>;
-  tasks: Array<{ title: string; due_at: string | null }>;
+  tasks: Array<{ id: number; title: string; due_at: string | null }>;
   followUps: Array<{ company: string; next_action: string | null }>;
   importantUnread: number;
   risks: StreakRisk[];
@@ -81,14 +82,16 @@ export function assembleBriefFacts(): BriefFacts {
     )
     .all(today) as Array<{ title: string; start: string }>;
 
+  // Top 5 by llm_rank (deterministic ranks fill the field when no model has
+  // run), falling back through due date and age like lib/tasks/sort.ts.
   const tasks = db
     .prepare(
-      `SELECT title, due_at FROM tasks WHERE status = 'open'
-       ORDER BY due_at IS NULL, due_at ASC,
-         CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END
-       LIMIT 3`
+      `SELECT id, title, due_at FROM tasks WHERE status = 'open'
+       ORDER BY llm_rank IS NULL, llm_rank ASC,
+         due_at IS NULL, due_at ASC, created_at ASC
+       LIMIT 5`
     )
-    .all() as Array<{ title: string; due_at: string | null }>;
+    .all() as Array<{ id: number; title: string; due_at: string | null }>;
 
   const importantUnread = (
     db
@@ -134,10 +137,9 @@ export function renderPlainBrief(facts: BriefFacts): string {
   );
 
   if (facts.tasks.length > 0) {
-    lines.push(
-      `✅ Top tasks: ${facts.tasks
-        .map((t) => `${t.title}${t.due_at ? ` (due ${t.due_at.slice(0, 10)})` : ""}`)
-        .join("; ")}`
+    lines.push("✅ Top tasks:");
+    facts.tasks.forEach((t, i) =>
+      lines.push(`${i + 1}. ${t.title}${t.due_at ? ` (due ${t.due_at.slice(0, 10)})` : ""}`)
     );
   }
 
@@ -168,23 +170,24 @@ export function renderPlainBrief(facts: BriefFacts): string {
 }
 
 // LLM phrasing is a nicety, never a dependency.
-export async function briefText(): Promise<string> {
+export async function briefText(): Promise<{ text: string; taskIds: number[] }> {
   const facts = assembleBriefFacts();
   const plain = renderPlainBrief(facts);
+  const taskIds = facts.tasks.map((t) => t.id);
   try {
     const result = await chat({
       messages: [
         {
           role: "system",
           content:
-            "Rewrite the user's morning brief as a friendly, concise Slack message. Keep every fact and number, keep it under 120 words, keep the emoji, no preamble.",
+            "Rewrite the user's morning brief as a friendly, concise Slack message. Keep every fact and number, keep the numbered task list EXACTLY in its given order and numbering, keep it under 120 words, keep the emoji, no preamble.",
         },
         { role: "user", content: plain },
       ],
     });
-    return result.text?.trim() || plain;
+    return { text: result.text?.trim() || plain, taskIds };
   } catch {
-    return plain; // no model running — plain brief is the product
+    return { text: plain, taskIds }; // no model running — plain brief is the product
   }
 }
 
@@ -199,8 +202,12 @@ export async function morningBriefJob(): Promise<void> {
     return;
   }
   try {
-    await sendDm(await briefText());
+    const { text, taskIds } = await briefText();
+    await sendDm(text);
     setSetting(LAST_SENT_KEY, today);
+    // The brief IS the morning task digest — record which tasks were shown,
+    // in displayed order, so "done 2" replies resolve against it.
+    recordDigest(today, "morning", taskIds);
     console.log("[brief] morning brief sent");
   } catch (err) {
     console.error("[brief] send failed:", err);

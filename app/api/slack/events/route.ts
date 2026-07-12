@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { handleCheckinReply, sendDm } from "@/lib/slack";
+import { handleTaskReply } from "@/lib/slack/task-digest";
 
 // Slack Events API receiver (INBOUND half of the check-in).
 // Needs a public URL — deferred behind the tunnel step in HANDOFF.md.
@@ -67,7 +68,11 @@ export async function POST(req: NextRequest) {
 
     if (isOwnDm) {
       // Ack fast; process asynchronously (Slack retries after 3s timeouts).
-      void handleCheckinReply(event.text as string)
+      // Task-completion parsing runs FIRST ("done 2", "finished the …");
+      // a null result hands the message to the check-in pipeline unchanged.
+      const text = event.text as string;
+      void handleTaskReply(text)
+        .then((taskReply) => taskReply ?? handleCheckinReply(text))
         .then((reply) => sendDm(reply))
         .catch((err) => console.error("[slack] reply handling failed:", err));
     }

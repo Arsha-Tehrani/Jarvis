@@ -56,7 +56,7 @@ test("add_application and add_to_reading_list invert by their identifying fields
   assert.deepEqual(read.params, ["SICP"]);
 });
 
-test("every inverse is a single parameterized DELETE (no string interpolation)", () => {
+test("every inverse is a single parameterized statement (no string interpolation)", () => {
   const samples: Record<string, Record<string, unknown>> = {
     add_task: { title: "x" },
     log_gym: {},
@@ -66,13 +66,30 @@ test("every inverse is a single parameterized DELETE (no string interpolation)",
     log_meal: { item: "x" },
     add_application: { company: "x", role: "y" },
     add_to_reading_list: { title: "x" },
+    complete_task: { task_id: 7 },
   };
   for (const tool of REVERTIBLE_TOOLS) {
     const plan = planRevert(tool, samples[tool], DAY);
-    assert.match(plan.sql.trim(), /^DELETE FROM /, `${tool} must be a DELETE`);
+    // Adds invert by DELETE; complete_task inverts by a guarded UPDATE
+    // (reopen). Either way: one statement, only ? placeholders.
+    assert.match(plan.sql.trim(), /^(DELETE FROM|UPDATE) /, `${tool} must be DELETE or UPDATE`);
     const placeholders = (plan.sql.match(/\?/g) ?? []).length;
     assert.equal(placeholders, plan.params.length, `${tool} placeholder/param count`);
   }
+});
+
+test("complete_task inverse reopens the task and asks for the calendar rename-back", () => {
+  const plan = planRevert("complete_task", { task_id: 7 }, DAY);
+  assert.match(plan.sql, /completed_at = NULL/);
+  assert.match(plan.sql, /status = 'open'/);
+  assert.match(plan.sql, /completed_at IS NOT NULL/); // already-open = no-op
+  assert.deepEqual(plan.params, [7]);
+  assert.deepEqual(plan.after, { kind: "reopen-task-event", taskId: 7 });
+  assert.throws(() => planRevert("complete_task", {}, DAY), /missing numeric "task_id"/);
+});
+
+test("update_task is refused with an overwrite reason", () => {
+  assert.throws(() => planRevert("update_task", { task_id: 1 }, DAY), /overwritten/);
 });
 
 test("unrevertible tools are refused with a reason, never guessed", () => {

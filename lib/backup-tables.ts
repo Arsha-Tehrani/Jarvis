@@ -34,4 +34,7 @@ export const BACKUP_TABLES = [
   "goodnotes_sync_state",
   "applications",
   "sync_state",
+  // Device-local digest markers (never synced) — backed up so a same-machine
+  // restore doesn't re-send today's digests.
+  "slack_task_digests",
 ] as const;

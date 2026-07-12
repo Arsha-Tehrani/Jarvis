@@ -13,6 +13,7 @@ import { syncJob } from "@/lib/sync/client";
 import { dividendScanJob } from "@/lib/dividends-scan";
 import { taskCalendarReconcileJob } from "@/lib/tasks/calendar";
 import { taskRankLlmJob } from "@/lib/tasks/rank-llm";
+import { eveningTaskDigestJob, middayTaskDigestJob } from "@/lib/slack/task-digest";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
 // once at startup (catch-up-on-launch) so gaps self-heal after sleep.
@@ -51,6 +52,11 @@ const JOBS: Job[] = [
   // brief's "top tasks by rank" reflects a fresh pass. Advisory only —
   // with no model running the deterministic ranks stand.
   { name: "task-rank-llm", schedule: "45 7 * * *", run: taskRankLlmJob },
+  // Midday/evening task digests. Idempotent per (date, slot) via the
+  // slack_task_digests UNIQUE constraint, and each job refuses to fire
+  // before its slot's hour so launch catch-up can't send midday at 9am.
+  { name: "slack-task-digest-midday", schedule: "0 13 * * *", run: middayTaskDigestJob },
+  { name: "slack-task-digest-evening", schedule: "0 19 * * *", run: eveningTaskDigestJob },
   { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
   // Offset from the mail poll so new subjects usually index right after it.
   { name: "search-index-refresh", schedule: "5,35 * * * *", run: refreshSearchIndexJob },

@@ -17,6 +17,12 @@ import { REVERTIBLE_TOOLS } from "@/lib/revert-plan";
 import { executeRevert, findRevertTarget } from "@/lib/revert";
 import { applyDeterministicRanks } from "@/lib/tasks/rank";
 import { queueLlmRankRefresh } from "@/lib/tasks/rank-llm";
+import { completeTaskCore } from "@/lib/tasks/complete";
+import {
+  closeTaskEvent,
+  updateTaskEvent,
+  type TaskRow,
+} from "@/lib/tasks/calendar";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -567,8 +573,86 @@ const revertActionTool: Tool<typeof revertActionSchema> = {
   },
 };
 
+const completeTaskSchema = z.object({
+  task_id: z.number().int().positive().describe("The id of the task to mark done"),
+});
+
+// Cleanly invertible (revert clears completed_at and renames the calendar
+// event back), so no confirmation. Idempotency lives in completeTaskCore —
+// the single write path every completion entry point (agent, Slack reply)
+// funnels through: an already-done task is a successful no-op that does NOT
+// re-fire the calendar close, and a missing id is a typed not-found.
+const completeTaskTool: Tool<typeof completeTaskSchema> = {
+  name: "complete_task",
+  description:
+    "Mark a task done by its id. Use when the user says they finished or completed a task.",
+  schema: completeTaskSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const result = completeTaskCore(getDb(), args.task_id);
+    if (result.outcome === "not-found") {
+      throw new Error(`Task ${args.task_id} not found`);
+    }
+    if (result.outcome === "already-done") {
+      return `Already marked done: ${result.title}`;
+    }
+    const row = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(args.task_id) as TaskRow;
+    await closeTaskEvent(row, "completed").catch((err) =>
+      console.error(`[tools] complete_task calendar close failed:`, err)
+    );
+    applyDeterministicRanks(getDb());
+    queueLlmRankRefresh();
+    return `✓ Completed: ${result.title}`;
+  },
+};
+
+const updateTaskSchema = z.object({
+  task_id: z.number().int().positive().describe("The id of the task to update"),
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  due_at: z
+    .string()
+    .optional()
+    .describe("New due date, ISO 8601; resolve relative dates before calling"),
+  priority: z.enum(["urgent", "high", "later"]).optional(),
+});
+
+const updateTaskTool: Tool<typeof updateTaskSchema> = {
+  name: "update_task",
+  description:
+    "Update a task's title, description, due date, or priority by its id. Use when the user asks to change or reschedule an existing task.",
+  schema: updateTaskSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const { task_id, ...fields } = args;
+    const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) throw new Error("Nothing to update — provide at least one field");
+    const db = getDb();
+    const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
+    const info = db
+      .prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`)
+      .run(...entries.map(([, v]) => v), task_id);
+    if (info.changes === 0) throw new Error(`Task ${task_id} not found`);
+    // Same calendar path as the API route: mirror title/due changes onto the
+    // linked event; failures logged, never surfaced as a task-write failure.
+    if (fields.title !== undefined || fields.due_at !== undefined) {
+      const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as TaskRow;
+      await updateTaskEvent(row).catch((err) =>
+        console.error(`[tools] update_task calendar update failed:`, err)
+      );
+    }
+    applyDeterministicRanks(db);
+    queueLlmRankRefresh();
+    const changed = entries.map(([k, v]) => `${k} → ${v}`).join(", ");
+    const title = (db.prepare("SELECT title FROM tasks WHERE id = ?").get(task_id) as { title: string }).title;
+    return `Updated "${title}": ${changed}.`;
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
+  completeTaskTool as Tool,
+  updateTaskTool as Tool,
   logGym as Tool,
   logLeetcode as Tool,
   setGoal as Tool,
