@@ -294,6 +294,20 @@ const MIGRATIONS: string[] = [
     fetched_date TEXT NOT NULL,
     series TEXT NOT NULL
   )`,
+  // Task-board redesign Phase 4 — Slack task digests, one row per (date,
+  // slot) actually sent. task_ids is the JSON array of task ids in displayed
+  // order, so "done 2" indexes into what the user actually saw. The UNIQUE
+  // constraint is the idempotency guard that makes launch catch-up safe.
+  // Deliberately NOT in the sync allowlist: digests are per-device-process
+  // (only the machine with Slack configured sends).
+  `CREATE TABLE IF NOT EXISTS slack_task_digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    slot TEXT NOT NULL CHECK (slot IN ('morning','midday','evening')),
+    task_ids TEXT NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(date, slot)
+  )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { REVERTIBLE_TOOLS, planRevert } from "@/lib/revert-plan";
+import { reopenTaskEvent, type TaskRow } from "@/lib/tasks/calendar";
 
 // Undo: find the most recent executed tool call in agent_log that has a
 // clean inverse (lib/revert-plan.ts) and hasn't been reverted yet, then run
@@ -88,7 +89,20 @@ export function executeRevert(target: RevertTarget): string {
     return info.changes;
   });
   const changes = run();
-  return `Reverted ${target.tool} (from "${truncate(target.userText, 80)}"): ${plan.description} — ${changes} row${changes === 1 ? "" : "s"} removed.`;
+  // Non-SQL follow-up (e.g. renaming a task's calendar event back after a
+  // completion is undone) — fire-and-forget: the SQL inverse already
+  // committed, and calendar state self-heals via the reconciler.
+  if (plan.after?.kind === "reopen-task-event") {
+    const row = db
+      .prepare("SELECT * FROM tasks WHERE id = ?")
+      .get(plan.after.taskId) as TaskRow | undefined;
+    if (row) {
+      void reopenTaskEvent(row).catch((err) =>
+        console.error("[revert] calendar reopen failed:", err)
+      );
+    }
+  }
+  return `Reverted ${target.tool} (from "${truncate(target.userText, 80)}"): ${plan.description} — ${changes} row${changes === 1 ? "" : "s"} affected.`;
 }
 
 function truncate(text: string, max: number): string {
