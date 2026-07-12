@@ -77,6 +77,9 @@ function freshDb(): InstanceType<typeof Database> {
     title TEXT NOT NULL, due_at TEXT, priority TEXT NOT NULL DEFAULT 'high',
     status TEXT NOT NULL DEFAULT 'open', source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    description TEXT, gcal_event_id TEXT, completed_at TEXT,
+    llm_rank INTEGER, llm_rank_source TEXT,
+    llm_suggested_priority TEXT, llm_rationale TEXT,
     ${SYNC_COLS})`);
   db.exec(`CREATE TABLE gym_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL UNIQUE, notes TEXT,
@@ -269,4 +272,86 @@ test("host stamps are strictly increasing even within one millisecond", () => {
   const b = stamp();
   const c = stamp();
   assert.ok(a < b && b < c, `expected strictly increasing, got ${a}, ${b}, ${c}`);
+});
+
+// ---- task-board columns round-trip (Phase 5) ----------------------------------
+
+test("a task row round-trips device→host→device with every new column intact", () => {
+  const deviceA = freshDb();
+  const host = freshDb();
+  deviceA
+    .prepare(
+      `INSERT INTO tasks (title, description, due_at, priority, gcal_event_id,
+         completed_at, llm_rank, llm_rank_source, llm_suggested_priority, llm_rationale)
+       VALUES ('file taxes', 'the big folder', '2026-07-31', 'urgent', 'gcal-ev-1',
+         NULL, 2, 'llm', 'urgent', 'deadline is statutory')`
+    )
+    .run();
+
+  // Device A pushes; host applies and stamps.
+  const pending = collectPending(deviceA, tasksSpec, "device-a");
+  assert.equal(pending.length, 1);
+  const { stamped } = applyPush(host, tasksSpec, pending, "2026-07-07T10:00:00.000Z");
+  markPushed(deviceA, tasksSpec, stamped);
+
+  const hostRow = host.prepare("SELECT * FROM tasks").get() as Record<string, unknown>;
+  assert.equal(hostRow.description, "the big folder");
+  assert.equal(hostRow.gcal_event_id, "gcal-ev-1");
+  assert.equal(hostRow.llm_rank, 2);
+  assert.equal(hostRow.llm_rank_source, "llm");
+  assert.equal(hostRow.llm_suggested_priority, "urgent");
+  assert.equal(hostRow.llm_rationale, "deadline is statutory");
+  assert.equal(hostRow.completed_at, null);
+
+  // A second device pulls the same row — every column lands there too.
+  const deviceB = freshDb();
+  const served = collectPending(host, tasksSpec, "host"); // row is clean on host…
+  assert.equal(served.length, 0);
+  applyPull(deviceB, tasksSpec, [
+    {
+      sync_id: pending[0].sync_id,
+      origin_device_id: "device-a",
+      updated_at: "2026-07-07T10:00:00.000Z",
+      data: pending[0].data,
+    },
+  ]);
+  const bRow = deviceB.prepare("SELECT * FROM tasks").get() as Record<string, unknown>;
+  for (const col of [
+    "title", "description", "due_at", "priority", "gcal_event_id",
+    "llm_rank", "llm_rank_source", "llm_suggested_priority", "llm_rationale",
+  ]) {
+    assert.equal(bRow[col], hostRow[col], `${col} must survive the round trip`);
+  }
+});
+
+test("a local completion is not resurrected by a stale pull (completed_at specifically)", () => {
+  const db = freshDb();
+  // The task synced in clean (open) with a host stamp…
+  applyPull(db, tasksSpec, [
+    {
+      sync_id: UUID_A,
+      origin_device_id: "device-b",
+      updated_at: "2026-07-07T10:00:00.000Z",
+      data: { title: "call bank", due_at: null, priority: "high", status: "open", source: "manual", created_at: "2026-07-01" },
+    },
+  ]);
+  // …then this device completes it (app write → trigger marks dirty).
+  db.prepare(
+    "UPDATE tasks SET completed_at = '2026-07-07T11:00:00.000Z', status = 'done' WHERE sync_id = ?"
+  ).run(UUID_A);
+
+  // A stale pull from device B still says it's open, with a NEWER host
+  // stamp — the dirty-local rule must protect the completion until it pushes.
+  const result = applyPull(db, tasksSpec, [
+    {
+      sync_id: UUID_A,
+      origin_device_id: "device-b",
+      updated_at: "2026-07-07T12:00:00.000Z",
+      data: { title: "call bank", due_at: null, priority: "high", status: "open", source: "manual", created_at: "2026-07-01", completed_at: null },
+    },
+  ]);
+  assert.deepEqual(result, { applied: 0, skipped: 1, fkMissing: 0 });
+  const row = db.prepare("SELECT status, completed_at FROM tasks").get() as Record<string, unknown>;
+  assert.equal(row.status, "done");
+  assert.equal(row.completed_at, "2026-07-07T11:00:00.000Z", "completion must not be resurrected");
 });

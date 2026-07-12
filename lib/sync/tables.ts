@@ -51,8 +51,32 @@ export const SYNC_TABLES: SyncTableSpec[] = [
     fkToSyncId: { localColumn: "habit_id", refTable: "habits", payloadKey: "habit_sync_id" },
   },
   {
+    // Full task row incl. the board-redesign columns. gcal_event_id syncs so
+    // the reconciler on the Google-connected device sees (and other devices
+    // learn about) the linked event exactly once. Ranking columns sync too:
+    // the deterministic ranker produces identical output on every device,
+    // and the LLM pass may differ between devices — that is acceptable
+    // because sync's host-stamped last-write-wins already resolves it
+    // deterministically (receipt order at the host).
+    // slack_task_digests is deliberately NOT here: digests are per-device-
+    // process by design — only the machine with Slack configured sends, and
+    // the UNIQUE(date, slot) constraint dedupes locally.
     table: "tasks",
-    columns: ["title", "due_at", "priority", "status", "source", "created_at"],
+    columns: [
+      "title",
+      "description",
+      "due_at",
+      "priority",
+      "status",
+      "source",
+      "created_at",
+      "gcal_event_id",
+      "completed_at",
+      "llm_rank",
+      "llm_rank_source",
+      "llm_suggested_priority",
+      "llm_rationale",
+    ],
   },
   {
     table: "gym_logs",
