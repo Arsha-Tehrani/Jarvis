@@ -7,6 +7,15 @@ import {
   syncTaskWrite,
   type TaskRow,
 } from "@/lib/tasks/calendar";
+import { applyDeterministicRanks } from "@/lib/tasks/rank";
+import { queueLlmRankRefresh } from "@/lib/tasks/rank-llm";
+
+// Every task write re-ranks synchronously (deterministic, always works)
+// and queues the debounced LLM refinement (advisory, never blocks).
+function reRank(): void {
+  applyDeterministicRanks(getDb());
+  queueLlmRankRefresh();
+}
 
 // Priorities are the canonical board columns. Sync bookkeeping needs no
 // explicit writes here: the sync triggers (lib/sync/tables.ts) mark rows
@@ -62,6 +71,7 @@ export async function POST(req: NextRequest) {
     .prepare("SELECT * FROM tasks WHERE id = ?")
     .get(info.lastInsertRowid) as TaskRow;
   await syncTaskWrite("create", inserted);
+  reRank();
   const task = getDb()
     .prepare("SELECT * FROM tasks WHERE id = ?")
     .get(info.lastInsertRowid);
@@ -106,6 +116,7 @@ export async function PATCH(req: NextRequest) {
   } else if (fields.title !== undefined || fields.due_at !== undefined) {
     await syncTaskWrite("update", updated);
   }
+  reRank();
   const task = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id);
   queueSyncPush();
   return NextResponse.json({ task });
@@ -126,5 +137,6 @@ export async function DELETE(req: NextRequest) {
   }
   await syncTaskWrite("delete", existing);
   getDb().prepare("DELETE FROM tasks WHERE id = ?").run(id);
+  reRank(); // remaining tasks close the gap
   return NextResponse.json({ ok: true });
 }
