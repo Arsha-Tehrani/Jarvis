@@ -74,7 +74,7 @@ function freshDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   db.exec(`CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL, due_at TEXT, priority TEXT NOT NULL DEFAULT 'medium',
+    title TEXT NOT NULL, due_at TEXT, priority TEXT NOT NULL DEFAULT 'high',
     status TEXT NOT NULL DEFAULT 'open', source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ${SYNC_COLS})`);
@@ -151,7 +151,7 @@ test("collectPending backfills sync identity and serializes dirty rows", () => {
 
 test("applyPush upserts by sync_id and the host-timestamped write wins deterministically", () => {
   const host = freshDb();
-  const v1 = { sync_id: UUID_A, origin_device_id: "mac", data: { title: "v1", due_at: null, priority: "low", status: "open", source: "agent", created_at: "2026-07-01" } };
+  const v1 = { sync_id: UUID_A, origin_device_id: "mac", data: { title: "v1", due_at: null, priority: "later", status: "open", source: "agent", created_at: "2026-07-01" } };
   const v2 = { ...v1, data: { ...v1.data, title: "v2", status: "done" } };
 
   const r1 = applyPush(host, tasksSpec, [v1], "2026-07-07T10:00:00.000Z");
@@ -189,7 +189,7 @@ function pulledTask(syncId: string, title: string, updatedAt: string) {
     sync_id: syncId,
     origin_device_id: "other-device",
     updated_at: updatedAt,
-    data: { title, due_at: null, priority: "medium", status: "open", source: "manual", created_at: "2026-07-01" },
+    data: { title, due_at: null, priority: "high", status: "open", source: "manual", created_at: "2026-07-01" },
   };
 }
 

@@ -3,24 +3,36 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { queueSyncPush } from "@/lib/sync/client";
 
+// Priorities are the canonical board columns. Sync bookkeeping needs no
+// explicit writes here: the sync triggers (lib/sync/tables.ts) mark rows
+// dirty on every INSERT/UPDATE, and queueSyncPush() debounces the push —
+// the same pattern every synced table's write path uses.
+
 const createSchema = z.object({
-  title: z.string().min(1).max(500),
+  title: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
   due_at: z.string().nullable().optional(),
-  priority: z.enum(["low", "medium", "high"]).optional(),
+  priority: z.enum(["urgent", "high", "later"]),
 });
 
 const updateSchema = z.object({
   id: z.number().int().positive(),
-  title: z.string().min(1).max(500).optional(),
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).nullable().optional(),
   due_at: z.string().nullable().optional(),
-  priority: z.enum(["low", "medium", "high"]).optional(),
+  priority: z.enum(["urgent", "high", "later"]).optional(),
   status: z.enum(["open", "done"]).optional(),
+  completed: z.boolean().optional(),
+  // Set by the Apply/Dismiss buttons on a card's suggestion line.
+  clear_suggestion: z.boolean().optional(),
 });
 
 export async function GET() {
   const rows = getDb()
     .prepare(
-      `SELECT id, title, due_at, priority, status, source, created_at
+      `SELECT id, title, description, due_at, priority, status, source, created_at,
+              gcal_event_id, completed_at, llm_rank, llm_rank_source,
+              llm_suggested_priority, llm_rationale
        FROM tasks
        ORDER BY status ASC, due_at IS NULL, due_at ASC, created_at DESC`
     )
@@ -33,12 +45,12 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   }
-  const { title, due_at, priority } = parsed.data;
+  const { title, description, due_at, priority } = parsed.data;
   const info = getDb()
     .prepare(
-      "INSERT INTO tasks (title, due_at, priority, status, source) VALUES (?, ?, ?, 'open', 'manual')"
+      "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', 'manual')"
     )
-    .run(title, due_at ?? null, priority ?? "medium");
+    .run(title, description ?? null, due_at ?? null, priority);
   const task = getDb()
     .prepare("SELECT * FROM tasks WHERE id = ?")
     .get(info.lastInsertRowid);
@@ -51,15 +63,25 @@ export async function PATCH(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   }
-  const { id, ...fields } = parsed.data;
+  const { id, completed, clear_suggestion, ...fields } = parsed.data;
   const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
+  // `completed` drives both the timestamp and the legacy status column so
+  // the two can never disagree.
+  if (completed !== undefined) {
+    entries.push(["completed_at", completed ? new Date().toISOString() : null]);
+    entries.push(["status", completed ? "done" : "open"]);
+  }
+  if (clear_suggestion) {
+    entries.push(["llm_suggested_priority", null]);
+    entries.push(["llm_rationale", null]);
+  }
   if (entries.length === 0) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
   const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
   const info = getDb()
     .prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`)
-    .run(...entries.map(([, v]) => v), id);
+    .run(...entries.map(([, v]) => v as string | null), id);
   if (info.changes === 0) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }

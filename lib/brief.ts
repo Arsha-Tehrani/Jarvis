@@ -85,7 +85,7 @@ export function assembleBriefFacts(): BriefFacts {
     .prepare(
       `SELECT title, due_at FROM tasks WHERE status = 'open'
        ORDER BY due_at IS NULL, due_at ASC,
-         CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+         CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END
        LIMIT 3`
     )
     .all() as Array<{ title: string; due_at: string | null }>;
