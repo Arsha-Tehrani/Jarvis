@@ -11,6 +11,7 @@ import { refreshSearchIndexJob } from "@/lib/search-index";
 import { refreshStocksJob } from "@/lib/stocks";
 import { syncJob } from "@/lib/sync/client";
 import { dividendScanJob } from "@/lib/dividends-scan";
+import { taskCalendarReconcileJob } from "@/lib/tasks/calendar";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
 // once at startup (catch-up-on-launch) so gaps self-heal after sleep.
@@ -31,6 +32,10 @@ const JOBS: Job[] = [
   { name: "calendar-poll", schedule: "0 * * * *", run: pollCalendarJob },
   // Offset from the calendar poll so the two Google calls don't stack.
   { name: "goodnotes-sync", schedule: "15 * * * *", run: syncGoodNotesJob },
+  // Creates calendar events for open due-dated tasks that arrived via sync
+  // without one (oauth_tokens never sync). Offset like goodnotes-sync; the
+  // 10-minute in-job grace period keeps launch catch-up duplicate-safe.
+  { name: "task-calendar-reconcile", schedule: "45 * * * *", run: taskCalendarReconcileJob },
   { name: "networth-daily-snapshot", schedule: "0 18 * * *", run: netWorthSnapshotJob },
   {
     name: "weekly-digest",
