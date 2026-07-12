@@ -85,7 +85,7 @@ function MoveCell({ value, percent }: { value: number | null; percent: number | 
   if (value == null) return <span className="text-muted-foreground">—</span>;
   const up = value >= 0;
   return (
-    <span className={cn("tabular-nums", up ? "text-emerald-600 dark:text-emerald-500" : "text-destructive")}>
+    <span className={cn("tabular-nums", up ? "text-gain" : "text-loss")}>
       {up ? "▲" : "▼"} {usd(Math.abs(value))}
       {percent != null && ` (${Math.abs(percent).toFixed(2)}%)`}
     </span>
@@ -350,7 +350,7 @@ export function StocksView() {
                   <TableHead />
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody className="font-data text-[13px]">
                 {sortedHoldings.map((h) => (
                   <TableRow key={h.id}>
                     <TableCell className="font-medium">
@@ -445,7 +445,7 @@ export function StocksView() {
           <CardTitle className="flex items-baseline justify-between">
             Dividend income
             <span className="flex items-baseline gap-2">
-              <span className="text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-500">
+              <span className="text-lg font-semibold tabular-nums text-gain">
                 {usd(dividends?.total ?? 0)}
               </span>
               {(dividends?.pendingTotal ?? 0) > 0 && (

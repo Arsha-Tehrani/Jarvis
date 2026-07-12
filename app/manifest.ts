@@ -7,8 +7,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Local-first personal command center",
     start_url: "/",
     display: "standalone",
-    background_color: "#f7f7f5",
-    theme_color: "#4f46e5",
+    background_color: "#F7F4EC",
+    theme_color: "#7A2E2E",
     icons: [
       { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
       { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },

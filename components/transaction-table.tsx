@@ -167,7 +167,7 @@ export function TransactionTable({
               </TableHead>
             </TableRow>
           </TableHeader>
-          <TableBody>
+          <TableBody className="font-data text-[13px]">
             {filtered.map((t) => (
               <Fragment key={t.id}>
                 <TableRow

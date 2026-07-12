@@ -255,7 +255,7 @@ export function CalendarView() {
                       }`}
                     >
                       <span
-                        className={`self-start rounded-full px-1.5 text-xs ${
+                        className={`self-start rounded-[var(--radius)] px-1.5 text-xs ${
                           isToday
                             ? "bg-primary font-semibold text-primary-foreground"
                             : "text-muted-foreground"

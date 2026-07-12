@@ -179,9 +179,7 @@ export function NetWorthView() {
               <span
                 className={cn(
                   "ml-3 text-base font-medium",
-                  data.weeklyDelta >= 0
-                    ? "text-emerald-600 dark:text-emerald-500"
-                    : "text-destructive"
+                  data.weeklyDelta >= 0 ? "text-gain" : "text-loss"
                 )}
               >
                 {data.weeklyDelta >= 0 ? "▲" : "▼"} {usd(Math.abs(data.weeklyDelta))} this week
@@ -254,7 +252,7 @@ export function NetWorthView() {
                   <span className="w-40 font-medium">{a.name}</span>
                   <span
                     className={cn(
-                      "rounded-full px-2 py-0.5 text-xs capitalize",
+                      "rounded-[var(--radius)] px-2 py-0.5 text-xs capitalize",
                       a.kind === "debt"
                         ? "bg-destructive/10 text-destructive"
                         : "bg-muted text-muted-foreground"
@@ -277,7 +275,7 @@ export function NetWorthView() {
                       onChange={(e) =>
                         setEdits((m) => ({ ...m, [a.id]: e.target.value }))
                       }
-                      className="h-8 w-32 text-right text-sm"
+                      className="h-8 w-32 text-right font-data text-[13px]"
                       aria-label={`${a.name} balance`}
                     />
                     <Button
