@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { queueSyncPush } from "@/lib/sync/client";
+import {
+  reopenTaskEvent,
+  syncTaskWrite,
+  type TaskRow,
+} from "@/lib/tasks/calendar";
 
 // Priorities are the canonical board columns. Sync bookkeeping needs no
 // explicit writes here: the sync triggers (lib/sync/tables.ts) mark rows
@@ -51,6 +56,12 @@ export async function POST(req: NextRequest) {
       "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', 'manual')"
     )
     .run(title, description ?? null, due_at ?? null, priority);
+  // Calendar event in the same request (a failure never fails the write —
+  // the hourly reconciler retries anything left unlinked).
+  const inserted = getDb()
+    .prepare("SELECT * FROM tasks WHERE id = ?")
+    .get(info.lastInsertRowid) as TaskRow;
+  await syncTaskWrite("create", inserted);
   const task = getDb()
     .prepare("SELECT * FROM tasks WHERE id = ?")
     .get(info.lastInsertRowid);
@@ -85,6 +96,16 @@ export async function PATCH(req: NextRequest) {
   if (info.changes === 0) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
+  const updated = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow;
+  // Mirror the write onto the linked calendar event (failures logged, never
+  // surfaced as a task-write failure).
+  if (completed === true) {
+    await syncTaskWrite("complete", updated);
+  } else if (completed === false) {
+    await reopenTaskEvent(updated).catch(() => {});
+  } else if (fields.title !== undefined || fields.due_at !== undefined) {
+    await syncTaskWrite("update", updated);
+  }
   const task = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id);
   queueSyncPush();
   return NextResponse.json({ task });
@@ -95,9 +116,15 @@ export async function DELETE(req: NextRequest) {
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-  const info = getDb().prepare("DELETE FROM tasks WHERE id = ?").run(id);
-  if (info.changes === 0) {
+  // Read the row before it goes so the linked calendar event can be removed
+  // (404 from Google is fine — the event may already be hand-deleted).
+  const existing = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
+    | TaskRow
+    | undefined;
+  if (!existing) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
+  await syncTaskWrite("delete", existing);
+  getDb().prepare("DELETE FROM tasks WHERE id = ?").run(id);
   return NextResponse.json({ ok: true });
 }
