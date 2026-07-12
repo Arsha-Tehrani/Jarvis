@@ -12,6 +12,7 @@ import { refreshStocksJob } from "@/lib/stocks";
 import { syncJob } from "@/lib/sync/client";
 import { dividendScanJob } from "@/lib/dividends-scan";
 import { taskCalendarReconcileJob } from "@/lib/tasks/calendar";
+import { taskRankLlmJob } from "@/lib/tasks/rank-llm";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
 // once at startup (catch-up-on-launch) so gaps self-heal after sleep.
@@ -46,6 +47,10 @@ const JOBS: Job[] = [
   },
   { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
   { name: "slack-morning-brief", schedule: "0 8 * * *", run: morningBriefJob },
+  // LLM ranking refinement, deliberately before the 08:00 brief so the
+  // brief's "top tasks by rank" reflects a fresh pass. Advisory only —
+  // with no model running the deterministic ranks stand.
+  { name: "task-rank-llm", schedule: "45 7 * * *", run: taskRankLlmJob },
   { name: "mail-poll", schedule: "*/30 * * * *", run: pollMailJob },
   // Offset from the mail poll so new subjects usually index right after it.
   { name: "search-index-refresh", schedule: "5,35 * * * *", run: refreshSearchIndexJob },

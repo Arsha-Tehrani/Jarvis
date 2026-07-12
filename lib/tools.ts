@@ -15,6 +15,8 @@ import { appendNote } from "@/lib/notes";
 import { addMeals } from "@/lib/nutrition";
 import { REVERTIBLE_TOOLS } from "@/lib/revert-plan";
 import { executeRevert, findRevertTarget } from "@/lib/revert";
+import { applyDeterministicRanks } from "@/lib/tasks/rank";
+import { queueLlmRankRefresh } from "@/lib/tasks/rank-llm";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -73,6 +75,8 @@ const addTask: Tool<typeof addTaskSchema> = {
         "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', 'agent')"
       )
       .run(args.title, args.description ?? null, due, normalizePriority(args.priority));
+    applyDeterministicRanks(getDb());
+    queueLlmRankRefresh();
     return `Added task "${args.title}"${due ? ` due ${due}` : ""}.`;
   },
 };
