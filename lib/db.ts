@@ -13,12 +13,14 @@ const globalForDb = globalThis as unknown as {
 // Schema definitions are centralized here. Tables are created per phase:
 // each entry is idempotent (CREATE TABLE IF NOT EXISTS), run on startup.
 const MIGRATIONS: string[] = [
-  // Phase 1
+  // Phase 1 (priority values canonicalized to urgent/high/later by the
+  // task-board redesign — existing DBs with the old low/medium/high CHECK
+  // are rebuilt by migrateTaskPriorities below)
   `CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     due_at TEXT,
-    priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low','medium','high')),
+    priority TEXT NOT NULL DEFAULT 'high' CHECK (priority IN ('urgent','high','later')),
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
     source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -354,6 +356,19 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   // set once at creation; distinct from created_at, which is when the row was
   // tracked). Pre-existing rows keep NULL — no guessed backfill.
   { table: "applications", column: "date_applied", ddl: "date_applied TEXT" },
+  // Task-board redesign Phase 1 — task detail + calendar link + completion
+  // timestamp + ranking fields. llm_rank holds the deterministic rank as the
+  // fallback content of the same field (llm_rank_source says which writer:
+  // 'deterministic' | 'llm'). llm_suggested_priority/llm_rationale are only
+  // set while the model's suggestion differs from the stored priority —
+  // applying or dismissing the suggestion clears them. Never auto-applied.
+  { table: "tasks", column: "description", ddl: "description TEXT" },
+  { table: "tasks", column: "gcal_event_id", ddl: "gcal_event_id TEXT" },
+  { table: "tasks", column: "completed_at", ddl: "completed_at TEXT" },
+  { table: "tasks", column: "llm_rank", ddl: "llm_rank INTEGER" },
+  { table: "tasks", column: "llm_rank_source", ddl: "llm_rank_source TEXT" },
+  { table: "tasks", column: "llm_suggested_priority", ddl: "llm_suggested_priority TEXT" },
+  { table: "tasks", column: "llm_rationale", ddl: "llm_rationale TEXT" },
   // Phase 23 — sync bookkeeping columns on every allowlisted table,
   // generated from the allowlist itself (lib/sync/tables.ts).
   ...syncColumnMigrations(),
@@ -365,6 +380,97 @@ const POST_MIGRATIONS: string[] = [...syncTriggerSql()];
 const MIGRATION_COUNT =
   MIGRATIONS.length + COLUMN_MIGRATIONS.length + POST_MIGRATIONS.length;
 
+// Task-board redesign Phase 1 — normalize tasks.priority to the canonical
+// 'urgent' | 'high' | 'later'. The legacy CHECK (low/medium/high) is baked
+// into the original CREATE TABLE and SQLite can't alter a CHECK, so existing
+// DBs get the classic rebuild: create the new-shape table, copy rows with
+// priorities mapped, drop the old, rename, recreate the sync index/triggers
+// that dropped with the old table. Idempotent — runs only while
+// sqlite_master still shows the legacy CHECK.
+//
+// Value audit before this migration was written (2026-07-12, live jarvis.db):
+//   SELECT priority, COUNT(*) FROM tasks GROUP BY priority
+//   → [{ priority: 'medium', n: 2 }]
+// Only legacy 'medium' existed; no value outside the canonical mapping table
+// was observed, so no extra closest-match entries were needed. The CASE
+// below still carries the full spec mapping (urgent/critical/p0/p1 → urgent,
+// high/medium/normal/p2 → high, low/later/someday/p3/p4/NULL/'' → later,
+// numeric 1 → urgent, 2–3 → high, ≥4 → later) plus an ELSE 'high' fallback —
+// per the closest-match rule, an unforeseen value most resembles
+// "default/unspecified".
+//
+// Sync note: rows are copied with their sync bookkeeping (sync_id,
+// updated_at, sync_dirty) byte-for-byte — the rename itself marks nothing
+// dirty. Every device runs this same deterministic migration on its own
+// copy, so remapped priorities converge without needing a sync push.
+function migrateTaskPriorities(db: Database.Database): void {
+  const schema = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'`)
+    .get() as { sql: string } | undefined;
+  if (!schema || !schema.sql.includes("'low','medium','high'")) return;
+
+  const found = db
+    .prepare(`SELECT priority, COUNT(*) AS n FROM tasks GROUP BY priority`)
+    .all() as Array<{ priority: string | null; n: number }>;
+  console.log(
+    `[db] migrating tasks.priority to urgent/high/later; distinct legacy values: ${JSON.stringify(found)}`
+  );
+
+  const priorityCase = `CASE
+      WHEN lower(trim(coalesce(priority, ''))) IN ('urgent','critical','p0','p1') THEN 'urgent'
+      WHEN lower(trim(coalesce(priority, ''))) IN ('high','medium','normal','p2') THEN 'high'
+      WHEN priority IS NULL OR trim(priority) = ''
+        OR lower(trim(priority)) IN ('low','later','someday','p3','p4') THEN 'later'
+      WHEN trim(priority) GLOB '[0-9]*' AND CAST(priority AS INTEGER) = 1 THEN 'urgent'
+      WHEN trim(priority) GLOB '[0-9]*' AND CAST(priority AS INTEGER) BETWEEN 2 AND 3 THEN 'high'
+      WHEN trim(priority) GLOB '[0-9]*' AND CAST(priority AS INTEGER) >= 4 THEN 'later'
+      ELSE 'high'
+    END`;
+
+  db.transaction(() => {
+    db.exec(`CREATE TABLE tasks_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      due_at TEXT,
+      priority TEXT NOT NULL DEFAULT 'high' CHECK (priority IN ('urgent','high','later')),
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      description TEXT,
+      gcal_event_id TEXT,
+      completed_at TEXT,
+      llm_rank INTEGER,
+      llm_rank_source TEXT,
+      llm_suggested_priority TEXT,
+      llm_rationale TEXT,
+      sync_id TEXT,
+      updated_at TEXT,
+      origin_device_id TEXT,
+      sync_dirty INTEGER NOT NULL DEFAULT 1
+    )`);
+    // Only copy columns that exist on the source table — an old DB that
+    // never ran the column migrations above still rebuilds cleanly.
+    const srcCols = new Set(
+      (db.prepare(`PRAGMA table_info(tasks)`).all() as { name: string }[]).map((c) => c.name)
+    );
+    const copyCols = [
+      "id", "title", "due_at", "status", "source", "created_at",
+      "description", "gcal_event_id", "completed_at",
+      "llm_rank", "llm_rank_source", "llm_suggested_priority", "llm_rationale",
+      "sync_id", "updated_at", "origin_device_id", "sync_dirty",
+    ].filter((c) => srcCols.has(c));
+    db.exec(
+      `INSERT INTO tasks_new (${copyCols.join(", ")}, priority)
+       SELECT ${copyCols.join(", ")}, ${priorityCase} FROM tasks`
+    );
+    db.exec(`DROP TABLE tasks`);
+    db.exec(`ALTER TABLE tasks_new RENAME TO tasks`);
+    // The DROP took the sync index + triggers with it; recreate (IF NOT
+    // EXISTS makes the non-tasks entries no-ops).
+    for (const sql of syncTriggerSql()) db.exec(sql);
+  })();
+}
+
 function applyMigrations(db: Database.Database): void {
   for (const sql of MIGRATIONS) db.exec(sql);
   for (const m of COLUMN_MIGRATIONS) {
@@ -374,8 +480,8 @@ function applyMigrations(db: Database.Database): void {
     }
   }
   for (const sql of POST_MIGRATIONS) db.exec(sql);
-  // Data migration (not DDL): fold legacy goals into the unified Trackers.
-  // Idempotent, so it's safe to run on every connect.
+  // Data migrations (not DDL) — each idempotent, safe to run on every connect.
+  migrateTaskPriorities(db);
   migrateGoalsToTrackers(db);
 }
 

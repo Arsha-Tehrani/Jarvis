@@ -33,17 +33,32 @@ export type Tool<S extends z.ZodType = z.ZodType> = {
 
 const addTaskSchema = z.object({
   title: z.string().min(1).describe("Short imperative title of the task"),
+  description: z
+    .string()
+    .max(2000)
+    .optional()
+    .describe("Optional longer detail for the task, if the user gave any"),
   due: z
     .string()
     .optional()
     .describe(
       "Due date as ISO 8601 (YYYY-MM-DD or full datetime). Resolve relative dates like 'Friday' to a concrete date before calling."
     ),
+  // Canonical values are urgent/high/later; the legacy low/medium/high are
+  // still accepted (and normalized below) so pre-redesign agent calls and
+  // any cached model behavior keep working.
   priority: z
-    .enum(["low", "medium", "high"])
+    .enum(["urgent", "high", "later", "low", "medium"])
     .optional()
-    .describe("Task priority; omit for medium"),
+    .describe("Task priority: urgent, high, or later; omit for high"),
 });
+
+// Legacy → canonical priority (same mapping as the DB migration).
+function normalizePriority(p: string | undefined): "urgent" | "high" | "later" {
+  if (p === "urgent" || p === "later") return p;
+  if (p === "low") return "later";
+  return "high"; // 'high', 'medium', or unspecified
+}
 
 const addTask: Tool<typeof addTaskSchema> = {
   name: "add_task",
@@ -55,9 +70,9 @@ const addTask: Tool<typeof addTaskSchema> = {
     const due = normalizeDue(args.due);
     getDb()
       .prepare(
-        "INSERT INTO tasks (title, due_at, priority, status, source) VALUES (?, ?, ?, 'open', 'agent')"
+        "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', 'agent')"
       )
-      .run(args.title, due, args.priority ?? "medium");
+      .run(args.title, args.description ?? null, due, normalizePriority(args.priority));
     return `Added task "${args.title}"${due ? ` due ${due}` : ""}.`;
   },
 };
