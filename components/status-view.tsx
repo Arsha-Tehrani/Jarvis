@@ -18,8 +18,8 @@ const POLL_MS = 30_000;
 
 const DOT: Record<HealthCheck["status"], string> = {
   ok: "bg-emerald-500",
-  degraded: "bg-yellow-500",
-  down: "bg-destructive",
+  degraded: "bg-warn/60",
+  down: "bg-warn",
   unconfigured: "bg-muted-foreground/40",
 };
 
@@ -375,7 +375,7 @@ function SidecarControls({
         </span>
       </div>
       {sidecar.hint && !sidecar.settingUp && (
-        <p className="text-xs font-medium text-yellow-700 dark:text-yellow-500">{sidecar.hint}</p>
+        <p className="text-xs font-medium text-warn">{sidecar.hint}</p>
       )}
       {actionError && <p className="text-xs text-destructive">{actionError}</p>}
       {showLogs && (
@@ -439,7 +439,7 @@ function SyncSection({ sync }: { sync: SyncStatus }) {
             <span
               className={cn(
                 "size-2.5 shrink-0 rounded-full",
-                sync.configured ? "bg-emerald-500" : "bg-yellow-500"
+                sync.configured ? "bg-emerald-500" : "bg-warn"
               )}
               aria-hidden
             />
@@ -464,7 +464,7 @@ function SyncSection({ sync }: { sync: SyncStatus }) {
                   <span className="font-mono">{t.table}</span>
                   <span className="text-muted-foreground">
                     {t.pending > 0 && (
-                      <span className="text-yellow-600 dark:text-yellow-500">
+                      <span className="text-warn">
                         {t.pending} pending ·{" "}
                       </span>
                     )}

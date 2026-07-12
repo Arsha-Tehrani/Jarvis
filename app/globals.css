@@ -7,9 +7,12 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-data);
+  --font-heading: var(--font-display);
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-data: var(--font-data);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -27,8 +30,13 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
+  /* shadcn's --accent slot means "hover/selected tint" — a different
+     concept from this app's own --accent (oxblood). Bridge straight to
+     the theme.css palette names instead of re-declaring --accent in
+     :root below, which would collide with (and silently overwrite)
+     theme.css's oxblood value under the same property name. */
+  --color-accent-foreground: var(--accent);
+  --color-accent: var(--accent-bg);
   --color-muted-foreground: var(--muted-foreground);
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -39,6 +47,22 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  /* Paper Ledger palette, exposed as first-class Tailwind utilities
+     (text-gain, bg-loss-bg, border-line, …) alongside the shadcn names
+     above so money/attention colors stay a deliberate, separate choice
+     from --primary/--accent rather than reusing them. */
+  --color-paper: var(--paper);
+  --color-line: var(--line);
+  --color-line-heavy: var(--line-heavy);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-gain: var(--gain);
+  --color-gain-bg: var(--gain-bg);
+  --color-loss: var(--loss);
+  --color-loss-bg: var(--loss-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -46,84 +70,79 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
-  /* soft diffuse card shadow — the only shadow the app uses */
-  --shadow-soft: 0 1px 2px rgb(16 24 40 / 0.04), 0 8px 24px rgb(16 24 40 / 0.06);
 }
 
 :root {
-  /* Minimalist hub theme: warm light-neutral page plane, white cards,
-     one restrained indigo accent. Color is an accent, never the card. */
-  --background: oklch(0.977 0.002 106);
-  --foreground: oklch(0.185 0.005 285);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.185 0.005 285);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.185 0.005 285);
-  --primary: oklch(0.511 0.23 277);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.967 0.003 106);
-  --secondary-foreground: oklch(0.25 0.01 285);
-  --muted: oklch(0.965 0.003 106);
-  --muted-foreground: oklch(0.552 0.01 285);
-  --accent: oklch(0.955 0.02 277);
-  --accent-foreground: oklch(0.42 0.2 277);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.925 0.004 106);
-  --input: oklch(0.912 0.004 106);
-  --ring: oklch(0.63 0.15 277);
-  --chart-1: oklch(0.511 0.23 277);
-  --chart-2: oklch(0.71 0.01 285);
-  --chart-3: oklch(0.63 0.15 277);
-  --chart-4: oklch(0.8 0.08 277);
-  --chart-5: oklch(0.44 0.01 285);
-  --radius: 1rem;
-  --sidebar: oklch(1 0 0);
-  --sidebar-foreground: oklch(0.185 0.005 285);
-  --sidebar-primary: oklch(0.511 0.23 277);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.955 0.02 277);
-  --sidebar-accent-foreground: oklch(0.42 0.2 277);
-  --sidebar-border: oklch(0.925 0.004 106);
-  --sidebar-ring: oklch(0.63 0.15 277);
+  /* Paper Ledger theme: warm paper page plane, hairline-bordered cards,
+     one oxblood accent reserved for interactive/selected elements. Money
+     gain/loss and attention colors are their own tokens (app/theme.css),
+     never borrowed from the accent. */
+  --font-display: var(--ns-display), "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-body: var(--ns-body), "Inter", -apple-system, "Segoe UI", sans-serif;
+  --font-data: var(--ns-data), "IBM Plex Mono", "SF Mono", Consolas, monospace;
+
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card-foreground: var(--ink);
+  --popover: var(--card);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--paper);
+  --secondary: color-mix(in srgb, var(--paper), var(--ink) 7%);
+  --secondary-foreground: var(--ink);
+  --muted: color-mix(in srgb, var(--paper), var(--ink) 3%);
+  --muted-foreground: var(--ink-muted);
+  /* Destructive/delete-button red: its own token, deliberately distinct
+     from --loss (money-only) even though both read as "warm red" —
+     --loss must never color a control, per the color grammar. */
+  --destructive: #9A3324;
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--accent);
+  --chart-1: var(--ink-soft);
+  --chart-2: var(--line);
+  --chart-3: var(--ink-muted);
+  --chart-4: var(--line-heavy);
+  --chart-5: var(--ink);
+  --radius: 5px;
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: var(--paper);
+  --sidebar-accent: var(--accent-bg);
+  --sidebar-accent-foreground: var(--accent);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--accent);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.68 0.17 277);
-  --primary-foreground: oklch(0.145 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Not currently reachable from any UI control (no theme toggle exists
+     yet) — kept as a plausible dark ledger variant so it never regresses
+     to the old indigo palette if one is added. Overrides the raw
+     theme.css palette tokens (not the shadcn names) so the single set of
+     :root mapping rules above (--background: var(--paper), --primary:
+     var(--accent), …) cascades correctly here too instead of duplicating
+     every mapping. */
+  --paper: #17140f;
+  --card: #211d17;
+  --line: #3a352a;
+  --line-heavy: #EDE7D9;
+  --ink: #EDE7D9;
+  --ink-soft: #cfc8b4;
+  --ink-muted: #a8a08c;
+  --accent: #b5615f;
+  --accent-hover: #c97572;
+  --accent-bg: #3a2a27;
+  --destructive: #c4614c;
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    /* Ledger rule: every numeric value anywhere gets tabular figures.
+       A no-op on non-digit text, so applying it globally is safe and
+       covers every current and future number without a per-element audit. */
+    font-variant-numeric: tabular-nums;
   }
   body {
     @apply bg-background text-foreground;
@@ -134,7 +153,7 @@
 }
 
 /* Text-styled actions (Backup, Network log, "logs", clear filters, …).
-   The affordance contract: the app's one indigo accent + an underline
+   The affordance contract: the app's one oxblood accent + an underline
    visible BY DEFAULT — clickability must read at a glance, not on hover.
    Same accent as buttons/avatar; no new colors. */
 @utility action-link {
@@ -159,11 +178,11 @@
 
 /* Mic button (Ask Jarvis card): make "you can click this" unmistakable.
    Idle state is the neutral outline Button variant — shadcn already swaps
-   in the indigo-tinted --accent background on hover, so the work here is
+   in the oxblood-tinted --accent background on hover, so the work here is
    (a) easing that swap instead of snapping, and (b) hue-rotating the tint
-   slightly toward violet. The same rule covers the recording state: the
-   destructive red warms toward orange on hover. Filter is cheap (GPU
-   compositing), no layout impact. */
+   slightly for a visible hover cue. The same rule covers the recording
+   state: the destructive red warms toward orange on hover. Filter is
+   cheap (GPU compositing), no layout impact. */
 .mic-btn {
   transition:
     background-color 200ms ease,

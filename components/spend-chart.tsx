@@ -12,8 +12,10 @@ import {
 import type { CategorySpend } from "@/lib/finance/analyze";
 
 // Grouped horizontal bars: this month vs last month per category.
-// Colors are validated categorical slots (see dataviz palette); the table
-// beside this chart is the relief for light-mode contrast on series 2.
+// Ledger chart grammar: the accent (oxblood) is reserved for interactive/
+// selected UI and never colors a bar — the primary series uses --ink-soft,
+// the comparison series the hairline --line. Identity also carried by the
+// legend + table beside this chart.
 
 const usd = (v: number) =>
   `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -30,14 +32,7 @@ export function SpendChart({
   const height = 40 + rows.length * 52;
 
   return (
-    <div
-      className={[
-        // Single-accent minimalist scheme: this month = accent, last month =
-        // muted neutral context. Identity also carried by legend + table.
-        "[--gridline:#ececea] [--ink-muted:#8b8a85] [--series-1:var(--primary)] [--series-2:#b8b7b2]",
-        "dark:[--gridline:#2c2c2a] dark:[--series-2:#6b6a66]",
-      ].join(" ")}
-    >
+    <div className="[--series-1:var(--ink-soft)] [--series-2:var(--line)]">
       <div className="mb-2 flex gap-4 text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <span className="inline-block size-2.5 rounded-[2px] bg-[var(--series-1)]" />
@@ -52,7 +47,7 @@ export function SpendChart({
         <BarChart data={rows} layout="vertical" barGap={2} barSize={10}>
           <CartesianGrid
             horizontal={false}
-            stroke="var(--gridline)"
+            stroke="var(--line)"
             strokeWidth={1}
           />
           <XAxis

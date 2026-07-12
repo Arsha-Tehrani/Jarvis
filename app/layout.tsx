@@ -1,16 +1,28 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Source_Serif_4, Inter, IBM_Plex_Mono } from "next/font/google";
 import { RegisterServiceWorker } from "@/components/register-sw";
+import "./theme.css";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Loaded (self-hosted, no <link> tags) and exposed under bridge variable
+// names; globals.css layers these onto --font-display/--font-body/--font-data
+// ahead of the literal fallback stacks defined in theme.css.
+const sourceSerif4 = Source_Serif_4({
+  variable: "--ns-display",
   subsets: ["latin"],
+  weight: ["600"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const inter = Inter({
+  variable: "--ns-body",
   subsets: ["latin"],
+  weight: ["400", "500"],
+});
+
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--ns-data",
+  subsets: ["latin"],
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -27,7 +39,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#4f46e5",
+  themeColor: "#7A2E2E",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -41,7 +53,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${sourceSerif4.variable} ${inter.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
         <RegisterServiceWorker />

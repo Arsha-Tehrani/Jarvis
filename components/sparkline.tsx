@@ -76,13 +76,13 @@ export function Sparkline({
                 ...data.map((d, i) => `${x(i)},${y(d.value)}`),
                 `${x(data.length - 1)},${height - pad}`,
               ].join(" ")}
-              fill="var(--primary)"
+              fill="var(--ink-soft)"
               opacity={0.07}
             />
             <polyline
               points={data.map((d, i) => `${x(i)},${y(d.value)}`).join(" ")}
               fill="none"
-              stroke="var(--primary)"
+              stroke="var(--ink-soft)"
               strokeWidth={1.75}
               strokeLinejoin="round"
               strokeLinecap="round"
@@ -99,7 +99,7 @@ export function Sparkline({
                 width={bw}
                 height={Math.max(1.5, height - pad - y(d.value))}
                 rx={2}
-                fill={hover === i ? "var(--primary)" : "var(--primary)"}
+                fill={hover === i ? "var(--ink-soft)" : "var(--ink-soft)"}
                 opacity={hover === i ? 1 : 0.45}
               />
             );
@@ -121,7 +121,7 @@ export function Sparkline({
                 cx={x(hover as number)}
                 cy={y(hovered.value)}
                 r={3}
-                fill="var(--primary)"
+                fill="var(--ink-soft)"
                 stroke="var(--card)"
                 strokeWidth={1.5}
               />
@@ -131,7 +131,7 @@ export function Sparkline({
       </svg>
       {hovered && (
         <div
-          className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 -translate-y-full rounded-md border bg-popover px-2 py-1 text-xs whitespace-nowrap text-popover-foreground shadow-soft"
+          className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 -translate-y-full rounded-md border border-line bg-popover px-2 py-1 text-xs whitespace-nowrap text-popover-foreground"
           style={{ left: `${(x(hover as number) / W) * 100}%` }}
         >
           <span className="text-muted-foreground">{hovered.label}</span>{" "}

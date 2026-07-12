@@ -39,7 +39,7 @@ export function ContributionHeatmap({ loggedDates }: { loggedDates: string[] }) 
                   title={`${date}${logged.has(date) ? " ✓" : ""}`}
                   className={cn(
                     "size-2.5 rounded-[2px]",
-                    logged.has(date) ? "bg-primary" : "bg-muted",
+                    logged.has(date) ? "bg-(--heat-4)" : "bg-(--heat-1)",
                     date === todayKey && "ring-1 ring-foreground/40"
                   )}
                 />

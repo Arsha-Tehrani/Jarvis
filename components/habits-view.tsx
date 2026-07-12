@@ -179,7 +179,7 @@ export function HabitsView() {
           </form>
 
           {suggestion && (
-            <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 rounded border border-warn/40 bg-warn-bg p-2 text-sm">
               <span>
                 This looks like it might be the same as{" "}
                 <Link href="/trackers" className="font-medium underline">

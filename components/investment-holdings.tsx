@@ -66,7 +66,7 @@ export function InvestmentHoldings() {
           <TableHead className="text-right">% of portfolio</TableHead>
         </TableRow>
       </TableHeader>
-      <TableBody>
+      <TableBody className="font-data text-[13px]">
         {holdings.map((h) => (
           <TableRow key={h.id}>
             <TableCell className="font-medium">

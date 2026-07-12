@@ -275,7 +275,7 @@ export function AgentChat() {
             {entries.map((entry, i) => {
               if (entry.kind === "pending") {
                 return (
-                  <div key={i} className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3">
+                  <div key={i} className="rounded-md border border-warn/50 bg-warn-bg p-3">
                     <p className="font-medium">Needs confirmation:</p>
                     <ul className="mt-1 list-disc pl-5">
                       {entry.calls.map((c, j) => (
@@ -377,9 +377,9 @@ function VoiceIndicatorDot({ mic, voiceState }: { mic: MicState; voiceState: Voi
   const effective = mic === "starting-sidecar" ? "starting" : voiceState;
   const config: Record<VoiceIndicatorState, { color: string; label: string }> = {
     ready: { color: "bg-emerald-500", label: "Ready" },
-    starting: { color: "bg-amber-500 animate-pulse", label: "Starting…" },
+    starting: { color: "bg-warn animate-pulse", label: "Starting…" },
     down: { color: "bg-muted-foreground", label: "Down" },
-    "needs-setup": { color: "bg-destructive", label: "Needs setup" },
+    "needs-setup": { color: "bg-warn", label: "Needs setup" },
   };
   const { color, label } = config[effective];
   return (

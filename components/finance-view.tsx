@@ -553,7 +553,7 @@ export function FinanceView() {
                     r.status === "rejected"
                       ? "text-destructive"
                       : r.status === "warning"
-                        ? "text-amber-600 dark:text-amber-500"
+                        ? "text-warn"
                         : ""
                   }
                 >
@@ -877,7 +877,7 @@ export function FinanceView() {
                     <TableHead className="text-right">Change</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="font-data text-[13px]">
                   {data.spendByCategory.map((c) => (
                     <TableRow
                       key={c.category}
@@ -996,7 +996,7 @@ export function FinanceView() {
                     <TableHead className="text-right">Last charge</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="font-data text-[13px]">
                   {data.recurring.map((r) => (
                     <TableRow key={r.merchant}>
                       <TableCell>{r.merchant}</TableCell>
