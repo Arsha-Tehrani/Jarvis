@@ -19,7 +19,7 @@ import { loggedFetch } from "@/lib/network-log";
 //    with the purpose derived from the Yahoo API path.
 
 function purposeFromPath(pathname: string): string {
-  if (pathname.includes("/chart/")) return "daily price history (chart)";
+  if (pathname.includes("/chart/")) return "price history (chart)";
   if (pathname.includes("quoteSummary")) return "dividend calendar (quoteSummary)";
   return pathname;
 }

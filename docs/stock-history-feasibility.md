@@ -1,5 +1,42 @@
 # Stock chart feasibility spike (Phase 0)
 
+> **Update 2 (2026-07-12): multi-timeframe charts.** The ticker dialog now
+> has 1D/5D/1M/3M/6M/YTD/1Y/5Y/Max tabs; granularity per tab resolves in
+> `resolveInterval()` (`lib/stocks/history-core.ts`, pure + unit-tested).
+> What Yahoo's `chart()` actually serves per interval, **verified live
+> 2026-07-12** against the running app (all still key-free):
+>
+> | Interval | Used by | Observed behavior |
+> |---|---|---|
+> | `5m`  | 1D | Full session incl. pre/post-market bars (4:00 AM–7:59 PM ET). On a weekend, the padded 6-day window returns the last trading day; a `sessions: 1` trim keeps exactly that session. |
+> | `15m` | 5D | Same shape; the last bar of a day can be stamped `23:59:59`. `sessions: 5` trims the 14-day padded window to 5 trading days. |
+> | `30m` | 1M | Works for a 32-day window. **Yahoo caps ≤30m intervals at ~60 days lookback** (upstream, not configurable) — a test pins every intraday window under 60d. |
+> | `1d`  | 3M/6M/YTD/1Y + intraday fallback | Full history. One 370-day fetch is shared by all four tabs (sliced per tab by `displayFrom`), so switching tabs is a cache hit. |
+> | `1wk` | 5Y | Full history (263 weekly bars for 5 years). |
+> | `1mo` | Max | Full history from the epoch — GOOGL's Max reaches its Aug 2004 IPO (265 monthly bars). |
+>
+> **Edge cases found live** (each now handled and unit-tested):
+> - **Mutual funds lie about intraday.** FXAIX 1D returned exactly *one* 5m
+>   bar (its daily NAV); SPAXX returned 5. Yahoo doesn't error — it serves a
+>   one-dot "chart". `isSparseIntraday()` treats <3 bars that are also >2h
+>   stale as unavailable → the labeled daily fallback ("intraday unavailable
+>   — showing 1 month, daily"). Sparse-but-fresh is deliberately NOT
+>   degraded: at 9:36 AM a liquid ticker legitimately has 1–2 bars.
+> - **Weekends/holidays**: intraday windows are padded (1D fetches 6
+>   calendar days) then session-trimmed, so a Sunday click still charts
+>   Friday's session rather than erroring.
+> - **Delisted/unknown symbols** behave exactly as before: empty `quotes`
+>   → clear thrown error → the dialog's calm degraded message.
+>
+> **Caching** moved from `stock_history_cache(ticker)` (one daily series per
+> ticker per day) to `stock_chart_cache(ticker, interval)`: EOD intervals
+> (`1d/1wk/1mo`) stay fresh for the fetch's calendar day (unchanged
+> reasoning — EOD data doesn't change until close), intraday intervals ride
+> the same 15-minute cadence as the live-quote cache. Worst case per ticker
+> per day: 6 requests (one per interval) + intraday re-fetches every 15 min
+> while the dialog is actively used — still trivially inside any rate
+> limit, and every call is audited in `/network-log` via the shared client.
+
 > **Superseded (2026-07-10, fix-plan-3 Phase 5): history now comes from
 > `yahoo-finance2`, not Alpha Vantage.** The blocker this spike worked
 > around — Finnhub's `/stock/candle` being premium-gated, leaving Alpha

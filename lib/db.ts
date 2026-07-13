@@ -283,16 +283,19 @@ const MIGRATIONS: string[] = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
-  // Part D6 — click-to-chart daily price history, cached at most once per
-  // ticker per day (Alpha Vantage free tier is 25 req/day; see
-  // docs/stock-history-feasibility.md). `series` is the whole daily-close
-  // array as one JSON blob, replaced wholesale on each fetch rather than
-  // queried by date range, since the whole point is "serve today's cached
-  // copy or fetch once" — no partial-range SQL access is needed.
-  `CREATE TABLE IF NOT EXISTS stock_history_cache (
-    ticker TEXT PRIMARY KEY,
-    fetched_date TEXT NOT NULL,
-    series TEXT NOT NULL
+  // Part D6 (reworked for multi-timeframe charts) — click-to-chart price
+  // history, cached per (ticker, interval). `series` is the whole fetched
+  // series as one JSON blob, replaced wholesale — no partial-range SQL
+  // access is needed; the per-timeframe slicing is pure logic in
+  // lib/stocks/history-core.ts. Freshness is decided there too: EOD
+  // intervals (1d/1wk/1mo) are fresh for the fetch's calendar day, intraday
+  // (5m/15m/30m) for 15 minutes. See docs/stock-history-feasibility.md.
+  `CREATE TABLE IF NOT EXISTS stock_chart_cache (
+    ticker TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    series TEXT NOT NULL,
+    PRIMARY KEY (ticker, interval)
   )`,
   // Task-board redesign Phase 4 — Slack task digests, one row per (date,
   // slot) actually sent. task_ids is the JSON array of task ids in displayed
@@ -389,7 +392,14 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
 ];
 
 // Runs AFTER the column adds (indexes/triggers reference sync columns).
-const POST_MIGRATIONS: string[] = [...syncTriggerSql()];
+const POST_MIGRATIONS: string[] = [
+  ...syncTriggerSql(),
+  // The pre-multi-timeframe chart cache (PRIMARY KEY ticker only, daily-EOD
+  // series). Superseded by stock_chart_cache above; it held nothing but
+  // regenerable cached Yahoo responses, so dropping is safe and keeps the
+  // DB tidy. Idempotent: IF EXISTS, and nothing recreates it.
+  `DROP TABLE IF EXISTS stock_history_cache`,
+];
 
 const MIGRATION_COUNT =
   MIGRATIONS.length + COLUMN_MIGRATIONS.length + POST_MIGRATIONS.length;
