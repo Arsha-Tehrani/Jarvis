@@ -30,6 +30,50 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { TIMEFRAMES, type Timeframe } from "@/lib/stocks/history-core";
+
+type HistoryChart = {
+  interval: string;
+  fallback: string | null;
+  series: { date: string; close: number }[];
+};
+
+// Intraday points carry a full ISO timestamp; daily/weekly/monthly a plain
+// YYYY-MM-DD (parsed at UTC noon so no timezone shows the previous day).
+const isIntradayInterval = (interval: string) => interval.endsWith("m") && interval !== "1mo";
+
+function historyLabel(date: string, interval: string): string {
+  if (isIntradayInterval(interval)) {
+    return new Date(date).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+  return new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function historyTick(date: string, interval: string): string {
+  if (interval === "5m") {
+    // 1D: a single session — time of day is the only axis that matters.
+    return new Date(date).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+  if (isIntradayInterval(interval)) {
+    return new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: interval === "1mo" || interval === "1wk" ? "2-digit" : undefined,
+    timeZone: "UTC",
+  });
+}
 
 type Holding = {
   id: number;
@@ -109,27 +153,41 @@ export function StocksView() {
   const [divDate, setDivDate] = useState("");
   const [divAmount, setDivAmount] = useState("");
   const [historyTicker, setHistoryTicker] = useState<string | null>(null);
-  const [historyData, setHistoryData] = useState<{ date: string; close: number }[] | null>(null);
+  const [historyTimeframe, setHistoryTimeframe] = useState<Timeframe>("3M");
+  const [historyData, setHistoryData] = useState<HistoryChart | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Click a ticker → fetch its cached-or-fresh daily history (lazy, never
-  // proactive for the whole table — see docs/stock-history-feasibility.md).
-  async function openHistory(t: string) {
-    setHistoryTicker(t);
+  // Fetch one (ticker, timeframe) chart — lazy, on click / tab change only,
+  // never proactive for the whole table (docs/stock-history-feasibility.md).
+  // The server decides granularity and may degrade intraday → daily; when it
+  // does, body.fallback carries the label we must show.
+  async function fetchHistory(t: string, tf: Timeframe) {
     setHistoryData(null);
     setHistoryError(null);
     setHistoryLoading(true);
     try {
-      const res = await fetch(`/api/stocks/history?ticker=${encodeURIComponent(t)}`);
+      const res = await fetch(
+        `/api/stocks/history?ticker=${encodeURIComponent(t)}&timeframe=${tf}`
+      );
       const body = await res.json();
       if (!res.ok || body.error) setHistoryError(body.error ?? "Failed to load price history");
-      else setHistoryData(body.series);
+      else setHistoryData(body);
     } catch {
       setHistoryError("Could not reach the API.");
     } finally {
       setHistoryLoading(false);
     }
+  }
+
+  function openHistory(t: string) {
+    setHistoryTicker(t);
+    void fetchHistory(t, historyTimeframe);
+  }
+
+  function changeTimeframe(tf: Timeframe) {
+    setHistoryTimeframe(tf);
+    if (historyTicker) void fetchHistory(historyTicker, tf);
   }
 
   const load = useCallback(async () => {
@@ -525,19 +583,41 @@ export function StocksView() {
       <Dialog open={historyTicker != null} onOpenChange={(open) => !open && setHistoryTicker(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{historyTicker} — daily close</DialogTitle>
+            <DialogTitle>{historyTicker} — price history</DialogTitle>
           </DialogHeader>
+          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Timeframe">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf}
+                role="tab"
+                aria-selected={tf === historyTimeframe}
+                onClick={() => changeTimeframe(tf)}
+                className={cn(
+                  "rounded-[var(--radius)] border px-2.5 py-1 font-data text-xs",
+                  tf === historyTimeframe
+                    ? "border-(--accent) bg-accent text-accent-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tf === "MAX" ? "Max" : tf}
+              </button>
+            ))}
+          </div>
+          {historyData?.fallback && (
+            <p className="text-xs text-warn">{historyData.fallback}</p>
+          )}
           {historyLoading ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : historyError ? (
             <p className="text-sm text-destructive">{historyError}</p>
-          ) : historyData && historyData.length > 0 ? (
+          ) : historyData && historyData.series.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={historyData}>
+              <LineChart data={historyData.series}>
                 <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
                   tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  tickFormatter={(d) => historyTick(String(d), historyData.interval)}
                   minTickGap={40}
                 />
                 <YAxis
@@ -548,8 +628,10 @@ export function StocksView() {
                 />
                 <Tooltip
                   formatter={(v) => [`$${Number(v).toFixed(2)}`, "Close"]}
+                  labelFormatter={(d) => historyLabel(String(d), historyData.interval)}
+                  cursor={{ stroke: "var(--ink-soft)", strokeWidth: 1 }}
                   contentStyle={{
-                    borderRadius: 8,
+                    borderRadius: "var(--radius)",
                     border: "1px solid var(--border)",
                     background: "var(--background)",
                     color: "var(--foreground)",
@@ -559,7 +641,7 @@ export function StocksView() {
                 <Line
                   type="monotone"
                   dataKey="close"
-                  stroke="var(--primary)"
+                  stroke="var(--ink-soft)"
                   strokeWidth={2}
                   dot={false}
                 />
