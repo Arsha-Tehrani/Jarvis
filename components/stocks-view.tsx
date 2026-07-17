@@ -30,6 +30,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { PortfolioHistoryChart } from "@/components/portfolio-history-chart";
+import { StockContributionCard } from "@/components/stock-contribution-card";
 import { TIMEFRAMES, type Timeframe } from "@/lib/stocks/history-core";
 
 type HistoryChart = {
@@ -344,6 +346,8 @@ export function StocksView() {
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}
 
+      <PortfolioHistoryChart />
+
       <Card>
         <CardHeader>
           <CardTitle>Portfolio</CardTitle>
@@ -462,6 +466,8 @@ export function StocksView() {
           </form>
         </CardContent>
       </Card>
+
+      {holdings.length > 0 && <StockContributionCard />}
 
       <Card>
         <CardHeader>

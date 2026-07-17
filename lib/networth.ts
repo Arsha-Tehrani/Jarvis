@@ -137,6 +137,19 @@ export function snapshots(days = 180): Snapshot[] {
     .all(since) as Snapshot[];
 }
 
+// Every snapshot row (no day cap) for the Stocks page's value-over-time
+// chart — the range window is applied by the pure filter
+// (lib/stocks/portfolio-history.ts), not here, so 'all' and '1y' work. Same
+// table and rows the Net Worth chart reads; this is a second view over the
+// existing daily snapshot, not a second snapshot mechanism.
+export function allSnapshots(): Snapshot[] {
+  return getDb()
+    .prepare(
+      "SELECT date, accounts_total, holdings_value, total FROM networth_snapshots ORDER BY date ASC"
+    )
+    .all() as Snapshot[];
+}
+
 // Weekly delta: current total vs the closest snapshot ≥7 days old.
 export function weeklyDelta(): number | null {
   const rows = snapshots(30);
