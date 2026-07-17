@@ -6,6 +6,7 @@ import {
   isAllDay,
   localDateKey,
   monthGrid,
+  taskDayKey,
   weekOf,
 } from "../lib/calendar-grid.ts";
 
@@ -72,4 +73,23 @@ test("time labels: timed events get a clock, all-day gets none", () => {
   assert.equal(isAllDay("2026-07-08T09:00:00"), false);
   assert.equal(eventTimeLabel("2026-07-08"), "");
   assert.equal(eventTimeLabel("2026-07-08T09:30:00"), "9:30 AM");
+});
+
+test("taskDayKey: date-only due dates are kept verbatim (no UTC shift)", () => {
+  assert.equal(taskDayKey("2026-07-20"), "2026-07-20");
+});
+
+test("taskDayKey: null/empty/undefined due date has no day", () => {
+  assert.equal(taskDayKey(null), null);
+  assert.equal(taskDayKey(undefined), null);
+  assert.equal(taskDayKey(""), null);
+});
+
+test("taskDayKey: a full local ISO timestamp maps to that local day", () => {
+  // Offset-less ISO parses as LOCAL time, so this holds in any timezone.
+  assert.equal(taskDayKey("2026-07-20T09:30:00"), "2026-07-20");
+});
+
+test("taskDayKey: an unparseable due date is treated as no day, never a crash", () => {
+  assert.equal(taskDayKey("not a date"), null);
 });

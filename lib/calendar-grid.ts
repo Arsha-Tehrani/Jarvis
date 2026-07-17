@@ -91,6 +91,21 @@ export function eventDayKeys(start: string, end: string): string[] {
   return keys;
 }
 
+/**
+ * The local calendar day a task's due date lands on, or null when it has no
+ * due date. `due_at` is either a date-only YYYY-MM-DD (kept verbatim, no UTC
+ * shift) or a full ISO timestamp (mapped to the viewer's local day) — the two
+ * shapes the `tasks.due_at` column holds, read the same way the Tasks page
+ * reads it. Lets the Calendar page place a due task on the right cell.
+ */
+export function taskDayKey(dueAt: string | null | undefined): string | null {
+  if (!dueAt) return null;
+  if (DATE_ONLY.test(dueAt)) return dueAt;
+  const d = new Date(dueAt);
+  if (Number.isNaN(d.getTime())) return null;
+  return localDateKey(d);
+}
+
 /** "9:30 AM" for timed events, "" for all-day. */
 export function eventTimeLabel(start: string): string {
   if (isAllDay(start)) return "";

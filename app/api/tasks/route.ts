@@ -27,6 +27,11 @@ const createSchema = z.object({
   description: z.string().max(2000).optional(),
   due_at: z.string().nullable().optional(),
   priority: z.enum(["urgent", "high", "later"]),
+  // Provenance tag, free-text like the column (no CHECK constraint). Callers
+  // that omit it keep the default 'manual' (the Tasks-page add form); the
+  // Calendar page's quick-add sends 'calendar' so those rows stay
+  // distinguishable in the data.
+  source: z.string().min(1).max(50).optional(),
 });
 
 const updateSchema = z.object({
@@ -59,12 +64,12 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   }
-  const { title, description, due_at, priority } = parsed.data;
+  const { title, description, due_at, priority, source } = parsed.data;
   const info = getDb()
     .prepare(
-      "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', 'manual')"
+      "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', ?)"
     )
-    .run(title, description ?? null, due_at ?? null, priority);
+    .run(title, description ?? null, due_at ?? null, priority, source ?? "manual");
   // Calendar event in the same request (a failure never fails the write —
   // the hourly reconciler retries anything left unlinked).
   const inserted = getDb()

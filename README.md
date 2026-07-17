@@ -6,9 +6,20 @@ Jarvis is a personal dashboard and natural-language agent that runs entirely on 
 
 ## Quickstart
 
+Requires Node.js 20 LTS or newer. See [requirements.txt](./requirements.txt) for the full prerequisite checklist (including optional Python sidecars).
+
+**macOS / Linux (Terminal):**
+
 ```bash
 npm install
 npm run dev        # starts the app AND the in-process cron worker
+```
+
+**Windows (PowerShell or Command Prompt):**
+
+```powershell
+npm install
+npm run dev
 ```
 
 Open `http://localhost:3000`. With no configuration you get tasks, trackers, notes-free features, and the dashboard; add a local Ollama model for the agent, and API keys per feature as you need them (see [Configuration](#configuration)).
@@ -40,7 +51,7 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 
 ### Life tracking
 
-- **Tasks** — a task list with due dates and priorities, fed by hand or by the agent.
+- **Tasks** — a task list with due dates and priorities, fed by hand, by the agent, or straight from a day on the Calendar page. Due tasks also show on the calendar alongside your Google events.
 - **Trackers** — gym visits, LeetCode progress (auto-pulled daily), sleep/bedtime/weight/mood, user-defined habits with streaks and heatmaps, and daily macros — one page that visualizes everything you track.
 - **Nutrition / macros** — log a meal by text, through the agent, or by **photo**: a local vision model estimates portions and a JSON-mode extraction produces validated calories/protein/carbs/fat.
 - **Goals are just Tracker targets** — savings rate, gym days/week, LeetCode/week, average sleep, calories/day are targets attached to Trackers (progress rings, computed from real data), not a separate static list. Setting one still requires confirmation, and at-risk targets feed the morning brief.
@@ -52,7 +63,7 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 
 - **Finance** — drop bank statement CSVs/PDFs into `/statements`, hit Import: parsing (with account-number redaction), LLM categorization with keyword fallback, recurring-charge detection, a renewal "radar", and a read-only agent tool for questions like "how much did I spend on dining in May?".
 - **Category budgets** — set a monthly limit per spending category; month-to-date spend is checked against it deterministically and overages surface in the morning brief.
-- **Stocks & watchlist** — live quotes via Finnhub or Alpha Vantage free tiers, cached to stay inside rate limits; holdings imported from brokerage CSV exports.
+- **Stocks & watchlist** — live quotes via Finnhub or Alpha Vantage free tiers, cached to stay inside rate limits; holdings imported from brokerage CSV exports. A value-over-time chart at the top of the page shows holdings and cash/account balances stacking to your total, drawn from the same daily snapshot the Net Worth page uses. A "what's driving your portfolio" card attributes the week's/month's move to the individual holdings behind it, so a broad move isn't mistaken for one or two names.
 - **Net worth** — manual account balances plus market-priced holdings, snapshotted daily into an over-time chart.
 
 ### Knowledge
@@ -131,7 +142,7 @@ Configure `.env.local` (all optional except the LLM if you want the agent). For 
 2. **Confirm money/destructive actions.** Tools flagged `requiresConfirm` (e.g. `set_goal`, `revert_action`) are not executed — the route returns a *pending confirmation* payload showing exactly what would run. The UI displays it; `POST /api/agent { confirmedCalls, originalText }` re-validates and executes only on your confirm.
 3. **Everything logs.** Every turn — user text, tool calls as JSON, result — is written to the `agent_log` table.
 
-Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `delete_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `log_meal`, `ask_textbook`, `revert_action`. Adding a new one is a ~30-line recipe — see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
+Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `delete_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `query_stock_contribution`, `log_meal`, `ask_textbook`, `revert_action`. Adding a new one is a ~30-line recipe — see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
 
 Each turn also records **cost/latency telemetry** on its `agent_log` row: provider, model, latency, token counts (when the API reports them — never estimated), and dollar cost. With local Ollama the cost is always $0; point `LLM_PROVIDER` at a hosted model and fill in `lib/pricing.ts` (rates change — the shipped table is deliberately empty) to see tokens and running monthly cost on the `/status` page.
 
@@ -163,7 +174,9 @@ See the [Scheduler caveat](#scheduler-caveat) below — the scheduler only runs 
 
 ### Tasks
 
-A plain task table (`title`, `due_at`, `priority`, `status`, `source`) surfaced on the Tasks page and the Today view. Tasks arrive from the UI or from the agent's `add_task` tool; the agent resolves relative dates ("Friday") to concrete ISO dates itself.
+A plain task table (`title`, `due_at`, `priority`, `status`, `source`) surfaced on the Tasks page and the Today view. Tasks arrive from the UI or from the agent's `add_task` tool; the agent resolves relative dates ("Friday") to concrete ISO dates itself. The `source` column tags provenance — `manual`, `agent`, or `calendar` — so a task's origin stays visible in the data.
+
+**Quick-add from the Calendar page.** Every day on the calendar shows the tasks *due* that day next to its Google events (rendered distinctly, with a `○` marker), and hovering a day reveals a `+` that opens an inline add-task form pre-filled to that day — title, priority, and an editable due date. It writes through the same `POST /api/tasks` endpoint the Tasks page uses (no new endpoint, no duplicated schema) with `source: 'calendar'`, so the new task appears immediately on the calendar, the Tasks page, and the Today view without any special refresh path. These are ordinary **local** tasks, not Google events — Tasks stay a separate local list and Google remains the calendar's single source of truth, so nothing is written to Google here. Which local day a task lands on is a pure, unit-tested function (`taskDayKey` in `lib/calendar-grid.ts`) that reads date-only and full-timestamp due dates the same way the Tasks page does, with no UTC shift. The calendar grid now renders with or without Google connected — the connection prompt is a banner above it, not a wall — so the quick-add works even before you link Google.
 
 ### Trackers: gym, LeetCode, health, habits
 
@@ -229,6 +242,10 @@ The holdings table is **click-to-sort** (ticker, value, % of portfolio, day move
 **One valuation function, three call sites.** `lib/stocks/portfolio-total.ts` computes per-holding value + day move + P/L (falling back to cost basis for a holding with no live quote, e.g. the SPAXX money-market core) and the aggregate total, and `/api/stocks`, the Today page's Portfolio card, and `lib/networth.ts`'s `computeNetWorth()` all call it. Before this existed, the Today card had its own inline sum that only totaled *quote-priced* holdings and silently dropped anything unpriced instead of falling back — a real, always-reproducible mismatch against the Stocks page total whenever any holding lacked a live quote, not a timing race. Pure and unit-tested (`tests/portfolio-total.test.ts`): all-priced, cost-basis-only, and mixed sets, plus the zero-cost-basis and case-insensitive-ticker edge cases.
 
 **Dividends** are detected **automatically**: a daily 07:00 cron (plus catch-up-on-launch) checks each holding's ex-dividend calendar via the shared Yahoo client and, on the ex-date, locks in the held share count and inserts a **pending** payout — `pending` rows show a badge with the expected payment date and contribute **zero** to the running total until the payment date arrives and they're promoted to `confirmed` (cash you're entitled to isn't cash in hand). Amounts are estimated from the ticker's last actual payment (Yahoo's forward `dividendRate` is annualized — verified against Apple IR, see `docs/dividend-automation.md` for the full field-mapping verification) and labeled `(est.)`. Dedupe rides the `(ticker, ex_date)` unique key: a hand-logged dividend never gets an auto twin, and a hand-corrected auto row is never clobbered by the next tick. **Manual entry stays fully available and unchanged** — Yahoo is an unofficial API, so like LeetCode's manual entry it's the always-working fallback: enter ex-date + amount/share and the app computes payout (`shares × amount/share`). Without a recorded share count for the ex-date it uses the current share count, clearly flagged `≈`. Payout math and the pending/confirmed totals are pure and unit-tested (`lib/dividends-math.ts`, `lib/dividends-auto.ts`).
+
+**Value over time.** The card at the top of the Stocks page plots your portfolio's value across a selectable window (1M / 3M / 6M / 1Y / All). It does *not* introduce a second snapshot mechanism — it reads the very rows the daily 18:00 net-worth snapshot already writes (`networth_snapshots`, holdings value and manual account balances stored separately alongside the blended total), so the Net Worth page's own chart is untouched. Holdings and cash/accounts are drawn as a **stacked area** — the band's top edge is your total, and the split shows at a glance how much of your worth is invested versus sitting in cash. The windowing is a pure, unit-tested function (`lib/stocks/portfolio-history.ts`): it sorts oldest-first, filters to the range with an inclusive cutoff, and leaves the breakdown untouched. Snapshots taken before the split was recorded carry a null holdings/cash breakdown; those points render as a **gap**, never a fabricated $0 (past share counts aren't reliably reconstructable — see the positions-snapshot note above), and a window with *only* such rows quietly falls back to a single total line. A new install with fewer than two snapshots shows a calm "not enough history yet" note rather than an empty chart.
+
+**What's driving your portfolio.** A card on the Stocks page answers the question a raw holdings table can't: *how much of this week's (or month's) move is actually just one or two stocks?* For each current holding it computes the dollar contribution to the portfolio's move — `currentValue − (shares × the period-start close)` — using the **same** `portfolio-total.ts` valuation for the current side (so an unpriced holding like SPAXX is valued at cost basis, not dropped), then its share of the net move and its own period return. The attribution math is a pure, unit-tested module (`lib/stocks/contribution.ts`) with every guard the spec demands: divide-by-zero on a flat portfolio returns `null` (never `Infinity`/`NaN`), a holding with no period-start price is flagged **"no data"** and shown in a muted row at the bottom rather than silently counted as $0, and a named `CONCENTRATION_THRESHOLD` (80%) drives the one-line rollup — "*11 of 24 holdings account for 83% of this week's move*" — as the fewest top movers by absolute contribution whose cumulative move crosses that threshold. Period-start closes come through the **same** audited Yahoo client and `stock_chart_cache` that click-to-chart uses (`lib/stocks/contribution-data.ts` requests a daily 3M chart per holding, reused once per ticker per calendar day) — no second cache, no second client, no bypass of the rate protection; a ticker whose history can't be fetched degrades to the "no data" case for just that row, never blocking the rest. `GET /api/stocks/contribution?period=1w|1m` (zod-validated, defaulting to `1w`) serves it, and the read-only `query_stock_contribution` agent tool answers "which stocks moved my portfolio this week" in the chat from the same core.
 
 **Click a ticker for its price history.** Daily EOD history comes from **`yahoo-finance2`** — no API key required (this replaced the original Alpha-Vantage-only path; Finnhub's `/stock/candle` remains premium-gated on free keys — see `docs/stock-history-feasibility.md` for the full history). Fetched lazily on click through a shared, audit-logged Yahoo client (`lib/stocks/yahoo-client.ts` — every call shows up in `/network-log`) and cached in `stock_history_cache` **once per ticker per calendar day**: EOD data doesn't change until market close, and an unofficial endpoint shouldn't be hammered for identical data. A stale (prior-day) cache entry triggers exactly one fresh fetch; a same-day hit never touches the network. A fetch failure or an unknown/delisted symbol (delisted tickers stop returning history entirely, even for ranges that used to work) is the same calm degraded state in the chart dialog — never a crash. `lib/stocks/history-core.ts` is the pure, unit-tested half (caching decision + response parsing); `lib/stocks/history.ts` is the DB/network glue, same split as `lib/sync/core.ts` vs. `lib/sync/client.ts`.
 
@@ -314,9 +331,13 @@ Jarvis instances on multiple machines can sync a small **allowlist** of derived 
 
 Setup:
 
+0. **Connect both machines with Tailscale first.** Sync rides on top of a [Tailscale](https://tailscale.com/download) mesh network, not your regular internet/Wi-Fi — install the Tailscale app on both the host and every client machine, sign in to the **same** Tailscale account on each (this is what puts them on the same private "tailnet"; being on the same router/ISP does nothing by itself), and leave it running. Confirm they can see each other before touching `.env.local`:
+   - Run `tailscale status` on either machine — both should be listed and reachable (not "offline").
+   - From the client, `ping <host-tailscale-name>` (or `tailscale ping <host-tailscale-name>`) should get a response. That `<host-tailscale-name>` — the host's Tailscale machine name — is exactly what goes into `SYNC_HOST_URL` below. Find it under the host's device in the [Tailscale admin console](https://login.tailscale.com/admin/machines) or via `tailscale status` on the host itself.
+   - The host machine needs to actually be awake and running `npm run dev` for sync to succeed — if it's asleep or the app isn't running, clients will log `fetch failed` and just retry next tick (harmless, but nothing will sync until it's back).
 1. **Host** (the always-on machine): set `SYNC_ROLE=host` and `SYNC_AUTH_TOKEN=<shared secret>` in its `.env.local`. It serves `POST /api/sync/push` and `GET /api/sync/pull` — and refuses both unless the role and token check out.
-2. **Client** (each other machine): set `SYNC_ROLE=client`, the same `SYNC_AUTH_TOKEN`, and `SYNC_HOST_URL=http://<host-tailscale-name>:3000`.
-3. That's it — a cron tick every 5 minutes (plus launch catch-up, plus a debounced push right after writes) pushes local changes and pulls everyone else's. Sync traffic shows up in `/network-log`, and `/status` has a Sync section with per-table push/pull times and pending counts.
+2. **Client** (each other machine): set `SYNC_ROLE=client`, the same `SYNC_AUTH_TOKEN`, and `SYNC_HOST_URL=http://<host-tailscale-name>:3000` (the name you confirmed reachable in step 0).
+3. That's it — a cron tick every 5 minutes (plus launch catch-up, plus a debounced push right after writes) pushes local changes and pulls everyone else's. Sync traffic shows up in `/network-log`, and `/status` has a Sync section with per-table push/pull times and pending counts. Persistent `fetch failed` entries there almost always mean step 0 isn't actually satisfied — re-check `tailscale status` on both machines.
 
 How conflicts resolve: every row carries a `sync_id` (cross-device identity; the local autoincrement id stays internal) and an `updated_at` that the **host stamps with its own clock at receipt time**. Device clocks are never trusted for ordering — the last write to *reach the host* wins, deterministically. A locally-edited row is never overwritten by a pull until its own push has landed. Deletes are not propagated (sync is additive), and two devices logging the same thing independently (same gym date, same goal kind) merge by natural key instead of duplicating.
 
