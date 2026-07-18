@@ -123,8 +123,11 @@ const PLANNERS: Record<string, Planner> = {
     const company = str(args, "company");
     const role = str(args, "role");
     return {
-      sql: `DELETE FROM applications WHERE id = (
-              SELECT MAX(id) FROM applications WHERE company = ? AND role = ?)`,
+      sql: tombstoneSql(
+        "applications",
+        `id = (SELECT MAX(id) FROM applications
+               WHERE company = ? AND role = ? AND deleted_at IS NULL)`
+      ),
       params: [company, role],
       description: `delete the tracked application ${company} — ${role}`,
     };

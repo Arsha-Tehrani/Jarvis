@@ -119,7 +119,8 @@ export function assembleDigestFacts(): DigestFacts {
     db
       .prepare(
         `SELECT company, next_action, next_action_at FROM applications
-         WHERE stage IN ('wishlist','applied','screening','interview','offer')
+         WHERE deleted_at IS NULL
+           AND stage IN ('wishlist','applied','screening','interview','offer')
            AND next_action_at IS NOT NULL
            AND substr(next_action_at, 1, 10) <= ?
          ORDER BY next_action_at ASC LIMIT 10`

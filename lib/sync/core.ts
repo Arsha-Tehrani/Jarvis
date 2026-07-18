@@ -140,7 +140,11 @@ function findLocal(
     .prepare(`SELECT id, updated_at, sync_dirty FROM ${spec.table} WHERE sync_id = ?`)
     .get(syncId) as { id: number; updated_at: string | null; sync_dirty: number } | undefined;
   if (bySyncId || !spec.naturalKey) return bySyncId;
-  const where = spec.naturalKey.map((c) => `${c} IS ?`).join(" AND ");
+  const where = spec.naturalKey
+    .map((c) =>
+      spec.naturalKeyNoCase ? `LOWER(TRIM(${c})) IS LOWER(TRIM(?))` : `${c} IS ?`
+    )
+    .join(" AND ");
   return db
     .prepare(`SELECT id, updated_at, sync_dirty FROM ${spec.table} WHERE ${where}`)
     .get(...spec.naturalKey.map((c) => local[c])) as

@@ -31,6 +31,10 @@ export type SyncTableSpec = {
   table: string;
   columns: string[];
   naturalKey?: string[];
+  // Match the natural key case-insensitively and trimmed (text keys typed by
+  // a human on two devices — "Acme " vs "acme"). Leave unset for exact keys
+  // (dates, numeric FKs).
+  naturalKeyNoCase?: boolean;
   fkToSyncId?: { localColumn: string; refTable: string; payloadKey: string };
 };
 
@@ -92,6 +96,28 @@ export const SYNC_TABLES: SyncTableSpec[] = [
     table: "networth_snapshots",
     columns: ["date", "accounts_total", "holdings_value", "total"],
     naturalKey: ["date"],
+  },
+  {
+    // Career pipeline (user-confirmed sync 2026-07-18: curated by hand, not
+    // raw imported data — traffic stays inside the Tailscale mesh like every
+    // other table). Natural key company+role, case-insensitive/trimmed, so
+    // the same application entered on two devices pre-sync merges instead
+    // of duplicating.
+    table: "applications",
+    columns: [
+      "company",
+      "role",
+      "stage",
+      "next_action",
+      "next_action_at",
+      "contact",
+      "link",
+      "notes",
+      "date_applied",
+      "created_at",
+    ],
+    naturalKey: ["company", "role"],
+    naturalKeyNoCase: true,
   },
 ];
 

@@ -175,7 +175,8 @@ function exactSearch(query: string): SearchGroup[] {
   const applications = db
     .prepare(
       `SELECT company, role, stage FROM applications
-       WHERE company LIKE ? ESCAPE '\\' OR role LIKE ? ESCAPE '\\'
+       WHERE (company LIKE ? ESCAPE '\\' OR role LIKE ? ESCAPE '\\')
+         AND deleted_at IS NULL
        ORDER BY created_at DESC LIMIT ?`
     )
     .all(like, like, LIMIT_PER_SOURCE) as {
