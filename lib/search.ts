@@ -153,7 +153,8 @@ function exactSearch(query: string): SearchGroup[] {
   const reading = db
     .prepare(
       `SELECT title, author, status FROM reading
-       WHERE title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\'
+       WHERE (title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\')
+         AND deleted_at IS NULL
        ORDER BY id DESC LIMIT ?`
     )
     .all(like, like, LIMIT_PER_SOURCE) as {

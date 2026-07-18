@@ -149,8 +149,10 @@ const PLANNERS: Record<string, Planner> = {
   add_to_reading_list: (args) => {
     const title = str(args, "title");
     return {
-      sql: `DELETE FROM reading WHERE id = (
-              SELECT MAX(id) FROM reading WHERE title = ?)`,
+      sql: tombstoneSql(
+        "reading",
+        `id = (SELECT MAX(id) FROM reading WHERE title = ? AND deleted_at IS NULL)`
+      ),
       params: [title],
       description: `remove "${title}" from the reading list`,
     };

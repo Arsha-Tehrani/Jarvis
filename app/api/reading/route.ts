@@ -7,6 +7,8 @@ import {
   addReadingItem,
   listReading,
 } from "@/lib/reading";
+import { queueSyncPush } from "@/lib/sync/client";
+import { tombstone } from "@/lib/sync/tombstone";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(300),
@@ -38,6 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   }
   addReadingItem(parsed.data);
+  queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
   return NextResponse.json({ items: listReading() }, { status: 201 });
 }
 
@@ -53,11 +56,12 @@ export async function PATCH(req: NextRequest) {
   }
   const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
   const info = getDb()
-    .prepare(`UPDATE reading SET ${setClause} WHERE id = ?`)
+    .prepare(`UPDATE reading SET ${setClause} WHERE id = ? AND deleted_at IS NULL`)
     .run(...entries.map(([, v]) => v), id);
   if (info.changes === 0) {
     return NextResponse.json({ error: "Item not found" }, { status: 404 });
   }
+  queueSyncPush();
   return NextResponse.json({ items: listReading() });
 }
 
@@ -66,9 +70,11 @@ export async function DELETE(req: NextRequest) {
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-  const info = getDb().prepare("DELETE FROM reading WHERE id = ?").run(id);
-  if (info.changes === 0) {
+  // Tombstone (lib/sync/tombstone.ts): the removal propagates through sync.
+  const changes = tombstone(getDb(), "reading", "id = ?", [id]);
+  if (changes === 0) {
     return NextResponse.json({ error: "Item not found" }, { status: 404 });
   }
+  queueSyncPush();
   return NextResponse.json({ ok: true });
 }
