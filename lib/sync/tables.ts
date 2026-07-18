@@ -119,6 +119,16 @@ export const SYNC_TABLES: SyncTableSpec[] = [
     naturalKey: ["company", "role"],
     naturalKeyNoCase: true,
   },
+  {
+    // Reading list. Natural key title+kind (case-insensitive/trimmed) —
+    // author is deliberately NOT part of the key, so the same title+kind
+    // with different authors would merge; accepted as unlikely for a
+    // personal list, cheap to add later if it ever bites.
+    table: "reading",
+    columns: ["kind", "title", "author", "status", "link", "notes", "note_path", "created_at"],
+    naturalKey: ["title", "kind"],
+    naturalKeyNoCase: true,
+  },
 ];
 
 // Delete propagation: every synced table carries a `deleted_at` tombstone
