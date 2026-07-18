@@ -83,21 +83,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ trackers: listTrackers() }, { status: 201 });
   }
 
-  const exists = db
-    .prepare("SELECT 1 FROM habits WHERE id = ? AND deleted_at IS NULL")
-    .get(body.habitId);
-  if (!exists) return NextResponse.json({ error: "Tracker not found" }, { status: 404 });
-  const date = body.date ?? new Date().toISOString().slice(0, 10);
+  const habit = db
+    .prepare("SELECT id, name FROM habits WHERE id = ? AND deleted_at IS NULL")
+    .get(body.habitId) as { id: number; name: string } | undefined;
+  if (!habit) return NextResponse.json({ error: "Tracker not found" }, { status: 404 });
+  const today = new Date().toISOString().slice(0, 10);
+  if (body.date && body.date > today) {
+    return NextResponse.json({ error: "Can't log a future date" }, { status: 400 });
+  }
+  const date = body.date ?? today;
+  let changes = 0;
   if (body.action === "log") {
     // Revive a tombstoned same-day row instead of inserting a duplicate;
     // the WHERE keeps a re-log of an already-live day a true no-op.
-    db.prepare(
-      `INSERT INTO habit_logs (habit_id, date) VALUES (?, ?)
-       ON CONFLICT(habit_id, date) DO UPDATE SET deleted_at = NULL
-       WHERE habit_logs.deleted_at IS NOT NULL`
-    ).run(body.habitId, date);
+    changes = db
+      .prepare(
+        `INSERT INTO habit_logs (habit_id, date) VALUES (?, ?)
+         ON CONFLICT(habit_id, date) DO UPDATE SET deleted_at = NULL
+         WHERE habit_logs.deleted_at IS NOT NULL`
+      )
+      .run(body.habitId, date).changes;
   } else {
-    tombstone(db, "habit_logs", "habit_id = ? AND date = ?", [body.habitId, date]);
+    changes = tombstone(db, "habit_logs", "habit_id = ? AND date = ?", [body.habitId, date]);
+  }
+  // Heatmap corrections (explicit date, actually changed something) are
+  // logged so revert_action can undo them — same precedent as agent writes;
+  // the plain today-toggle button (no date in the body) stays unlogged.
+  if (body.date && changes > 0) {
+    db.prepare("INSERT INTO agent_log (user_text, tool_calls, result) VALUES (?, ?, ?)").run(
+      `[trackers] heatmap correction: ${body.action} "${habit.name}" for ${date}`,
+      JSON.stringify({
+        executed: [
+          {
+            name: body.action === "log" ? "log_habit" : "unlog_habit",
+            args: { name: habit.name, date },
+          },
+        ],
+      }),
+      `${body.action === "log" ? "Logged" : "Un-logged"} "${habit.name}" for ${date}.`
+    );
   }
   queueSyncPush();
   return NextResponse.json({ trackers: listTrackers() });
