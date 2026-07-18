@@ -168,7 +168,7 @@ export function StatusView() {
           </Card>
         ))}
       </div>
-      {data?.sync && <SyncSection sync={data.sync} />}
+      {data?.sync && <SyncSection sync={data.sync} onSynced={() => load(true)} />}
     </div>
   );
 }
@@ -410,9 +410,50 @@ function formatUptime(sec: number): string {
   return `${(sec / 3600).toFixed(1)}h`;
 }
 
+// Manual "Sync now" for a configured client — runs the same runSyncPass() the
+// 5-minute cron does, then refreshes the status so the per-table push/pull
+// marks and pending counts update in place.
+function SyncNowButton({ onSynced }: { onSynced: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function syncNow() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/sync/run", { method: "POST" });
+      const body = (await res.json()) as { ok?: boolean; error?: string; status?: SyncStatus };
+      if (res.ok) {
+        const pending = (body.status?.tables ?? []).reduce((n, t) => n + t.pending, 0);
+        setResult(
+          pending > 0
+            ? `Synced — ${pending} row(s) still pending, will retry next tick.`
+            : "Synced — up to date."
+        );
+        onSynced();
+      } else {
+        setResult(body.error ?? "Sync failed");
+      }
+    } catch {
+      setResult("Could not reach the app's API.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border pt-2">
+      <Button size="sm" variant="outline" disabled={busy} onClick={syncNow} className="self-start">
+        {busy ? "Syncing…" : "Sync now"}
+      </Button>
+      {result && <p className="text-xs text-muted-foreground">{result}</p>}
+    </div>
+  );
+}
+
 // The Sync section: role + per-table push/pull marks and pending counts.
 // Same card language as the checks above; "disabled" is a calm one-liner.
-function SyncSection({ sync }: { sync: SyncStatus }) {
+function SyncSection({ sync, onSynced }: { sync: SyncStatus; onSynced: () => void }) {
   const timeOf = (iso: string | null) =>
     iso
       ? new Date(iso).toLocaleString("en-US", {
@@ -476,6 +517,7 @@ function SyncSection({ sync }: { sync: SyncStatus }) {
               ))}
             </div>
           )}
+          {sync.role === "client" && sync.configured && <SyncNowButton onSynced={onSynced} />}
         </Card>
       )}
     </div>
