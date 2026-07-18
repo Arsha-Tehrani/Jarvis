@@ -49,7 +49,7 @@ export function dividendSummary(): DividendSummary {
     source: "manual" | "yahoo_auto";
   }>;
   const currentShares = new Map(
-    (db.prepare("SELECT ticker, shares FROM holdings").all() as {
+    (db.prepare("SELECT ticker, shares FROM holdings WHERE deleted_at IS NULL").all() as {
       ticker: string;
       shares: number;
     }[]).map((r) => [r.ticker.toUpperCase(), r.shares])

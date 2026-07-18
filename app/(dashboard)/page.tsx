@@ -201,7 +201,7 @@ export default function TodayPage() {
   // Net worth (accounts + holdings; cached quotes or cost basis)
   const hasNetWorthData = !!db
     .prepare("SELECT 1 FROM accounts LIMIT 1")
-    .get() || !!db.prepare("SELECT 1 FROM holdings LIMIT 1").get();
+    .get() || !!db.prepare("SELECT 1 FROM holdings WHERE deleted_at IS NULL LIMIT 1").get();
   const netWorth = hasNetWorthData ? computeNetWorth() : null;
   const nwDelta = hasNetWorthData ? weeklyDelta() : null;
 
@@ -211,7 +211,7 @@ export default function TodayPage() {
   // instead of being silently dropped from the sum — that drop was the
   // actual reason this card used to under-count vs. the Stocks page total.
   const holdings = db
-    .prepare("SELECT ticker, shares, cost_basis FROM holdings")
+    .prepare("SELECT ticker, shares, cost_basis FROM holdings WHERE deleted_at IS NULL")
     .all() as { ticker: string; shares: number; cost_basis: number }[];
   const portfolio = computePortfolioTotal(holdings, getCachedQuote);
   const portfolioValue = portfolio.pricedBy === "none" ? null : portfolio.totalValue;

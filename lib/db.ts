@@ -416,6 +416,10 @@ const COLUMN_MIGRATIONS: Array<{
   // Nullable: rows written before this split has no seed value, correctly
   // null rather than fabricated (same rule as holdings_value/cash_value in
   // Round 1) — the chart renders a gap for that period, never a fake $0.
+  // Sync spec §4 — one UUID per brokerage import, stamped on every row that
+  // import touched (upserts AND tombstones). Debugging aid; see
+  // lib/sync/tables.ts holdings entry.
+  { table: "holdings", column: "import_batch_id", ddl: "import_batch_id TEXT" },
   { table: "networth_snapshots", column: "stocks_value", ddl: "stocks_value REAL" },
   {
     table: "networth_snapshots",

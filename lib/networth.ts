@@ -95,7 +95,9 @@ export function computeNetWorth(): NetWorthNow {
   ).t;
 
   const holdings = db
-    .prepare("SELECT ticker, shares, cost_basis, is_cash_equivalent FROM holdings")
+    .prepare(
+      "SELECT ticker, shares, cost_basis, is_cash_equivalent FROM holdings WHERE deleted_at IS NULL"
+    )
     .all() as {
     ticker: string;
     shares: number;
@@ -204,7 +206,9 @@ export function weeklyDelta(): number | null {
 export async function netWorthSnapshotJob(): Promise<void> {
   const db = getDb();
   const hasAccounts = db.prepare("SELECT 1 FROM accounts LIMIT 1").get();
-  const hasHoldings = db.prepare("SELECT 1 FROM holdings LIMIT 1").get();
+  const hasHoldings = db
+    .prepare("SELECT 1 FROM holdings WHERE deleted_at IS NULL LIMIT 1")
+    .get();
   if (!hasAccounts && !hasHoldings) {
     console.log("[networth] nothing to snapshot (no accounts or holdings)");
     return;
