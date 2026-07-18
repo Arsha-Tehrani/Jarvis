@@ -79,7 +79,9 @@ export async function runDividendScan(
   const result: DividendScanResult = { inserted: [], promoted: 0, failed: [] };
 
   const tickers = (
-    db.prepare("SELECT DISTINCT UPPER(ticker) AS ticker FROM holdings").all() as {
+    db
+      .prepare("SELECT DISTINCT UPPER(ticker) AS ticker FROM holdings WHERE deleted_at IS NULL")
+      .all() as {
       ticker: string;
     }[]
   ).map((r) => r.ticker);
@@ -109,7 +111,9 @@ export async function runDividendScan(
       // brokerage feed, only periodic statement imports. Known limitation,
       // stated in docs/dividend-automation.md.
       const holding = db
-        .prepare("SELECT shares FROM holdings WHERE UPPER(ticker) = ? LIMIT 1")
+        .prepare(
+          "SELECT shares FROM holdings WHERE UPPER(ticker) = ? AND deleted_at IS NULL LIMIT 1"
+        )
         .get(ticker) as { shares: number } | undefined;
 
       db.prepare(

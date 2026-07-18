@@ -60,7 +60,9 @@ export async function computeContributionData(
 ): Promise<ContributionData> {
   const db = getDb();
   const holdings = db
-    .prepare("SELECT ticker, shares, cost_basis FROM holdings ORDER BY ticker")
+    .prepare(
+      "SELECT ticker, shares, cost_basis FROM holdings WHERE deleted_at IS NULL ORDER BY ticker"
+    )
     .all() as { ticker: string; shares: number; cost_basis: number }[];
 
   // Current valuation: same path /api/stocks uses. Quote failures fall back to

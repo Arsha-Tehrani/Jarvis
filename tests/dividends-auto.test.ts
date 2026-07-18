@@ -23,7 +23,8 @@ function freshDb(): Database.Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticker TEXT NOT NULL,
       shares REAL NOT NULL,
-      cost_basis REAL
+      cost_basis REAL,
+      deleted_at TEXT
     );
     CREATE TABLE dividend_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

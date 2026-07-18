@@ -129,6 +129,29 @@ export const SYNC_TABLES: SyncTableSpec[] = [
     naturalKey: ["title", "kind"],
     naturalKeyNoCase: true,
   },
+  {
+    table: "watchlist",
+    columns: ["ticker"],
+    naturalKey: ["ticker"],
+    naturalKeyNoCase: true,
+  },
+  {
+    // Live per-ticker positions (user-confirmed 2026-07-18). A brokerage
+    // positions import is "tombstone the missing, upsert the named" in one
+    // transaction (lib/finance/holdings-import-core.ts), so a sold position's
+    // tombstone propagates instead of lingering on other devices.
+    // import_batch_id groups every row one import wrote — debugging aid
+    // ("why did this position disappear"), not part of conflict resolution.
+    // KNOWN, ACCEPTED LIMITATION: if two devices import different brokerage
+    // statements before syncing with each other, resolution is per-row
+    // last-write-wins, so the merged holdings set may match neither
+    // statement exactly. Rare in practice (one device is usually "the"
+    // import machine); revisit with a versioned-snapshot design if it bites.
+    table: "holdings",
+    columns: ["ticker", "shares", "cost_basis", "is_cash_equivalent", "import_batch_id"],
+    naturalKey: ["ticker"],
+    naturalKeyNoCase: true,
+  },
 ];
 
 // Delete propagation: every synced table carries a `deleted_at` tombstone

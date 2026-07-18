@@ -540,7 +540,11 @@ export async function previewReanalyze(statementId: number): Promise<ReanalyzePr
   const current: ReanalyzeCounts = {
     count:
       stmt.kind === "brokerage"
-        ? (db.prepare("SELECT COUNT(*) AS n FROM holdings").get() as { n: number }).n
+        ? (
+            db.prepare("SELECT COUNT(*) AS n FROM holdings WHERE deleted_at IS NULL").get() as {
+              n: number;
+            }
+          ).n
         : (
             db.prepare("SELECT COUNT(*) AS n FROM transactions WHERE statement_id = ?").get(statementId) as {
               n: number;
