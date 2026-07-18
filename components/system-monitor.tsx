@@ -12,6 +12,7 @@ type SystemStats = {
   cpu: { load: number; cores: number };
   memory: { used: number; total: number };
   disk: { used: number; size: number; mount: string } | null;
+  gpu: { model: string; load: number | null; memoryUsed: number | null; memoryTotal: number | null } | null;
 };
 
 const POLL_MS = 8000;
@@ -106,6 +107,25 @@ export function SystemMonitor() {
                 detail={`${gb(stats.disk.used)} / ${gb(stats.disk.size)} GB`}
                 percent={(stats.disk.used / stats.disk.size) * 100}
               />
+            )}
+            {stats.gpu && stats.gpu.load != null && (
+              <UsageBar
+                label="GPU"
+                detail={`${stats.gpu.load}% · ${stats.gpu.model}`}
+                percent={stats.gpu.load}
+              />
+            )}
+            {stats.gpu && stats.gpu.load == null && stats.gpu.memoryUsed != null && stats.gpu.memoryTotal != null && (
+              <UsageBar
+                label="GPU Memory"
+                detail={`${gb(stats.gpu.memoryUsed)} / ${gb(stats.gpu.memoryTotal)} GB · ${stats.gpu.model}`}
+                percent={(stats.gpu.memoryUsed / stats.gpu.memoryTotal) * 100}
+              />
+            )}
+            {stats.gpu && stats.gpu.load == null && stats.gpu.memoryUsed == null && (
+              <p className="text-xs text-muted-foreground">
+                GPU: {stats.gpu.model} · live usage unavailable on this platform
+              </p>
             )}
           </>
         )}

@@ -63,6 +63,8 @@
   --color-loss-bg: var(--loss-bg);
   --color-warn: var(--warn);
   --color-warn-bg: var(--warn-bg);
+  --color-cash-equivalent: var(--cash-equivalent);
+  --color-cash-equivalent-bg: var(--cash-equivalent-bg);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);

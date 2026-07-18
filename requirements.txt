@@ -1,0 +1,31 @@
+# Jarvis — top-level requirements manifest.
+#
+# The core app (this repo root) is a Next.js/TypeScript project, so its
+# dependencies are npm-managed via package.json / package-lock.json, not
+# pip. This file exists as a single first-stop checklist for a from-scratch
+# install; it does not `pip install` anything for the main app.
+#
+# Required to run the app at all:
+#   - Node.js 20 LTS or newer (npm ships with it)
+#   - Run `npm install` in this folder (see README.md "Quickstart")
+#
+# Required for the agent (natural-language tool-calling):
+#   - Ollama, running locally at http://localhost:11434 (default), OR
+#     ANTHROPIC_API_KEY set in .env.local to use Anthropic instead
+#   - See docs/MODELS.md for which Ollama models to pull per job
+#     (chat/tool-calling, vision, embeddings)
+#
+# Optional Python sidecars (macro logging, textbook RAG, voice transcription):
+#   These are separate services with their own isolated virtualenvs — do
+#   NOT install their dependencies here or in the root project. Either use
+#   the /status page's "Set up" button (creates the venv and installs for
+#   you), or install manually per sidecar:
+#     sidecars/macro/requirements.txt
+#     sidecars/textbook-rag/requirements.txt
+#       (+ optional sidecars/textbook-rag/requirements-marker.txt)
+#     sidecars/voice/requirements.txt
+#   Each requires Python 3.11+ (3.13 is what they're pinned/tested against).
+#
+# Everything else (API keys, OAuth, vault path, etc.) is optional and
+# configured via .env.local — see README.md "Configuration" and
+# .env.example for the full list.
