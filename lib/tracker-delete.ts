@@ -1,4 +1,7 @@
 import type Database from "better-sqlite3";
+// Relative with explicit .ts (not "@/…"): node --test loads this module
+// directly and needs a resolvable runtime specifier.
+import { tombstone } from "./sync/tombstone.ts";
 
 // Tracker deletion — db passed in (same pattern as trackers-migrate.ts) so
 // node --test can exercise the branching against an in-memory DB.
@@ -20,17 +23,23 @@ export type DeleteTrackerResult =
 
 export function deleteTracker(db: Database.Database, id: number): DeleteTrackerResult {
   const row = db
-    .prepare("SELECT id, name, source FROM habits WHERE id = ?")
+    .prepare("SELECT id, name, source FROM habits WHERE id = ? AND deleted_at IS NULL")
     .get(id) as { id: number; name: string; source: string | null } | undefined;
   if (!row) throw new Error("Tracker not found");
 
   if (row.source == null) {
+    // INTENTIONAL HARD DELETE — the documented exception to the tombstone
+    // rule (lib/sync/tombstone.ts). A manual habit IS its data: deleting it
+    // cascades its logs, and the confirm dialog promises exactly that —
+    // real, irreversible loss. Folding this into the tombstone path would
+    // silently make it recoverable, which is a behavior change, not
+    // plumbing. Do not "fix" this in a refactor.
     // Explicit cascade inside a transaction (the habit_logs FK also declares
     // ON DELETE CASCADE, but being explicit keeps the behavior visible and
     // independent of the connection's foreign_keys pragma).
     return db.transaction((): DeleteTrackerResult => {
       const { n } = db
-        .prepare("SELECT COUNT(*) AS n FROM habit_logs WHERE habit_id = ?")
+        .prepare("SELECT COUNT(*) AS n FROM habit_logs WHERE habit_id = ? AND deleted_at IS NULL")
         .get(row.id) as { n: number };
       db.prepare("DELETE FROM habit_logs WHERE habit_id = ?").run(row.id);
       db.prepare("DELETE FROM habits WHERE id = ?").run(row.id);
@@ -38,7 +47,9 @@ export function deleteTracker(db: Database.Database, id: number): DeleteTrackerR
     })();
   }
 
-  db.prepare("DELETE FROM habits WHERE id = ?").run(row.id);
+  // Sourced tracker: only config wraps the feed — tombstone so the removal
+  // propagates to other devices (the feed itself is untouched, as before).
+  tombstone(db, "habits", "id = ?", [row.id]);
   return { kind: "sourced", name: row.name, source: row.source };
 }
 
@@ -50,10 +61,16 @@ export function findHabitByName(
   name: string
 ): { id: number; name: string; source: string | null } {
   const habit = db
-    .prepare("SELECT id, name, source FROM habits WHERE LOWER(name) = LOWER(?)")
+    .prepare(
+      "SELECT id, name, source FROM habits WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL"
+    )
     .get(name.trim()) as { id: number; name: string; source: string | null } | undefined;
   if (!habit) {
-    const names = (db.prepare("SELECT name FROM habits ORDER BY name").all() as { name: string }[])
+    const names = (
+      db.prepare("SELECT name FROM habits WHERE deleted_at IS NULL ORDER BY name").all() as {
+        name: string;
+      }[]
+    )
       .map((r) => r.name)
       .join(", ");
     throw new Error(

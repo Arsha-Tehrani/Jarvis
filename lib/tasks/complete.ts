@@ -19,7 +19,7 @@ export function completeTaskCore(
   nowIso: () => string = () => new Date().toISOString()
 ): CompleteOutcome {
   const row = db
-    .prepare(`SELECT id, title, completed_at FROM tasks WHERE id = ?`)
+    .prepare(`SELECT id, title, completed_at FROM tasks WHERE id = ? AND deleted_at IS NULL`)
     .get(taskId) as { id: number; title: string; completed_at: string | null } | undefined;
   if (!row) return { outcome: "not-found" };
   if (row.completed_at) return { outcome: "already-done", title: row.title };
@@ -37,6 +37,7 @@ export function stillDueToday(db: DbLike, todayIso: string): string[] {
     .prepare(
       `SELECT title FROM tasks
        WHERE status = 'open' AND due_at IS NOT NULL AND substr(due_at, 1, 10) <= ?
+         AND deleted_at IS NULL
        ORDER BY due_at ASC`
     )
     .all(todayIso) as Array<{ title: string }>;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { queueSyncPush } from "@/lib/sync/client";
+import { tombstone, undelete } from "@/lib/sync/tombstone";
 import { checkTrackerDuplicate, listTrackers } from "@/lib/trackers";
 import { deleteTracker } from "@/lib/tracker-delete";
 
@@ -52,32 +53,51 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ suggestion: dup }, { status: 200 });
       }
     }
-    try {
+    // A live same-name tracker is a real conflict; a tombstoned one is
+    // revived (same natural key — recreating it after a synced delete must
+    // not duplicate).
+    const sameName = db
+      .prepare("SELECT id, deleted_at FROM habits WHERE name = ?")
+      .get(body.name) as { id: number; deleted_at: string | null } | undefined;
+    if (sameName && sameName.deleted_at === null) {
+      return NextResponse.json(
+        { error: `A tracker named "${body.name}" already exists` },
+        { status: 409 }
+      );
+    }
+    if (sameName) {
+      undelete(db, "habits", "id = ?", [sameName.id]);
+      db.prepare("UPDATE habits SET cadence = ?, goal = ? WHERE id = ?").run(
+        body.cadence ?? "daily",
+        body.goal ?? 1,
+        sameName.id
+      );
+    } else {
       db.prepare("INSERT INTO habits (name, cadence, goal) VALUES (?, ?, ?)").run(
         body.name,
         body.cadence ?? "daily",
         body.goal ?? 1
-      );
-    } catch {
-      return NextResponse.json(
-        { error: `A tracker named "${body.name}" already exists` },
-        { status: 409 }
       );
     }
     queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
     return NextResponse.json({ trackers: listTrackers() }, { status: 201 });
   }
 
-  const exists = db.prepare("SELECT 1 FROM habits WHERE id = ?").get(body.habitId);
+  const exists = db
+    .prepare("SELECT 1 FROM habits WHERE id = ? AND deleted_at IS NULL")
+    .get(body.habitId);
   if (!exists) return NextResponse.json({ error: "Tracker not found" }, { status: 404 });
   const date = body.date ?? new Date().toISOString().slice(0, 10);
   if (body.action === "log") {
-    db.prepare("INSERT OR IGNORE INTO habit_logs (habit_id, date) VALUES (?, ?)").run(
-      body.habitId,
-      date
-    );
+    // Revive a tombstoned same-day row instead of inserting a duplicate;
+    // the WHERE keeps a re-log of an already-live day a true no-op.
+    db.prepare(
+      `INSERT INTO habit_logs (habit_id, date) VALUES (?, ?)
+       ON CONFLICT(habit_id, date) DO UPDATE SET deleted_at = NULL
+       WHERE habit_logs.deleted_at IS NOT NULL`
+    ).run(body.habitId, date);
   } else {
-    db.prepare("DELETE FROM habit_logs WHERE habit_id = ? AND date = ?").run(body.habitId, date);
+    tombstone(db, "habit_logs", "habit_id = ? AND date = ?", [body.habitId, date]);
   }
   queueSyncPush();
   return NextResponse.json({ trackers: listTrackers() });

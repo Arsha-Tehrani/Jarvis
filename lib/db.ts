@@ -515,7 +515,8 @@ function migrateTaskPriorities(db: Database.Database): void {
       sync_id TEXT,
       updated_at TEXT,
       origin_device_id TEXT,
-      sync_dirty INTEGER NOT NULL DEFAULT 1
+      sync_dirty INTEGER NOT NULL DEFAULT 1,
+      deleted_at TEXT
     )`);
     // Only copy columns that exist on the source table — an old DB that
     // never ran the column migrations above still rebuilds cleanly.
@@ -526,7 +527,7 @@ function migrateTaskPriorities(db: Database.Database): void {
       "id", "title", "due_at", "status", "source", "created_at",
       "description", "gcal_event_id", "completed_at",
       "llm_rank", "llm_rank_source", "llm_suggested_priority", "llm_rationale",
-      "sync_id", "updated_at", "origin_device_id", "sync_dirty",
+      "sync_id", "updated_at", "origin_device_id", "sync_dirty", "deleted_at",
     ].filter((c) => srcCols.has(c));
     db.exec(
       `INSERT INTO tasks_new (${copyCols.join(", ")}, priority)

@@ -51,12 +51,18 @@ export function setTrackerTarget(db: Database.Database, kind: string, target: nu
     | { id: number }
     | undefined;
   if (existing) {
-    db.prepare("UPDATE habits SET target = ? WHERE id = ?").run(target, existing.id);
+    // Setting a goal on a tombstoned sourced tracker revives it — the user
+    // is clearly asking for the tracker back.
+    db.prepare("UPDATE habits SET target = ?, deleted_at = NULL WHERE id = ?").run(
+      target,
+      existing.id
+    );
     return;
   }
   db.prepare(
     `INSERT INTO habits (name, cadence, goal, source, target) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(name) DO UPDATE SET source = excluded.source, target = excluded.target, cadence = excluded.cadence`
+     ON CONFLICT(name) DO UPDATE SET source = excluded.source, target = excluded.target,
+       cadence = excluded.cadence, deleted_at = NULL`
   ).run(spec.name, spec.cadence, Math.max(1, Math.round(target)), spec.source, target);
 }
 
@@ -83,6 +89,8 @@ export function migrateGoalsToTrackers(db: Database.Database): void {
     if (!spec) continue;
 
     // Idempotent: already migrated once a tracker with this source exists.
+    // Deliberately NOT filtered on deleted_at — a tombstoned sourced tracker
+    // still counts as "migrated once"; re-running must not resurrect it.
     const already = db.prepare("SELECT id FROM habits WHERE source = ?").get(spec.source);
     if (already) continue;
 

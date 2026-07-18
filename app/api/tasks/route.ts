@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { queueSyncPush } from "@/lib/sync/client";
+import { tombstone } from "@/lib/sync/tombstone";
 import {
   reopenTaskEvent,
   syncTaskWrite,
@@ -53,6 +54,7 @@ export async function GET() {
               gcal_event_id, completed_at, llm_rank, llm_rank_source,
               llm_suggested_priority, llm_rationale
        FROM tasks
+       WHERE deleted_at IS NULL
        ORDER BY status ASC, due_at IS NULL, due_at ASC, created_at DESC`
     )
     .all();
@@ -106,7 +108,7 @@ export async function PATCH(req: NextRequest) {
   }
   const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
   const info = getDb()
-    .prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`)
+    .prepare(`UPDATE tasks SET ${setClause} WHERE id = ? AND deleted_at IS NULL`)
     .run(...entries.map(([, v]) => v as string | null), id);
   if (info.changes === 0) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
@@ -134,14 +136,17 @@ export async function DELETE(req: NextRequest) {
   }
   // Read the row before it goes so the linked calendar event can be removed
   // (404 from Google is fine — the event may already be hand-deleted).
-  const existing = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
-    | TaskRow
-    | undefined;
+  const existing = getDb()
+    .prepare("SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL")
+    .get(id) as TaskRow | undefined;
   if (!existing) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
   await syncTaskWrite("delete", existing);
-  getDb().prepare("DELETE FROM tasks WHERE id = ?").run(id);
+  // Tombstone, not DELETE: the deletion propagates to other devices through
+  // sync like any other write (lib/sync/tombstone.ts).
+  tombstone(getDb(), "tasks", "id = ?", [id]);
   reRank(); // remaining tasks close the gap
+  queueSyncPush();
   return NextResponse.json({ ok: true });
 }

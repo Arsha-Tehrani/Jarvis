@@ -68,7 +68,7 @@ test("the allowlist itself contains no raw finance/mail/token tables", () => {
 // ---- fixtures ---------------------------------------------------------------
 
 const SYNC_COLS = `sync_id TEXT, updated_at TEXT, origin_device_id TEXT,
-  sync_dirty INTEGER NOT NULL DEFAULT 1`;
+  sync_dirty INTEGER NOT NULL DEFAULT 1, deleted_at TEXT`;
 
 function freshDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");

@@ -95,6 +95,17 @@ export const SYNC_TABLES: SyncTableSpec[] = [
   },
 ];
 
+// Delete propagation: every synced table carries a `deleted_at` tombstone
+// column, and it syncs like any other field — a delete is just "the newest
+// write happened to be a delete", stamped and conflict-resolved by the same
+// host-clock `updated_at` as ordinary edits. Appended here (not per-entry)
+// so a future allowlist addition can't forget it. Tombstoned rows are kept
+// forever: purging one before every device has pulled it would let a stale
+// device resurrect the row. The ONE exception to tombstoning is the
+// manual-habit cascade delete (lib/tracker-delete.ts) — documented,
+// intentionally irreversible, stays a hard delete.
+for (const spec of SYNC_TABLES) spec.columns.push("deleted_at");
+
 export const SYNC_TABLE_NAMES = SYNC_TABLES.map((t) => t.table) as [string, ...string[]];
 
 export function getSyncSpec(table: string): SyncTableSpec | undefined {
@@ -139,12 +150,15 @@ export type PullRow = z.infer<typeof pullRowSchema>;
 //                    resolution keys off host stamps exclusively)
 //   origin_device_id which device created the row
 //   sync_dirty       1 = has local changes the host hasn't confirmed
+//   deleted_at       tombstone: non-null = deleted (propagates like an edit);
+//                    NULL backfill means nothing is retroactively deleted
 export function syncColumnMigrations(): Array<{ table: string; column: string; ddl: string }> {
   return SYNC_TABLES.flatMap(({ table }) => [
     { table, column: "sync_id", ddl: "sync_id TEXT" },
     { table, column: "updated_at", ddl: "updated_at TEXT" },
     { table, column: "origin_device_id", ddl: "origin_device_id TEXT" },
     { table, column: "sync_dirty", ddl: "sync_dirty INTEGER NOT NULL DEFAULT 1" },
+    { table, column: "deleted_at", ddl: "deleted_at TEXT" },
   ]);
 }
 

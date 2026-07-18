@@ -49,18 +49,20 @@ export default function TodayPage() {
 
   // Tasks
   const openTasks = (
-    db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'open'").get() as { n: number }
+    db
+      .prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND deleted_at IS NULL")
+      .get() as { n: number }
   ).n;
   const dueToday = (
     db
       .prepare(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND substr(due_at,1,10) <= ?"
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND substr(due_at,1,10) <= ? AND deleted_at IS NULL"
       )
       .get(today) as { n: number }
   ).n;
   const topTask = db
     .prepare(
-      `SELECT title FROM tasks WHERE status = 'open'
+      `SELECT title FROM tasks WHERE status = 'open' AND deleted_at IS NULL
        ORDER BY due_at IS NULL, due_at ASC,
          CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END
        LIMIT 1`
@@ -81,7 +83,7 @@ export default function TodayPage() {
   // Gym: rolling 7 days vs weekly goal
   const gymWeek = (
     db
-      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ?")
+      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ? AND deleted_at IS NULL")
       .get(isoDaysAgo(7)) as { n: number }
   ).n;
   const gymGoal =
@@ -90,18 +92,20 @@ export default function TodayPage() {
         | { target: number }
         | undefined
     )?.target ?? 4;
-  const wentToday = !!db.prepare("SELECT 1 FROM gym_logs WHERE date = ?").get(today);
+  const wentToday = !!db
+    .prepare("SELECT 1 FROM gym_logs WHERE date = ? AND deleted_at IS NULL")
+    .get(today);
 
   // LeetCode: latest + trend
   const leetcode = db
     .prepare(
-      "SELECT date, total_solved, streak FROM leetcode_stats ORDER BY date DESC LIMIT 1"
+      "SELECT date, total_solved, streak FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 1"
     )
     .get() as { date: string; total_solved: number; streak: number } | undefined;
   const lcTrend = (
     db
       .prepare(
-        "SELECT date, total_solved FROM leetcode_stats ORDER BY date DESC LIMIT 14"
+        "SELECT date, total_solved FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 14"
       )
       .all() as { date: string; total_solved: number }[]
   )

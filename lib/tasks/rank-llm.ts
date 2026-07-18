@@ -31,7 +31,8 @@ export async function refreshLlmRanks(): Promise<void> {
   const db = getDb();
   const open = db
     .prepare(
-      `SELECT id, title, description, due_at, priority FROM tasks WHERE status = 'open'`
+      `SELECT id, title, description, due_at, priority FROM tasks
+       WHERE status = 'open' AND deleted_at IS NULL`
     )
     .all() as OpenTask[];
   if (open.length === 0) return;

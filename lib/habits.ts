@@ -27,7 +27,9 @@ export function listHabits(): HabitWithStats[] {
   const habits = db
     // Manual habits only (source IS NULL): sourced trackers (former Goals)
     // have no habit_logs and render as rings on the Trackers page.
-    .prepare("SELECT id, name, cadence, goal FROM habits WHERE source IS NULL ORDER BY name")
+    .prepare(
+      "SELECT id, name, cadence, goal FROM habits WHERE source IS NULL AND deleted_at IS NULL ORDER BY name"
+    )
     .all() as Habit[];
   const today = new Date().toISOString().slice(0, 10);
   const since = isoDaysAgo(370);
@@ -36,7 +38,7 @@ export function listHabits(): HabitWithStats[] {
     const dates = (
       db
         .prepare(
-          "SELECT date FROM habit_logs WHERE habit_id = ? AND date >= ? ORDER BY date DESC"
+          "SELECT date FROM habit_logs WHERE habit_id = ? AND date >= ? AND deleted_at IS NULL ORDER BY date DESC"
         )
         .all(habit.id, since) as { date: string }[]
     ).map((r) => r.date);
@@ -63,9 +65,12 @@ export function logHabitByName(name: string, date?: string): string {
   // fail-with-known-list behavior for log_habit and delete_habit.
   const habit = findHabitByName(db, name);
   const day = date ?? new Date().toISOString().slice(0, 10);
-  db.prepare("INSERT OR IGNORE INTO habit_logs (habit_id, date) VALUES (?, ?)").run(
-    habit.id,
-    day
-  );
+  // Revive a tombstoned same-day row rather than duplicating it; a re-log of
+  // an already-live day stays a no-op (same pattern as /api/habits).
+  db.prepare(
+    `INSERT INTO habit_logs (habit_id, date) VALUES (?, ?)
+     ON CONFLICT(habit_id, date) DO UPDATE SET deleted_at = NULL
+     WHERE habit_logs.deleted_at IS NOT NULL`
+  ).run(habit.id, day);
   return `Logged "${habit.name}" for ${day}.`;
 }

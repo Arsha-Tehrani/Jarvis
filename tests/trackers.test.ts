@@ -19,7 +19,8 @@ function freshDb(): Database.Database {
       cadence TEXT NOT NULL DEFAULT 'daily',
       goal INTEGER NOT NULL DEFAULT 1,
       source TEXT,
-      target REAL
+      target REAL,
+      deleted_at TEXT
     );
     CREATE TABLE goals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
