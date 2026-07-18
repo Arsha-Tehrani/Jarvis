@@ -11,7 +11,7 @@
 
 // The two analysis windows. Lives here (the pure, client-safe module) so the
 // React card can import it without dragging in the DB/network glue.
-export const CONTRIBUTION_PERIODS = ["1w", "1m"] as const;
+export const CONTRIBUTION_PERIODS = ["1w", "2w", "1m"] as const;
 export type ContributionPeriod = (typeof CONTRIBUTION_PERIODS)[number];
 
 // A holding whose cumulative |contribution| helps cross this share of the
@@ -148,6 +148,7 @@ function concentrationSummary(
 
 const PERIOD_WORDS: Record<ContributionPeriod, string> = {
   "1w": "the past week",
+  "2w": "the past two weeks",
   "1m": "the past month",
 };
 

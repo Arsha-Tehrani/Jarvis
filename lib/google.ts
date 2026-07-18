@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { resolveGoogleEventTimes } from "@/lib/calendar-grid";
 import { loggedFetch } from "@/lib/network-log";
 
 // Google Calendar via OAuth (Testing mode: refresh tokens expire ~weekly —
@@ -209,10 +210,10 @@ export async function createCalendarEvent({
   notes?: string;
 }): Promise<string> {
   const token = await getGoogleAccessToken();
-  const startMs = Date.parse(start);
-  if (Number.isNaN(startMs)) throw new Error(`Unparseable start time: "${start}"`);
-  const endIso = end ?? new Date(startMs + 60 * 60 * 1000).toISOString();
-  if (Number.isNaN(Date.parse(endIso))) throw new Error(`Unparseable end time: "${end}"`);
+  // Pure: throws a clear error on an unparseable start/end (never silently
+  // misdates), and picks all-day ({date}) vs timed ({dateTime}) the same way
+  // the rest of the calendar code detects all-day (a plain YYYY-MM-DD).
+  const times = resolveGoogleEventTimes(start, end);
 
   const res = await loggedFetch(
     "https://www.googleapis.com/calendar/v3/calendars/primary/events",
@@ -225,8 +226,7 @@ export async function createCalendarEvent({
       body: JSON.stringify({
         summary: title,
         description: notes,
-        start: { dateTime: new Date(startMs).toISOString() },
-        end: { dateTime: new Date(endIso).toISOString() },
+        ...times,
         reminders: { useDefault: true },
       }),
     },

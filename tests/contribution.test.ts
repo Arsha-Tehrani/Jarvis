@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   CONCENTRATION_THRESHOLD,
+  CONTRIBUTION_PERIODS,
   closeOnOrBefore,
   formatContributionAnswer,
   computeContribution,
@@ -207,4 +208,40 @@ test("formatContributionAnswer: no-data-only portfolio degrades to a clear messa
   const result = computeContribution([h("NEW", 5, 500)], {}); // no historical price
   const answer = formatContributionAnswer({ ...result, period: "1m" });
   assert.match(answer, /No price history is available/);
+});
+
+// Round 2 — 2W sits between 1W and 1M. It's the same computeContribution
+// engine with a different lookback (chosen by the DB/network glue, not
+// here) — no special-cased logic, so these cases mostly just confirm the
+// period plumbing (labels, ordering, formatter) rather than new math.
+
+test("CONTRIBUTION_PERIODS: 2w is positioned between 1w and 1m", () => {
+  assert.deepEqual(CONTRIBUTION_PERIODS, ["1w", "2w", "1m"]);
+});
+
+test("2w uses the identical cost-basis-fallback and no-data handling as 1w/1m", () => {
+  const holdings = [
+    h("AAPL", 10, 1200),
+    h("SPAXX", 300, 300), // cost-basis fallback, no live quote
+    h("NEWCO", 50, 5000), // no historical price for the period
+  ];
+  const hist: HistoricalPrices = { AAPL: 100, SPAXX: 1 }; // NEWCO absent
+  const r = computeContribution(holdings, hist);
+  const spaxx = r.holdings.find((x) => x.ticker === "SPAXX")!;
+  const newco = r.holdings.find((x) => x.ticker === "NEWCO")!;
+  assert.equal(spaxx.hasData, true);
+  assert.equal(spaxx.dollarContribution, 0);
+  assert.equal(newco.hasData, false);
+  assert.equal(newco.dollarContribution, null);
+  // Tagging the result as period '2w' (as the API/tool does) changes nothing
+  // about the computed math — same guarantee 1w/1m already have.
+  const tagged = { ...r, period: "2w" as const };
+  assert.equal(tagged.period, "2w");
+  assert.equal(tagged.holdings.find((x) => x.ticker === "AAPL")!.dollarContribution, 200);
+});
+
+test("formatContributionAnswer: 2w uses its own 'the past two weeks' phrasing", () => {
+  const result = computeContribution([h("AAPL", 10, 1200)], { AAPL: 100 });
+  const answer = formatContributionAnswer({ ...result, period: "2w" });
+  assert.match(answer, /the past two weeks/);
 });

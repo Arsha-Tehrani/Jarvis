@@ -29,6 +29,13 @@
   --warn: #8A5A12;
   --warn-bg: #F3EAD4;
 
+  /* Cash-equivalent (investment-account cash/money-market, distinct from
+     equity holdings on the Stocks chart) — a cool teal, deliberately not a
+     shade of --gain/--ink-soft (would read as one washed-out series) and
+     not red/amber (already --loss/--warn, which mean something else). */
+  --cash-equivalent: #2E6B75;
+  --cash-equivalent-bg: #E4EEF0;
+
   /* Heatmap ramp (contribution grids) — --accent is forbidden here */
   --heat-1: #DCD5C2;
   --heat-2: #B5A98A;

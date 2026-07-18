@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -20,6 +21,7 @@ import {
   localDateKey,
   monthGrid,
   taskDayKey,
+  taskMirrorEventIds,
   weekOf,
 } from "@/lib/calendar-grid";
 
@@ -40,6 +42,7 @@ type Task = {
   priority: Priority;
   status: "open" | "done";
   source: string;
+  gcal_event_id: string | null;
 };
 
 const CALLBACK_MESSAGES: Record<string, string> = {
@@ -77,6 +80,15 @@ export function CalendarView() {
   const [cursor, setCursor] = useState(() => new Date());
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
+  // Quick-add: Task and Event are two distinct actions reachable from the
+  // same day-cell "+"/detail panel, never navigating away.
+  //  - Task: a local `tasks` row, never synced to Google (unchanged from
+  //    Round 1) — kept exactly as it was.
+  //  - Event: a real Google Calendar event, written through the exact same
+  //    createCalendarEvent() the agent's create_calendar_event/set_reminder
+  //    tools use, just triggered from this form instead of the LLM.
+  const [addMode, setAddMode] = useState<"task" | "event">("task");
+
   // Quick-add-task form (local tasks, never a Google event — Tasks stay a
   // separate local list; Google remains the calendar's single source of truth).
   const [addTitle, setAddTitle] = useState("");
@@ -85,6 +97,17 @@ export function CalendarView() {
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
+
+  // Quick-add-event form (real Google Calendar event via POST /api/calendar/events).
+  const [eventTitle, setEventTitle] = useState("");
+  const [eventDate, setEventDate] = useState("");
+  const [eventAllDay, setEventAllDay] = useState(false);
+  const [eventStartTime, setEventStartTime] = useState("09:00");
+  const [eventEndTime, setEventEndTime] = useState("");
+  const [eventDescription, setEventDescription] = useState("");
+  const [eventError, setEventError] = useState<string | null>(null);
+  const [eventBusy, setEventBusy] = useState(false);
+  const eventTitleRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     // Google and tasks load independently — a Google failure never hides
@@ -140,26 +163,6 @@ export function CalendarView() {
     }
   }
 
-  // day key → that day's events, timed ones sorted by start, all-day first.
-  const eventsByDay = useMemo(() => {
-    const map = new Map<string, CalEvent[]>();
-    for (const e of events) {
-      for (const key of eventDayKeys(e.start, e.end)) {
-        const list = map.get(key) ?? [];
-        list.push(e);
-        map.set(key, list);
-      }
-    }
-    for (const list of map.values()) {
-      list.sort((a, b) => {
-        const aAll = isAllDay(a.start) ? 0 : 1;
-        const bAll = isAllDay(b.start) ? 0 : 1;
-        return aAll - bAll || a.start.localeCompare(b.start);
-      });
-    }
-    return map;
-  }, [events]);
-
   // day key → open tasks due that day (done tasks stay off the grid). Uses the
   // pure taskDayKey so date-only and full-timestamp due dates land on the
   // right cell without a UTC shift.
@@ -175,6 +178,35 @@ export function CalendarView() {
     }
     return map;
   }, [tasks]);
+
+  // See lib/calendar-grid.ts's taskMirrorEventIds doc comment: every task
+  // write already mirrors a real "Task: {title}" Google event, which would
+  // otherwise render a second, plain entry here alongside the color-coded
+  // task chip below. Filtering by the already-fetched gcal_event_id means no
+  // second data fetch — a genuine Google event (no matching task) is
+  // completely unaffected.
+  const mirrorIds = useMemo(() => taskMirrorEventIds(tasks), [tasks]);
+
+  // day key → that day's events, timed ones sorted by start, all-day first.
+  const eventsByDay = useMemo(() => {
+    const map = new Map<string, CalEvent[]>();
+    for (const e of events) {
+      if (mirrorIds.has(e.google_event_id)) continue;
+      for (const key of eventDayKeys(e.start, e.end)) {
+        const list = map.get(key) ?? [];
+        list.push(e);
+        map.set(key, list);
+      }
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => {
+        const aAll = isAllDay(a.start) ? 0 : 1;
+        const bAll = isAllDay(b.start) ? 0 : 1;
+        return aAll - bAll || a.start.localeCompare(b.start);
+      });
+    }
+    return map;
+  }, [events, mirrorIds]);
 
   const days = useMemo(
     () =>
@@ -206,13 +238,22 @@ export function CalendarView() {
     setSelectedDay(key);
     setAddDue(key);
     setAddError(null);
+    setEventDate(key);
+    setEventError(null);
   }
 
-  // The + on a day cell: select that day and jump straight to the add-task
-  // title field so the form is one keystroke away.
+  // The + on a day cell: select that day, default to the Task tab (unchanged
+  // quick-add behavior from Round 1), and jump straight to the title field.
   function openAdd(key: string) {
     selectDay(key);
+    setAddMode("task");
     requestAnimationFrame(() => titleRef.current?.focus());
+  }
+
+  function openAddEvent(key: string) {
+    selectDay(key);
+    setAddMode("event");
+    requestAnimationFrame(() => eventTitleRef.current?.focus());
   }
 
   async function addTask(e: React.FormEvent) {
@@ -243,6 +284,49 @@ export function CalendarView() {
       setAddError("Could not reach the API.");
     } finally {
       setAddBusy(false);
+    }
+  }
+
+  async function addEvent(e: React.FormEvent) {
+    e.preventDefault();
+    const date = eventDate || selectedDay;
+    if (!eventTitle.trim() || !date) return;
+    if (!eventAllDay && !eventStartTime) return; // a timed event needs a start time
+    setEventBusy(true);
+    setEventError(null);
+    try {
+      const start = eventAllDay ? date : `${date}T${eventStartTime}:00`;
+      const end = !eventAllDay && eventEndTime ? `${date}T${eventEndTime}:00` : undefined;
+      const res = await fetch("/api/calendar/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: eventTitle.trim(),
+          start,
+          end,
+          description: eventDescription.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // Same message the rest of the page's Google actions surface — an
+        // OAuth issue reads "…reconnect from the Calendar tab" verbatim, no
+        // separate reconnect UI to build.
+        setEventError(data.error ?? "Failed to add event");
+        return;
+      }
+      setEventTitle("");
+      setEventEndTime("");
+      setEventDescription("");
+      // The API route's createCalendarEvent() already re-polls Google
+      // server-side (read-back, since Google is the source of truth) — this
+      // just refreshes local state from the now-current calendar_cache,
+      // never an optimistic fake event.
+      await load();
+    } catch {
+      setEventError("Could not reach the API.");
+    } finally {
+      setEventBusy(false);
     }
   }
 
@@ -408,14 +492,26 @@ export function CalendarView() {
                       </span>
                     )}
                   </button>
-                  <button
-                    type="button"
-                    aria-label={`Add task on ${key}`}
-                    onClick={() => openAdd(key)}
-                    className="absolute right-1 top-1 hidden size-5 items-center justify-center rounded-[var(--radius)] border border-line bg-background text-sm leading-none text-muted-foreground hover:bg-accent hover:text-foreground group-hover:flex"
-                  >
-                    +
-                  </button>
+                  <div className="absolute right-1 top-1 hidden gap-0.5 group-hover:flex">
+                    <button
+                      type="button"
+                      aria-label={`Add task on ${key}`}
+                      title="Add task"
+                      onClick={() => openAdd(key)}
+                      className="flex size-5 items-center justify-center rounded-[var(--radius)] border border-line bg-background text-sm leading-none text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Add event on ${key}`}
+                      title="Add event"
+                      onClick={() => openAddEvent(key)}
+                      className="flex size-5 items-center justify-center rounded-[var(--radius)] border border-line bg-background text-[10px] leading-none text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      🗓
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -474,58 +570,176 @@ export function CalendarView() {
               </ul>
             )}
 
-            {/* Quick-add: a local task due this day. Reuses POST /api/tasks
-                (source='calendar'); no new endpoint, no Google write. */}
-            <form onSubmit={addTask} className="flex flex-col gap-2 border-t pt-3">
-              <p className="text-xs font-medium text-muted-foreground">Add a task</p>
-              <div className="flex flex-wrap items-end gap-2">
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor="cal-task-title" className="text-xs">
-                    Title
-                  </Label>
-                  <Input
-                    id="cal-task-title"
-                    ref={titleRef}
-                    value={addTitle}
-                    onChange={(e) => setAddTitle(e.target.value)}
-                    placeholder="Call the bank"
-                    className="w-56"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label className="text-xs">Priority</Label>
-                  <Select
-                    value={addPriority}
-                    onValueChange={(v) => setAddPriority(v as Priority)}
-                  >
-                    <SelectTrigger className="w-28" aria-label="Priority">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="urgent">Urgent</SelectItem>
-                      <SelectItem value="high">High</SelectItem>
-                      <SelectItem value="later">Later</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor="cal-task-due" className="text-xs">
-                    Due
-                  </Label>
-                  <Input
-                    id="cal-task-due"
-                    type="date"
-                    value={addDue}
-                    onChange={(e) => setAddDue(e.target.value)}
-                    className="w-40"
-                  />
-                </div>
-                <Button type="submit" disabled={addBusy || !addTitle.trim()}>
-                  Add task
+            {/* Task and Event are two distinct actions from the same panel —
+                Task stays a local row (source='calendar', never synced to
+                Google); Event is a real Google Calendar event via the same
+                createCalendarEvent() the agent's tools use. */}
+            <div className="flex flex-col gap-3 border-t pt-3">
+              <div className="flex gap-1" role="tablist" aria-label="Add">
+                <Button
+                  type="button"
+                  variant={addMode === "task" ? "secondary" : "ghost"}
+                  size="sm"
+                  role="tab"
+                  aria-selected={addMode === "task"}
+                  onClick={() => setAddMode("task")}
+                >
+                  + Task
+                </Button>
+                <Button
+                  type="button"
+                  variant={addMode === "event" ? "secondary" : "ghost"}
+                  size="sm"
+                  role="tab"
+                  aria-selected={addMode === "event"}
+                  onClick={() => setAddMode("event")}
+                >
+                  + Event
                 </Button>
               </div>
-              {addError && <p className="text-sm text-destructive">{addError}</p>}
-            </form>
+
+              {addMode === "task" ? (
+                <form onSubmit={addTask} className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="cal-task-title" className="text-xs">
+                        Title
+                      </Label>
+                      <Input
+                        id="cal-task-title"
+                        ref={titleRef}
+                        value={addTitle}
+                        onChange={(e) => setAddTitle(e.target.value)}
+                        placeholder="Call the bank"
+                        className="w-56"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <Label className="text-xs">Priority</Label>
+                      <Select
+                        value={addPriority}
+                        onValueChange={(v) => setAddPriority(v as Priority)}
+                      >
+                        <SelectTrigger className="w-28" aria-label="Priority">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="urgent">Urgent</SelectItem>
+                          <SelectItem value="high">High</SelectItem>
+                          <SelectItem value="later">Later</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="cal-task-due" className="text-xs">
+                        Due
+                      </Label>
+                      <Input
+                        id="cal-task-due"
+                        type="date"
+                        value={addDue}
+                        onChange={(e) => setAddDue(e.target.value)}
+                        className="w-40"
+                      />
+                    </div>
+                    <Button type="submit" disabled={addBusy || !addTitle.trim()}>
+                      Add task
+                    </Button>
+                  </div>
+                  {addError && <p className="text-sm text-destructive">{addError}</p>}
+                </form>
+              ) : (
+                <form onSubmit={addEvent} className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="cal-event-title" className="text-xs">
+                        Title
+                      </Label>
+                      <Input
+                        id="cal-event-title"
+                        ref={eventTitleRef}
+                        value={eventTitle}
+                        onChange={(e) => setEventTitle(e.target.value)}
+                        placeholder="Dentist appointment"
+                        className="w-56"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="cal-event-date" className="text-xs">
+                        Date
+                      </Label>
+                      <Input
+                        id="cal-event-date"
+                        type="date"
+                        value={eventDate}
+                        onChange={(e) => setEventDate(e.target.value)}
+                        className="w-40"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5 pb-2">
+                      <Checkbox
+                        id="cal-event-allday"
+                        checked={eventAllDay}
+                        onCheckedChange={(v) => setEventAllDay(v === true)}
+                      />
+                      <Label htmlFor="cal-event-allday" className="text-xs">
+                        All day
+                      </Label>
+                    </div>
+                    {!eventAllDay && (
+                      <>
+                        <div className="flex flex-col gap-1">
+                          <Label htmlFor="cal-event-start" className="text-xs">
+                            Start
+                          </Label>
+                          <Input
+                            id="cal-event-start"
+                            type="time"
+                            value={eventStartTime}
+                            onChange={(e) => setEventStartTime(e.target.value)}
+                            className="w-28"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <Label htmlFor="cal-event-end" className="text-xs">
+                            End
+                          </Label>
+                          <Input
+                            id="cal-event-end"
+                            type="time"
+                            value={eventEndTime}
+                            onChange={(e) => setEventEndTime(e.target.value)}
+                            placeholder="+1h"
+                            className="w-28"
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="cal-event-desc" className="text-xs">
+                        Description
+                      </Label>
+                      <Input
+                        id="cal-event-desc"
+                        value={eventDescription}
+                        onChange={(e) => setEventDescription(e.target.value)}
+                        placeholder="Optional"
+                        className="w-48"
+                      />
+                    </div>
+                    <Button
+                      type="submit"
+                      disabled={
+                        eventBusy || !eventTitle.trim() || (!eventAllDay && !eventStartTime)
+                      }
+                    >
+                      Add event
+                    </Button>
+                  </div>
+                  {eventError && <p className="text-sm text-destructive">{eventError}</p>}
+                </form>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
