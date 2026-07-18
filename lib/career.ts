@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { resolveDateApplied } from "@/lib/career-dates";
+import { undelete } from "@/lib/sync/tombstone";
 
 export const STAGES = [
   "wishlist",
@@ -32,7 +33,7 @@ const ACTIVE_STAGES = ["wishlist", "applied", "screening", "interview", "offer"]
 export function listApplications(): Application[] {
   return getDb()
     .prepare(
-      `SELECT * FROM applications
+      `SELECT * FROM applications WHERE deleted_at IS NULL
        ORDER BY next_action_at IS NULL, next_action_at ASC, created_at DESC`
     )
     .all() as Application[];
@@ -45,7 +46,8 @@ export function followUpsDue(): Application[] {
   return getDb()
     .prepare(
       `SELECT * FROM applications
-       WHERE stage IN (${ACTIVE_STAGES.map(() => "?").join(",")})
+       WHERE deleted_at IS NULL
+         AND stage IN (${ACTIVE_STAGES.map(() => "?").join(",")})
          AND next_action_at IS NOT NULL
          AND substr(next_action_at, 1, 10) <= substr(?, 1, 10)
        ORDER BY next_action_at ASC`
@@ -64,7 +66,38 @@ export function addApplication(fields: {
   notes?: string;
   date_applied?: string;
 }): number {
-  const info = getDb()
+  const db = getDb();
+  // Re-adding a tombstoned company+role (the sync natural key) revives that
+  // row with the new fields instead of inserting a duplicate that would
+  // collide when it syncs.
+  const tombstoned = db
+    .prepare(
+      `SELECT id FROM applications
+       WHERE LOWER(TRIM(company)) = LOWER(TRIM(?)) AND LOWER(TRIM(role)) = LOWER(TRIM(?))
+         AND deleted_at IS NOT NULL`
+    )
+    .get(fields.company, fields.role) as { id: number } | undefined;
+  if (tombstoned) {
+    undelete(db, "applications", "id = ?", [tombstoned.id]);
+    db.prepare(
+      `UPDATE applications SET company = ?, role = ?, stage = ?, next_action = ?,
+         next_action_at = ?, contact = ?, link = ?, notes = ?, date_applied = ?
+       WHERE id = ?`
+    ).run(
+      fields.company,
+      fields.role,
+      fields.stage ?? "applied",
+      fields.next_action ?? null,
+      fields.next_action_at ?? null,
+      fields.contact ?? null,
+      fields.link ?? null,
+      fields.notes ?? null,
+      resolveDateApplied(fields.date_applied),
+      tombstoned.id
+    );
+    return tombstoned.id;
+  }
+  const info = db
     .prepare(
       `INSERT INTO applications (company, role, stage, next_action, next_action_at, contact, link, notes, date_applied)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -95,7 +128,7 @@ export function advanceApplicationByCompany(
   const app = db
     .prepare(
       `SELECT id, company, role FROM applications
-       WHERE LOWER(company) = LOWER(?)
+       WHERE LOWER(company) = LOWER(?) AND deleted_at IS NULL
        ORDER BY (stage IN ('rejected','accepted')), created_at DESC LIMIT 1`
     )
     .get(company.trim()) as { id: number; company: string; role: string } | undefined;
