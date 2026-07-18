@@ -119,6 +119,31 @@ export function TrackersView() {
     }
   }
 
+  // Heatmap correction: same endpoint as the toggle, with an explicit
+  // backdated date (the API rejects future dates and logs the correction
+  // for "undo that").
+  async function correctTracker(t: Tracker, date: string, action: "log" | "unlog") {
+    await fetch("/api/habits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, habitId: t.id, date }),
+    });
+    await load();
+  }
+
+  async function correctGym(date: string, action: "log" | "unlog") {
+    if (action === "log") {
+      await fetch("/api/gym", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+    } else {
+      await fetch(`/api/gym?date=${date}`, { method: "DELETE" });
+    }
+    await load();
+  }
+
   const today = new Date().toISOString().slice(0, 10);
   const wentToday = gymLogs.some((l) => l.date === today);
 
@@ -235,7 +260,10 @@ export function TrackersView() {
                     </Button>
                   </span>
                 </div>
-                <ContributionHeatmap loggedDates={t.dates} />
+                <ContributionHeatmap
+                  loggedDates={t.dates}
+                  onCorrect={(date, action) => correctTracker(t, date, action)}
+                />
               </div>
             ))}
           </CardContent>
@@ -256,7 +284,10 @@ export function TrackersView() {
             </span>
           </div>
           {gymError && <p className="text-sm text-destructive">{gymError}</p>}
-          <ContributionHeatmap loggedDates={gymLogs.map((l) => l.date)} />
+          <ContributionHeatmap
+            loggedDates={gymLogs.map((l) => l.date)}
+            onCorrect={correctGym}
+          />
         </CardContent>
       </Card>
 

@@ -58,6 +58,14 @@ function tombstoneSql(table: string, where: string): string {
           WHERE (${where}) AND deleted_at IS NULL`;
 }
 
+// Inverse of an un-log (heatmap "mark not done"): flip the tombstone back.
+// The guard makes reverting an already-revived row a "nothing matched".
+function undeleteSql(table: string, where: string): string {
+  return `UPDATE ${table} SET deleted_at = NULL, sync_dirty = 1,
+            updated_at = ${SQLITE_NOW}
+          WHERE (${where}) AND deleted_at IS NOT NULL`;
+}
+
 const PLANNERS: Record<string, Planner> = {
   add_task: (args) => {
     const title = str(args, "title");
@@ -107,6 +115,29 @@ const PLANNERS: Record<string, Planner> = {
       ),
       params: [date, name],
       description: `un-check the habit "${name}" for ${date}`,
+    };
+  },
+  // Heatmap "mark not done" corrections (logged by the gym/habits routes,
+  // not real agent tools) — the inverse restores the tombstoned row.
+  unlog_gym: (args, fallback) => {
+    const date = dateOf(args, fallback);
+    return {
+      sql: undeleteSql("gym_logs", "date = ?"),
+      params: [date],
+      description: `restore the gym log for ${date}`,
+    };
+  },
+  unlog_habit: (args, fallback) => {
+    const name = str(args, "name");
+    const date = dateOf(args, fallback);
+    return {
+      sql: undeleteSql(
+        "habit_logs",
+        `date = ? AND habit_id =
+           (SELECT id FROM habits WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL)`
+      ),
+      params: [date, name],
+      description: `re-check the habit "${name}" for ${date}`,
     };
   },
   log_meal: (args, fallback) => {

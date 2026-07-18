@@ -86,6 +86,8 @@ test("every inverse is a single parameterized statement (no string interpolation
     log_leetcode: {},
     log_metric: { kind: "mood" },
     log_habit: { name: "x" },
+    unlog_gym: {},
+    unlog_habit: { name: "x" },
     log_meal: { item: "x" },
     add_application: { company: "x", role: "y" },
     add_to_reading_list: { title: "x" },
@@ -99,6 +101,22 @@ test("every inverse is a single parameterized statement (no string interpolation
     const placeholders = (plan.sql.match(/\?/g) ?? []).length;
     assert.equal(placeholders, plan.params.length, `${tool} placeholder/param count`);
   }
+});
+
+test("heatmap un-log corrections invert by restoring the tombstone (both directions undoable)", () => {
+  // undo a "mark not done" → the row comes back
+  const gym = planRevert("unlog_gym", { date: "2026-07-02" }, DAY);
+  assert.match(gym.sql, /SET deleted_at = NULL/);
+  assert.match(gym.sql, /deleted_at IS NOT NULL/); // already-restored = nothing matched
+  assert.deepEqual(gym.params, ["2026-07-02"]);
+
+  const habit = planRevert("unlog_habit", { name: "Meditate", date: "2026-07-02" }, DAY);
+  assert.match(habit.sql, /SET deleted_at = NULL/);
+  assert.match(habit.sql, /LOWER\(name\) = LOWER\(\?\)/);
+  assert.deepEqual(habit.params, ["2026-07-02", "Meditate"]);
+
+  // undo a "mark done" → the log_gym/log_habit inverse tombstones (§1)
+  assert.match(planRevert("log_gym", { date: "2026-07-02" }, DAY).sql, /SET deleted_at = strftime/);
 });
 
 test("complete_task inverse reopens the task and asks for the calendar rename-back", () => {

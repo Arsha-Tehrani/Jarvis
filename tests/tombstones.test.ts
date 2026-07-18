@@ -186,6 +186,48 @@ test("read helpers exclude tombstoned rows (spot-check: task completion + due li
   assert.deepEqual(completeTaskCore(db, deletedId), { outcome: "not-found" });
 });
 
+test("heatmap correction toggle is idempotent and a corrected-away day drops out of reads (§5)", () => {
+  const db = new Database(":memory:");
+  db.exec(`CREATE TABLE habit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit_id INTEGER NOT NULL, date TEXT NOT NULL,
+    sync_id TEXT, updated_at TEXT, origin_device_id TEXT,
+    sync_dirty INTEGER NOT NULL DEFAULT 1, deleted_at TEXT,
+    UNIQUE(habit_id, date))`);
+
+  // The exact upsert the habits route uses: revive-or-insert, no duplicates.
+  const log = db.prepare(
+    `INSERT INTO habit_logs (habit_id, date) VALUES (?, ?)
+     ON CONFLICT(habit_id, date) DO UPDATE SET deleted_at = NULL
+     WHERE habit_logs.deleted_at IS NOT NULL`
+  );
+  assert.equal(log.run(1, "2026-07-10").changes, 1, "first log inserts");
+  assert.equal(log.run(1, "2026-07-10").changes, 0, "re-log of a live day is a no-op");
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS n FROM habit_logs").get() as { n: number }).n,
+    1,
+    "no duplicate row"
+  );
+
+  assert.equal(tombstone(db, "habit_logs", "habit_id = 1 AND date = '2026-07-10'", []), 1);
+  assert.equal(
+    tombstone(db, "habit_logs", "habit_id = 1 AND date = '2026-07-10'", []),
+    0,
+    "un-log of an already-unlogged day is a no-op"
+  );
+  // The corrected-away day is gone from the heatmap/streak read…
+  const dates = db
+    .prepare("SELECT date FROM habit_logs WHERE habit_id = 1 AND deleted_at IS NULL")
+    .all();
+  assert.deepEqual(dates, [], "tombstoned day doesn't count toward streaks/heatmap");
+  // …and re-logging revives the SAME row (natural key, no second identity).
+  assert.equal(log.run(1, "2026-07-10").changes, 1, "re-log revives");
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS n FROM habit_logs").get() as { n: number }).n,
+    1
+  );
+});
+
 test("backup/restore keeps tombstones: a restore can never undelete (§1.6)", () => {
   const db = freshDb();
   db.prepare("INSERT INTO gym_logs (date) VALUES ('2026-07-01')").run();

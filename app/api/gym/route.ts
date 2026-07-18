@@ -27,14 +27,29 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   }
-  const date = parsed.data.date ?? new Date().toISOString().slice(0, 10);
-  getDb()
+  const today = new Date().toISOString().slice(0, 10);
+  if (parsed.data.date && parsed.data.date > today) {
+    return NextResponse.json({ error: "Can't log a future date" }, { status: 400 });
+  }
+  const date = parsed.data.date ?? today;
+  const info = getDb()
     .prepare(
       `INSERT INTO gym_logs (date, notes) VALUES (?, ?)
        ON CONFLICT(date) DO UPDATE SET
          notes = COALESCE(excluded.notes, notes), deleted_at = NULL`
     )
     .run(date, parsed.data.notes ?? null);
+  // Backdated heatmap corrections are undoable via revert_action (the plain
+  // "I went today" button sends no date and stays unlogged).
+  if (parsed.data.date && info.changes > 0) {
+    getDb()
+      .prepare("INSERT INTO agent_log (user_text, tool_calls, result) VALUES (?, ?, ?)")
+      .run(
+        `[trackers] heatmap correction: log gym for ${date}`,
+        JSON.stringify({ executed: [{ name: "log_gym", args: { date } }] }),
+        `Logged gym for ${date}.`
+      );
+  }
   const log = getDb()
     .prepare("SELECT id, date, notes FROM gym_logs WHERE date = ? AND deleted_at IS NULL")
     .get(date);
@@ -51,6 +66,13 @@ export async function DELETE(req: NextRequest) {
   if (changes === 0) {
     return NextResponse.json({ error: "No log on that date" }, { status: 404 });
   }
+  getDb()
+    .prepare("INSERT INTO agent_log (user_text, tool_calls, result) VALUES (?, ?, ?)")
+    .run(
+      `[trackers] heatmap correction: un-log gym for ${date}`,
+      JSON.stringify({ executed: [{ name: "unlog_gym", args: { date } }] }),
+      `Removed the gym log for ${date}.`
+    );
   queueSyncPush();
   return NextResponse.json({ ok: true });
 }
