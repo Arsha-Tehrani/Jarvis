@@ -312,17 +312,39 @@ Sync state is written only after a successful ingest — if the sidecar or Ollam
 
 Jarvis instances on multiple machines can sync a small **allowlist** of derived tables — `tasks`, `gym_logs`, `habits`/`habit_logs` (the unified Trackers, including their `source`/`target`), `leetcode_stats`, `networth_snapshots` — defined in one place (`lib/sync/tables.ts`) with the exclusion rule commented above it. The legacy `goals` table is no longer synced (folded into `habits`). Raw imports never sync: transactions, statements, mail, notes, and `oauth_tokens` are rejected by both endpoints even if explicitly requested (there's a test for exactly that).
 
-Setup:
+**Prerequisites.** Two machines each running Jarvis, and a private network between them — [Tailscale](https://tailscale.com) is the assumed setup: install it on both so the client can reach the host by its Tailscale name (e.g. `home-pc`) on port 3000. Pick one **always-on** machine as the host (a desktop that's usually awake); every other machine is a client. You also need one shared secret string — generate it however you like, e.g. `openssl rand -hex 32` — that goes in *both* `.env.local` files. This is a star topology: clients talk only to the host, never to each other.
 
-1. **Host** (the always-on machine): set `SYNC_ROLE=host` and `SYNC_AUTH_TOKEN=<shared secret>` in its `.env.local`. It serves `POST /api/sync/push` and `GET /api/sync/pull` — and refuses both unless the role and token check out.
-2. **Client** (each other machine): set `SYNC_ROLE=client`, the same `SYNC_AUTH_TOKEN`, and `SYNC_HOST_URL=http://<host-tailscale-name>:3000`.
-3. That's it — a cron tick every 5 minutes (plus launch catch-up, plus a debounced push right after writes) pushes local changes and pulls everyone else's. Sync traffic shows up in `/network-log`, and `/status` has a Sync section with per-table push/pull times and pending counts.
+**1. Host** (the always-on machine) — in its `.env.local`, then restart the app:
+
+```
+SYNC_ROLE=host
+SYNC_AUTH_TOKEN=<shared secret>
+```
+
+The host serves `POST /api/sync/push` and `GET /api/sync/pull`, and refuses both unless the role *and* token check out (`404` if the role isn't `host` — the routes look absent when disabled; `503` if `SYNC_AUTH_TOKEN` is missing; `401` on a bad token). It runs **no sync worker of its own** — clients read its live `jarvis.db` directly — so there is nothing else to start on the host.
+
+**2. Client** (each other machine) — in its `.env.local`, then restart the app:
+
+```
+SYNC_ROLE=client
+SYNC_AUTH_TOKEN=<same shared secret>
+SYNC_HOST_URL=http://<host-tailscale-name>:3000
+DEVICE_ID=laptop            # optional; a UUID is generated + persisted if unset
+```
+
+From here it's automatic: a cron tick **every 5 minutes** (plus once at launch, plus a **~3-second debounced push** right after you write something) pushes the client's changed rows to the host and pulls everyone else's back, table by table. Note the asymmetry — the debounced nudge is **push-only**, so your local edits reach the host within seconds, but you only *receive* other machines' changes on the 5-minute pull tick or at app launch. When you don't want to wait for the tick, the **Sync** section of `/status` has a **Sync now** button (client only) that runs one full push+pull pass on demand (`POST /api/sync/run`) and refreshes the per-table marks in place.
+
+**⚠ If the host also sets `JARVIS_AUTH_TOKEN`** (the remote-access gate), that middleware sits in front of `/api/sync/*` too, and the client only ever sends its `SYNC_AUTH_TOKEN`. So either leave `JARVIS_AUTH_TOKEN` unset on the host (Tailscale is already gating access) or set it to the **same** value as `SYNC_AUTH_TOKEN` — otherwise every sync request is turned away with a `401` before it reaches the sync handler.
+
+**3. Verify.** Open `/status` on either machine — the **Sync** section shows this device's role and id, and per-table pending counts with last push/pull timestamps. Every sync call also appears in `/network-log` (feature `sync-push` / `sync-pull`) with its outcome and latency. Quick end-to-end check: add a task on the client, watch `pending` for `tasks` drop to 0 within a few seconds (push landed), then confirm the task appears on the host — and the reverse within 5 minutes.
+
+**Troubleshooting.** An unreachable or misconfigured host is a *normal, non-fatal* state: the client logs it (to the console and `/network-log`) and retries next tick — sync never crashes the app. If nothing moves: `404` from the host means that machine isn't `SYNC_ROLE=host`; `401` means the tokens don't match (or the `JARVIS_AUTH_TOKEN` clash above); `503` means the host is `SYNC_ROLE=host` but has no `SYNC_AUTH_TOKEN`. A row that references another (a `habit_log` whose `habit` hasn't synced yet) is held back and re-pulled on the next tick, so a brand-new tracker can take one extra cycle to fully appear on other devices.
 
 How conflicts resolve: every row carries a `sync_id` (cross-device identity; the local autoincrement id stays internal) and an `updated_at` that the **host stamps with its own clock at receipt time**. Device clocks are never trusted for ordering — the last write to *reach the host* wins, deterministically. A locally-edited row is never overwritten by a pull until its own push has landed. Deletes are not propagated (sync is additive), and two devices logging the same thing independently (same gym date, same goal kind) merge by natural key instead of duplicating.
 
 > ⚠ The sync endpoints are designed to sit **behind Tailscale only**. The shared token is the entire auth story — do not port-forward `/api/sync/*` to the open internet.
 
-The host needs no push worker for its own writes: clients pulling from it read its live `jarvis.db` directly. `sync_state` (cursors) is included in backups; `device_meta` (this machine's identity) deliberately is not, so restoring a backup onto a second machine can't clone identities — and `SYNC_AUTH_TOKEN` lives only in `.env.local`, never in any table or export.
+On **backups**: `sync_state` (the pull cursors) is included so a restored client resumes where it left off; `device_meta` (this machine's sync identity) deliberately is **not**, so restoring a backup onto a second machine can't clone identities — and `SYNC_AUTH_TOKEN` lives only in `.env.local`, never in any table or export.
 
 ### System monitor
 
