@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { getCachedQuote } from "@/lib/stocks";
+import { splitStocksAndCashEquivalent } from "@/lib/stocks/cash-equivalents";
 import { computePortfolioTotal } from "@/lib/stocks/portfolio-total";
 import { queueSyncPush } from "@/lib/sync/client";
 
@@ -21,6 +22,12 @@ export type Account = {
 export type NetWorthNow = {
   accountsTotal: number;
   holdingsValue: number;
+  // Within holdingsValue: equity holdings (a real ticker price) vs.
+  // cash-equivalent (money-market/sweep, e.g. SPAXX) — these two sum to
+  // holdingsValue. Scopes the Stocks page's chart to the investment account
+  // only, separate from this page's own blended accounts+holdings total.
+  stocksValue: number;
+  cashEquivalentValue: number;
   holdingsPriced: "market" | "cost-basis" | "none";
   total: number;
 };
@@ -88,17 +95,25 @@ export function computeNetWorth(): NetWorthNow {
   ).t;
 
   const holdings = db
-    .prepare("SELECT ticker, shares, cost_basis FROM holdings")
-    .all() as { ticker: string; shares: number; cost_basis: number }[];
+    .prepare("SELECT ticker, shares, cost_basis, is_cash_equivalent FROM holdings")
+    .all() as {
+    ticker: string;
+    shares: number;
+    cost_basis: number;
+    is_cash_equivalent: number;
+  }[];
   // Same computePortfolioTotal the Today card and /api/stocks use — see
   // lib/stocks/portfolio-total.ts for why three independent
   // implementations of this fallback used to drift apart.
   const portfolio = computePortfolioTotal(holdings, getCachedQuote);
   const holdingsValue = portfolio.totalValue;
+  const { stocksValue, cashEquivalentValue } = splitStocksAndCashEquivalent(portfolio.holdings);
 
   return {
     accountsTotal,
     holdingsValue,
+    stocksValue,
+    cashEquivalentValue,
     // "mixed" (some holdings live, some cost-basis) reads as "market" here,
     // same as before this was unified — this field only gates one UI
     // caveat ("at cost basis — quotes not loaded"), which shouldn't fire
@@ -115,8 +130,17 @@ export function takeSnapshot(): void {
   const save = db.transaction(() => {
     db.prepare("DELETE FROM networth_snapshots WHERE date = ?").run(date);
     db.prepare(
-      "INSERT INTO networth_snapshots (date, accounts_total, holdings_value, total) VALUES (?, ?, ?, ?)"
-    ).run(date, now.accountsTotal, now.holdingsValue, now.total);
+      `INSERT INTO networth_snapshots
+         (date, accounts_total, holdings_value, total, stocks_value, cash_equivalent_value)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      date,
+      now.accountsTotal,
+      now.holdingsValue,
+      now.total,
+      now.stocksValue,
+      now.cashEquivalentValue
+    );
   });
   save();
 }
@@ -126,15 +150,33 @@ export type Snapshot = {
   accounts_total: number;
   holdings_value: number;
   total: number;
+  // Null for rows written before this split existed — render a gap, never a
+  // fabricated value (past holdings can't be reliably reclassified).
+  stocks_value: number | null;
+  cash_equivalent_value: number | null;
 };
+
+const SNAPSHOT_COLUMNS =
+  "date, accounts_total, holdings_value, total, stocks_value, cash_equivalent_value";
 
 export function snapshots(days = 180): Snapshot[] {
   const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
   return getDb()
     .prepare(
-      "SELECT date, accounts_total, holdings_value, total FROM networth_snapshots WHERE date >= ? ORDER BY date ASC"
+      `SELECT ${SNAPSHOT_COLUMNS} FROM networth_snapshots WHERE date >= ? ORDER BY date ASC`
     )
     .all(since) as Snapshot[];
+}
+
+// Every snapshot row (no day cap) for the Stocks page's value-over-time
+// chart — the range window is applied by the pure filter
+// (lib/stocks/portfolio-history.ts), not here, so 'all' and '1y' work. Same
+// table and rows the Net Worth chart reads; this is a second view over the
+// existing daily snapshot, not a second snapshot mechanism.
+export function allSnapshots(): Snapshot[] {
+  return getDb()
+    .prepare(`SELECT ${SNAPSHOT_COLUMNS} FROM networth_snapshots ORDER BY date ASC`)
+    .all() as Snapshot[];
 }
 
 // Weekly delta: current total vs the closest snapshot ≥7 days old.

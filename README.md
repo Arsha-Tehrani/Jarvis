@@ -6,9 +6,20 @@ Jarvis is a personal dashboard and natural-language agent that runs entirely on 
 
 ## Quickstart
 
+Requires Node.js 20 LTS or newer. See [requirements.txt](./requirements.txt) for the full prerequisite checklist (including optional Python sidecars).
+
+**macOS / Linux (Terminal):**
+
 ```bash
 npm install
 npm run dev        # starts the app AND the in-process cron worker
+```
+
+**Windows (PowerShell or Command Prompt):**
+
+```powershell
+npm install
+npm run dev
 ```
 
 Open `http://localhost:3000`. With no configuration you get tasks, trackers, notes-free features, and the dashboard; add a local Ollama model for the agent, and API keys per feature as you need them (see [Configuration](#configuration)).
@@ -40,7 +51,7 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 
 ### Life tracking
 
-- **Tasks** — a task list with due dates and priorities, fed by hand or by the agent.
+- **Tasks** — a task list with due dates and priorities, fed by hand, by the agent, or straight from a day on the Calendar page. Due tasks also show on the calendar alongside your Google events.
 - **Trackers** — gym visits, LeetCode progress (auto-pulled daily), sleep/bedtime/weight/mood, user-defined habits with streaks and heatmaps, and daily macros — one page that visualizes everything you track.
 - **Nutrition / macros** — log a meal by text, through the agent, or by **photo**: a local vision model estimates portions and a JSON-mode extraction produces validated calories/protein/carbs/fat.
 - **Goals are just Tracker targets** — savings rate, gym days/week, LeetCode/week, average sleep, calories/day are targets attached to Trackers (progress rings, computed from real data), not a separate static list. Setting one still requires confirmation, and at-risk targets feed the morning brief.
@@ -52,7 +63,7 @@ Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runn
 
 - **Finance** — drop bank statement CSVs/PDFs into `/statements`, hit Import: parsing (with account-number redaction), LLM categorization with keyword fallback, recurring-charge detection, a renewal "radar", and a read-only agent tool for questions like "how much did I spend on dining in May?".
 - **Category budgets** — set a monthly limit per spending category; month-to-date spend is checked against it deterministically and overages surface in the morning brief.
-- **Stocks & watchlist** — live quotes via Finnhub or Alpha Vantage free tiers, cached to stay inside rate limits; holdings imported from brokerage CSV exports.
+- **Stocks & watchlist** — live quotes via Finnhub or Alpha Vantage free tiers, cached to stay inside rate limits; holdings imported from brokerage CSV exports. A value-over-time chart at the top of the page shows holdings and cash/account balances stacking to your total, drawn from the same daily snapshot the Net Worth page uses. A "what's driving your portfolio" card attributes the week's/month's move to the individual holdings behind it, so a broad move isn't mistaken for one or two names.
 - **Net worth** — manual account balances plus market-priced holdings, snapshotted daily into an over-time chart.
 
 ### Knowledge
@@ -131,7 +142,7 @@ Configure `.env.local` (all optional except the LLM if you want the agent). For 
 2. **Confirm money/destructive actions.** Tools flagged `requiresConfirm` (e.g. `set_goal`, `revert_action`) are not executed — the route returns a *pending confirmation* payload showing exactly what would run. The UI displays it; `POST /api/agent { confirmedCalls, originalText }` re-validates and executes only on your confirm.
 3. **Everything logs.** Every turn — user text, tool calls as JSON, result — is written to the `agent_log` table.
 
-Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `delete_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `log_meal`, `ask_textbook`, `revert_action`. Adding a new one is a ~30-line recipe — see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
+Current tools: `add_task`, `log_gym`, `log_leetcode`, `set_goal`, `append_note`, `create_calendar_event`, `set_reminder`, `log_metric`, `log_habit`, `delete_habit`, `add_application`, `advance_application`, `add_to_reading_list`, `log_contact`, `query_finance`, `query_stock_contribution`, `log_meal`, `ask_textbook`, `revert_action`. Adding a new one is a ~30-line recipe — see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
 
 Each turn also records **cost/latency telemetry** on its `agent_log` row: provider, model, latency, token counts (when the API reports them — never estimated), and dollar cost. With local Ollama the cost is always $0; point `LLM_PROVIDER` at a hosted model and fill in `lib/pricing.ts` (rates change — the shipped table is deliberately empty) to see tokens and running monthly cost on the `/status` page.
 
@@ -163,7 +174,11 @@ See the [Scheduler caveat](#scheduler-caveat) below — the scheduler only runs 
 
 ### Tasks
 
-A plain task table (`title`, `due_at`, `priority`, `status`, `source`) surfaced on the Tasks page and the Today view. Tasks arrive from the UI or from the agent's `add_task` tool; the agent resolves relative dates ("Friday") to concrete ISO dates itself.
+A plain task table (`title`, `due_at`, `priority`, `status`, `source`) surfaced on the Tasks page and the Today view. Tasks arrive from the UI or from the agent's `add_task` tool; the agent resolves relative dates ("Friday") to concrete ISO dates itself. The `source` column tags provenance — `manual`, `agent`, or `calendar` — so a task's origin stays visible in the data.
+
+**Quick-add from the Calendar page.** Every day on the calendar shows the tasks *due* that day next to its Google events (rendered distinctly, with a `○` marker), and hovering a day reveals a `+` that opens an inline add-task form pre-filled to that day — title, priority, and an editable due date. It writes through the same `POST /api/tasks` endpoint the Tasks page uses (no new endpoint, no duplicated schema) with `source: 'calendar'`, so the new task appears immediately on the calendar, the Tasks page, and the Today view without any special refresh path. These are ordinary **local** tasks, not Google events — Tasks stay a separate local list and Google remains the calendar's single source of truth, so nothing is written to Google here. Which local day a task lands on is a pure, unit-tested function (`taskDayKey` in `lib/calendar-grid.ts`) that reads date-only and full-timestamp due dates the same way the Tasks page does, with no UTC shift. The calendar grid now renders with or without Google connected — the connection prompt is a banner above it, not a wall — so the quick-add works even before you link Google.
+
+Separately, every task write (from any source — UI, agent, mail import, this page's own quick-add) already mirrors a real Google Calendar event titled "Task: {title}" so the task is visible on Google too (see Google Calendar & reminders below). Once that mirror event round-trips back through the poll, it would be indistinguishable from a genuine event and render a second, plain entry alongside the task's own color-coded chip — the same task showing twice. The calendar page cross-references the polled events against `tasks.gcal_event_id` (`taskMirrorEventIds` in `lib/calendar-grid.ts`, pure and unit-tested) and excludes any event that's just a mirror of a task already shown as a chip, so each task renders exactly once; a genuine Google event with no matching task is unaffected.
 
 ### Trackers: gym, LeetCode, health, habits
 
@@ -230,6 +245,14 @@ The holdings table is **click-to-sort** (ticker, value, % of portfolio, day move
 
 **Dividends** are detected **automatically**: a daily 07:00 cron (plus catch-up-on-launch) checks each holding's ex-dividend calendar via the shared Yahoo client and, on the ex-date, locks in the held share count and inserts a **pending** payout — `pending` rows show a badge with the expected payment date and contribute **zero** to the running total until the payment date arrives and they're promoted to `confirmed` (cash you're entitled to isn't cash in hand). Amounts are estimated from the ticker's last actual payment (Yahoo's forward `dividendRate` is annualized — verified against Apple IR, see `docs/dividend-automation.md` for the full field-mapping verification) and labeled `(est.)`. Dedupe rides the `(ticker, ex_date)` unique key: a hand-logged dividend never gets an auto twin, and a hand-corrected auto row is never clobbered by the next tick. **Manual entry stays fully available and unchanged** — Yahoo is an unofficial API, so like LeetCode's manual entry it's the always-working fallback: enter ex-date + amount/share and the app computes payout (`shares × amount/share`). Without a recorded share count for the ex-date it uses the current share count, clearly flagged `≈`. Payout math and the pending/confirmed totals are pure and unit-tested (`lib/dividends-math.ts`, `lib/dividends-auto.ts`).
 
+**Investment account — value over time.** The card at the top of the Stocks page plots your investment/brokerage account's value across a selectable window (1M / 3M / 6M / 1Y / All). It's scoped to the investment account **only** — no manual bank/checking/savings balances ever appear here; that blended accounts+holdings view lives exactly once, on the Net Worth page below. It does *not* introduce a second snapshot mechanism — it reads the very rows the daily 18:00 net-worth snapshot already writes (`networth_snapshots`), so the Net Worth page's own chart is untouched.
+
+Within the investment account, value splits into two series: **Stocks** (equity holdings — anything with a real ticker price) and **Cash** (money-market/cash-sweep positions that function as cash but live inside the brokerage, e.g. Fidelity's SPAXX core). A holding's classification is a real, per-holding column (`holdings.is_cash_equivalent`) seeded once from a small data table of known sweep-fund tickers (`lib/stocks/cash-equivalents.ts` — SPAXX, FDRXX, FZFXX, VMFXX, SWVXX, and a few siblings; the same "data table, not scattered regex" convention as `lib/finance/institution-signals.ts`), and correctable by hand from a "Type" dropdown next to each holding on the Stocks page — the same pattern as the Finance import log's account-type correction. A correction sticks: the seed table is only ever consulted once, at migration time, never re-derived on render. Stocks and Cash are drawn as a **stacked area** in genuinely distinct colors (green `--gain` for Stocks, a new teal `--cash-equivalent` token for Cash — not two shades of the same gray) — the band's top edge is the investment account's own total. The split math (`lib/stocks/cash-equivalents.ts`'s `splitStocksAndCashEquivalent`) and the windowing (`lib/stocks/portfolio-history.ts`) are both pure and unit-tested. Snapshots taken before this split was recorded carry a null breakdown; those points render as a **gap**, never a fabricated $0 (past share counts aren't reliably reconstructable — see the positions-snapshot note above), and a window with *only* such rows quietly falls back to a single total line. A new install with fewer than two snapshots shows a calm "not enough history yet" note rather than an empty chart.
+
+A **Daily/Weekly** toggle sits next to the range selector. Weekly collapses each ISO week to a single point — the *last* available snapshot in that week (never an averaged number, matching how this app already treats other point-in-time data like dividends/prices), so a gap or a partial trailing week still resolves to whatever's actually available rather than erroring. This collapsing (`collapseToWeekly` in `lib/stocks/portfolio-history.ts`, pure and unit-tested against exact-week, partial-week, gapped-week, and year-boundary cases) runs entirely **client-side** over the range's already-fetched daily rows — toggling granularity never refetches from the API. The default is Daily for the 1M range and Weekly for anything longer (a year of daily points is a cluttered read), but picking either one by hand overrides that default until you change it again — it never snaps back just because you changed the range.
+
+**What's driving your portfolio.** A card on the Stocks page answers the question a raw holdings table can't: *how much of this week's (or month's) move is actually just one or two stocks?* A **1W / 2W / 1M** toggle picks the lookback window — the middle option is the same `computeContribution` engine with a 14-calendar-day lookback instead of 7 or 30, no special-cased logic. For each current holding it computes the dollar contribution to the portfolio's move — `currentValue − (shares × the period-start close)` — using the **same** `portfolio-total.ts` valuation for the current side (so an unpriced holding like SPAXX is valued at cost basis, not dropped), then its share of the net move and its own period return. The attribution math is a pure, unit-tested module (`lib/stocks/contribution.ts`) with every guard the spec demands: divide-by-zero on a flat portfolio returns `null` (never `Infinity`/`NaN`), a holding with no period-start price is flagged **"no data"** and shown in a muted row at the bottom rather than silently counted as $0, and a named `CONCENTRATION_THRESHOLD` (80%) drives the one-line rollup — "*11 of 24 holdings account for 83% of the move over this week*" — as the fewest top movers by absolute contribution whose cumulative move crosses that threshold. Period-start closes come through the **same** audited Yahoo client and `stock_chart_cache` that click-to-chart uses (`lib/stocks/contribution-data.ts` requests a daily 3M chart per holding, reused once per ticker per calendar day) — no second cache, no second client, no bypass of the rate protection; a ticker whose history can't be fetched degrades to the "no data" case for just that row, never blocking the rest. `GET /api/stocks/contribution?period=1w|2w|1m` (zod-validated, defaulting to `1w`) serves it, and the read-only `query_stock_contribution` agent tool answers "which stocks moved my portfolio this week" in the chat from the same core.
+
 **Click a ticker for its price history.** Daily EOD history comes from **`yahoo-finance2`** — no API key required (this replaced the original Alpha-Vantage-only path; Finnhub's `/stock/candle` remains premium-gated on free keys — see `docs/stock-history-feasibility.md` for the full history). Fetched lazily on click through a shared, audit-logged Yahoo client (`lib/stocks/yahoo-client.ts` — every call shows up in `/network-log`) and cached in `stock_history_cache` **once per ticker per calendar day**: EOD data doesn't change until market close, and an unofficial endpoint shouldn't be hammered for identical data. A stale (prior-day) cache entry triggers exactly one fresh fetch; a same-day hit never touches the network. A fetch failure or an unknown/delisted symbol (delisted tickers stop returning history entirely, even for ranges that used to work) is the same calm degraded state in the chart dialog — never a crash. `lib/stocks/history-core.ts` is the pure, unit-tested half (caching decision + response parsing); `lib/stocks/history.ts` is the DB/network glue, same split as `lib/sync/core.ts` vs. `lib/sync/client.ts`.
 
 ### Net worth
@@ -243,6 +266,13 @@ Note: statements imported before this account-type tracking existed have no sub-
 ### Google Calendar & reminders
 
 OAuth tokens live server-side in the `oauth_tokens` table — never in the browser. **Google is the single source of truth**: Jarvis polls (on page open and hourly) and reads events into `calendar_cache`; it never maintains a second mutable calendar or reconciles bidirectionally. The agent's `create_calendar_event` writes real events and `set_reminder` creates a short event so your phone notifies you. Testing-mode OAuth refresh tokens expire ~weekly; refresh failure surfaces a "reconnect" prompt rather than crashing.
+
+**Event vs. task, from the same day cell.** The Calendar page's quick-add covers both kinds of thing you'd put on a day, and neither one is the other:
+
+- **+ Task** — a row in the local `tasks` table (unchanged from its original quick-add), never synced to Google.
+- **+ Event** — a real Google Calendar event, created deterministically (no LLM involved) through `POST /api/calendar/events`, which calls the exact same `createCalendarEvent()` function the agent's `create_calendar_event`/`set_reminder` tools use — one Google-write implementation total, just two entry points. It supports a timed event (start + optional end, defaulting to one hour) or an all-day event (a plain date, defaulting to a single day); which shape to send is decided the same way the rest of the calendar code detects all-day (`isAllDay`/`resolveGoogleEventTimes` in `lib/calendar-grid.ts`, pure and unit-tested). Because `createCalendarEvent` already re-polls Google as a read-back after writing (Google stays the source of truth even for the immediate-feedback case), the new event shows up right away without an optimistic fake row and without a second polling implementation. An OAuth/reconnection failure surfaces the exact same error text the rest of the page's Google actions already use ("…reconnect from the Calendar tab") — no separate error UI.
+
+Both actions live in the same day-detail panel (click a day, or hover it for the `+`/🗓 shortcuts) with a small Task/Event tab toggle — no navigating away from the Calendar page.
 
 ### Mail triage
 
@@ -314,7 +344,12 @@ Jarvis instances on multiple machines can sync a small **allowlist** of derived 
 
 **Prerequisites.** Two machines each running Jarvis, and a private network between them — [Tailscale](https://tailscale.com) is the assumed setup: install it on both so the client can reach the host by its Tailscale name (e.g. `home-pc`) on port 3000. Pick one **always-on** machine as the host (a desktop that's usually awake); every other machine is a client. You also need one shared secret string — generate it however you like, e.g. `openssl rand -hex 32` — that goes in *both* `.env.local` files. This is a star topology: clients talk only to the host, never to each other.
 
-**1. Host** (the always-on machine) — in its `.env.local`, then restart the app:
+**1. Connect both machines with Tailscale first.** Sync rides on top of a [Tailscale](https://tailscale.com/download) mesh network, not your regular internet/Wi-Fi — install the Tailscale app on both the host and every client machine, sign in to the **same** Tailscale account on each (this is what puts them on the same private "tailnet"; being on the same router/ISP does nothing by itself), and leave it running. Confirm they can see each other before touching `.env.local`:
+   - Run `tailscale status` on either machine — both should be listed and reachable (not "offline").
+   - From the client, `ping <host-tailscale-name>` (or `tailscale ping <host-tailscale-name>`) should get a response. That `<host-tailscale-name>` — the host's Tailscale machine name — is exactly what goes into `SYNC_HOST_URL` below. Find it under the host's device in the [Tailscale admin console](https://login.tailscale.com/admin/machines) or via `tailscale status` on the host itself.
+   - The host machine needs to actually be awake and running `npm run dev` for sync to succeed — if it's asleep or the app isn't running, clients will log `fetch failed` and just retry next tick (harmless, but nothing will sync until it's back).
+
+**2. Host** (the always-on machine) — in its `.env.local`, then restart the app:
 
 ```
 SYNC_ROLE=host
@@ -323,7 +358,7 @@ SYNC_AUTH_TOKEN=<shared secret>
 
 The host serves `POST /api/sync/push` and `GET /api/sync/pull`, and refuses both unless the role *and* token check out (`404` if the role isn't `host` — the routes look absent when disabled; `503` if `SYNC_AUTH_TOKEN` is missing; `401` on a bad token). It runs **no sync worker of its own** — clients read its live `jarvis.db` directly — so there is nothing else to start on the host.
 
-**2. Client** (each other machine) — in its `.env.local`, then restart the app:
+**3. Client** (each other machine) — in its `.env.local`, then restart the app:
 
 ```
 SYNC_ROLE=client
@@ -336,9 +371,9 @@ From here it's automatic: a cron tick **every 5 minutes** (plus once at launch, 
 
 **⚠ If the host also sets `JARVIS_AUTH_TOKEN`** (the remote-access gate), that middleware sits in front of `/api/sync/*` too, and the client only ever sends its `SYNC_AUTH_TOKEN`. So either leave `JARVIS_AUTH_TOKEN` unset on the host (Tailscale is already gating access) or set it to the **same** value as `SYNC_AUTH_TOKEN` — otherwise every sync request is turned away with a `401` before it reaches the sync handler.
 
-**3. Verify.** Open `/status` on either machine — the **Sync** section shows this device's role and id, and per-table pending counts with last push/pull timestamps. Every sync call also appears in `/network-log` (feature `sync-push` / `sync-pull`) with its outcome and latency. Quick end-to-end check: add a task on the client, watch `pending` for `tasks` drop to 0 within a few seconds (push landed), then confirm the task appears on the host — and the reverse within 5 minutes.
+**4. Verify.** Open `/status` on either machine — the **Sync** section shows this device's role and id, and per-table pending counts with last push/pull timestamps. Every sync call also appears in `/network-log` (feature `sync-push` / `sync-pull`) with its outcome and latency. Quick end-to-end check: add a task on the client, watch `pending` for `tasks` drop to 0 within a few seconds (push landed), then confirm the task appears on the host — and the reverse within 5 minutes.
 
-**Troubleshooting.** An unreachable or misconfigured host is a *normal, non-fatal* state: the client logs it (to the console and `/network-log`) and retries next tick — sync never crashes the app. If nothing moves: `404` from the host means that machine isn't `SYNC_ROLE=host`; `401` means the tokens don't match (or the `JARVIS_AUTH_TOKEN` clash above); `503` means the host is `SYNC_ROLE=host` but has no `SYNC_AUTH_TOKEN`. A row that references another (a `habit_log` whose `habit` hasn't synced yet) is held back and re-pulled on the next tick, so a brand-new tracker can take one extra cycle to fully appear on other devices.
+**Troubleshooting.** An unreachable or misconfigured host is a *normal, non-fatal* state: the client logs it (to the console and `/network-log`) and retries next tick — sync never crashes the app. If nothing moves: `404` from the host means that machine isn't `SYNC_ROLE=host`; `401` means the tokens don't match (or the `JARVIS_AUTH_TOKEN` clash above); `503` means the host is `SYNC_ROLE=host` but has no `SYNC_AUTH_TOKEN`. Persistent `fetch failed` entries almost always mean step 1 isn't actually satisfied — re-check `tailscale status` on both machines. A row that references another (a `habit_log` whose `habit` hasn't synced yet) is held back and re-pulled on the next tick, so a brand-new tracker can take one extra cycle to fully appear on other devices.
 
 How conflicts resolve: every row carries a `sync_id` (cross-device identity; the local autoincrement id stays internal) and an `updated_at` that the **host stamps with its own clock at receipt time**. Device clocks are never trusted for ordering — the last write to *reach the host* wins, deterministically. A locally-edited row is never overwritten by a pull until its own push has landed. Deletes are not propagated (sync is additive), and two devices logging the same thing independently (same gym date, same goal kind) merge by natural key instead of duplicating.
 

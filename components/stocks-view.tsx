@@ -30,6 +30,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { PortfolioHistoryChart } from "@/components/portfolio-history-chart";
+import { StockContributionCard } from "@/components/stock-contribution-card";
 import { TIMEFRAMES, type Timeframe } from "@/lib/stocks/history-core";
 
 type HistoryChart = {
@@ -88,6 +90,7 @@ type Holding = {
   plPercent: number | null;
   dayMove: number | null;
   changePercent: number | null;
+  is_cash_equivalent: number;
 };
 
 type DividendEvent = {
@@ -322,6 +325,24 @@ export function StocksView() {
     await load();
   }
 
+  async function setCashEquivalent(id: number, isCashEquivalent: boolean) {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/stocks", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, is_cash_equivalent: isCashEquivalent }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to update classification");
+      }
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const totalValue = holdings.reduce((s, h) => s + (h.value ?? 0), 0);
   const totalDayMove = holdings.reduce((s, h) => s + (h.dayMove ?? 0), 0);
   const havePrices = holdings.length > 0;
@@ -343,6 +364,8 @@ export function StocksView() {
         <p className="text-sm text-destructive">Quotes unavailable: {quotesError}</p>
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}
+
+      <PortfolioHistoryChart />
 
       <Card>
         <CardHeader>
@@ -405,6 +428,7 @@ export function StocksView() {
                       Day{caret("dayMove")}
                     </button>
                   </TableHead>
+                  <TableHead>Type</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -432,6 +456,24 @@ export function StocksView() {
                     </TableCell>
                     <TableCell className="text-right">
                       <MoveCell value={h.dayMove} percent={h.changePercent} />
+                    </TableCell>
+                    <TableCell>
+                      {/* Manual correction for the value-over-time chart's
+                          stocks-vs-cash-equivalent split — same pattern as
+                          the Finance import log's account-type dropdown.
+                          Seeded from lib/stocks/cash-equivalents.ts on
+                          import; a correction here persists and is never
+                          re-derived from that table afterward. */}
+                      <select
+                        className="rounded border border-border bg-transparent px-1 py-0.5 text-xs text-foreground"
+                        value={h.is_cash_equivalent ? "cash" : "stock"}
+                        disabled={busy}
+                        onChange={(e) => void setCashEquivalent(h.id, e.target.value === "cash")}
+                        aria-label={`Correct classification for ${h.ticker}`}
+                      >
+                        <option value="stock">Stock</option>
+                        <option value="cash">Cash</option>
+                      </select>
                     </TableCell>
                     <TableCell>
                       <Button variant="ghost" size="sm" onClick={() => remove("holding", h.id)}>
@@ -462,6 +504,8 @@ export function StocksView() {
           </form>
         </CardContent>
       </Card>
+
+      {holdings.length > 0 && <StockContributionCard />}
 
       <Card>
         <CardHeader>

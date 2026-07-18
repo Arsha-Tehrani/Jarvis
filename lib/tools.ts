@@ -6,6 +6,11 @@ import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/caree
 import { applicationDateSchema } from "@/lib/career-dates";
 import { CATEGORIES } from "@/lib/finance/categorize";
 import { formatFinanceAnswer, runFinanceQuery } from "@/lib/finance/query";
+import {
+  CONTRIBUTION_PERIODS,
+  computeContributionData,
+} from "@/lib/stocks/contribution-data";
+import { formatContributionAnswer } from "@/lib/stocks/contribution";
 import { logHabitByName } from "@/lib/habits";
 import { deleteTracker, findHabitByName } from "@/lib/tracker-delete";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
@@ -50,7 +55,7 @@ const addTaskSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Due date as ISO 8601 (YYYY-MM-DD or full datetime). Resolve relative dates like 'Friday' to a concrete date before calling."
+      "Due date as ISO 8601 (YYYY-MM-DD or full datetime). Resolve relative dates like 'Friday' to a concrete date before calling. Omit this field entirely if no due date was mentioned — never pass placeholder text like 'none' or 'n/a'."
     ),
   // Canonical values are urgent/high/later; the legacy low/medium/high are
   // still accepted (and normalized below) so pre-redesign agent calls and
@@ -87,22 +92,39 @@ const addTask: Tool<typeof addTaskSchema> = {
   },
 };
 
+// Placeholder text a tool-calling model sometimes sends for an optional
+// field instead of omitting it — treat these as "no due date" rather than
+// failing the whole call.
+const NO_DUE_DATE_PLACEHOLDERS = new Set([
+  "none",
+  "n/a",
+  "na",
+  "null",
+  "tbd",
+  "unspecified",
+  "unknown",
+]);
+
 // Reject due dates the DB would store but the UI couldn't parse.
 function normalizeDue(due: string | undefined): string | null {
   if (!due) return null;
-  const parsed = new Date(due);
+  const trimmed = due.trim();
+  if (trimmed === "" || NO_DUE_DATE_PLACEHOLDERS.has(trimmed.toLowerCase())) return null;
+  const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`Unparseable due date: "${due}"`);
   }
   // Keep date-only strings as-is (no fake midnight timezone shifts).
-  return /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : parsed.toISOString();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : parsed.toISOString();
 }
 
 const dateField = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD")
   .optional()
-  .describe("Date as YYYY-MM-DD; omit for today. Resolve relative dates yourself.");
+  .describe(
+    "Date as YYYY-MM-DD; omit for today. Resolve relative dates yourself. Never pass placeholder text like 'none' or 'n/a' — omit the field instead."
+  );
 
 const logGymSchema = z.object({
   date: dateField,
@@ -465,6 +487,26 @@ const queryFinanceTool: Tool<typeof queryFinanceSchema> = {
   handler: (args) => formatFinanceAnswer(args, runFinanceQuery(args)),
 };
 
+const queryStockContributionSchema = z.object({
+  period: z
+    .enum(CONTRIBUTION_PERIODS)
+    .default("1w")
+    .describe("Window to analyze: '1w' for the past week (default), '1m' for the past month"),
+});
+
+// Read-only, like query_finance: the same core the /api/stocks/contribution
+// route runs, formatted as a plain answer. Historical prices come through the
+// existing stock_chart_cache + audited Yahoo client, so this adds no new
+// external-API surface. No confirm gate (read-only).
+const queryStockContributionTool: Tool<typeof queryStockContributionSchema> = {
+  name: "query_stock_contribution",
+  description:
+    "Answer 'which stocks moved my portfolio this week/month' — per-holding dollar and % contribution to the portfolio's move over the past week ('1w') or month ('1m'), and which few holdings drove most of it. Read-only.",
+  schema: queryStockContributionSchema,
+  requiresConfirm: false,
+  handler: async (args) => formatContributionAnswer(await computeContributionData(args.period)),
+};
+
 const logMealSchema = z.object({
   item: z.string().trim().min(1).max(200).describe("What was eaten, e.g. 'chicken burrito'"),
   calories: z.number().int().min(0).max(10_000).describe("Estimated calories"),
@@ -667,6 +709,7 @@ export const tools: Tool[] = [
   addToReadingListTool as Tool,
   logContactTool as Tool,
   queryFinanceTool as Tool,
+  queryStockContributionTool as Tool,
   askTextbookTool as Tool,
   logMealTool as Tool,
   revertActionTool as Tool,
