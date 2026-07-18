@@ -30,7 +30,7 @@ export async function GET() {
   const latest = latestLeetCodeRow();
   const history = getDb()
     .prepare(
-      "SELECT date, total_solved, streak FROM leetcode_stats ORDER BY date DESC LIMIT 30"
+      "SELECT date, total_solved, streak FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 30"
     )
     .all();
   return NextResponse.json({

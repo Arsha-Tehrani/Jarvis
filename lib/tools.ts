@@ -142,7 +142,8 @@ const logGym: Tool<typeof logGymSchema> = {
     getDb()
       .prepare(
         `INSERT INTO gym_logs (date, notes) VALUES (?, ?)
-         ON CONFLICT(date) DO UPDATE SET notes = COALESCE(excluded.notes, notes)`
+         ON CONFLICT(date) DO UPDATE SET
+           notes = COALESCE(excluded.notes, notes), deleted_at = NULL`
       )
       .run(date, args.notes ?? null);
     return `Logged gym for ${date}.`;
@@ -174,7 +175,7 @@ const logLeetcode: Tool<typeof logLeetcodeSchema> = {
     const date = args.date ?? new Date().toISOString().slice(0, 10);
     const previous = db
       .prepare(
-        "SELECT total_solved, streak FROM leetcode_stats ORDER BY date DESC LIMIT 1"
+        "SELECT total_solved, streak FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 1"
       )
       .get() as { total_solved: number; streak: number } | undefined;
     const total = (previous?.total_solved ?? 0) + (args.count ?? 0);
@@ -183,11 +184,21 @@ const logLeetcode: Tool<typeof logLeetcodeSchema> = {
       titleSlug: "",
       timestamp: String(Math.floor(Date.now() / 1000)),
     }));
+    // Replace-by-date as UPDATE-else-INSERT (same pattern as
+    // lib/leetcode.ts saveLeetCodeStats): keeps sync identity, revives a
+    // tombstoned date.
     const save = db.transaction(() => {
-      db.prepare("DELETE FROM leetcode_stats WHERE date = ?").run(date);
-      db.prepare(
-        "INSERT INTO leetcode_stats (date, total_solved, streak, recent) VALUES (?, ?, ?, ?)"
-      ).run(date, total, previous?.streak ?? 0, JSON.stringify(recent));
+      const info = db
+        .prepare(
+          `UPDATE leetcode_stats SET total_solved = ?, streak = ?, recent = ?, deleted_at = NULL
+           WHERE date = ?`
+        )
+        .run(total, previous?.streak ?? 0, JSON.stringify(recent), date);
+      if (info.changes === 0) {
+        db.prepare(
+          "INSERT INTO leetcode_stats (date, total_solved, streak, recent) VALUES (?, ?, ?, ?)"
+        ).run(date, total, previous?.streak ?? 0, JSON.stringify(recent));
+      }
     });
     save();
     return `Logged LeetCode for ${date}${args.count ? ` (+${args.count}, total ${total})` : ""}.`;
@@ -672,7 +683,7 @@ const updateTaskTool: Tool<typeof updateTaskSchema> = {
     const db = getDb();
     const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
     const info = db
-      .prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`)
+      .prepare(`UPDATE tasks SET ${setClause} WHERE id = ? AND deleted_at IS NULL`)
       .run(...entries.map(([, v]) => v), task_id);
     if (info.changes === 0) throw new Error(`Task ${task_id} not found`);
     // Same calendar path as the API route: mirror title/due changes onto the

@@ -30,14 +30,17 @@ const RANK_ORDER = `ORDER BY llm_rank IS NULL, llm_rank ASC,
 function topOpenTasks(limit: number): DigestTask[] {
   return getDb()
     .prepare(
-      `SELECT id, title, due_at FROM tasks WHERE status = 'open' ${RANK_ORDER} LIMIT ?`
+      `SELECT id, title, due_at FROM tasks
+       WHERE status = 'open' AND deleted_at IS NULL ${RANK_ORDER} LIMIT ?`
     )
     .all(limit) as DigestTask[];
 }
 
 function openCount(): number {
   return (
-    getDb().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'open'`).get() as {
+    getDb()
+      .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND deleted_at IS NULL`)
+      .get() as {
       n: number;
     }
   ).n;
@@ -176,7 +179,7 @@ export async function handleTaskReply(text: string): Promise<string | null> {
 
   if (intent?.kind === "by-words") {
     const open = getDb()
-      .prepare(`SELECT id, title FROM tasks WHERE status = 'open'`)
+      .prepare(`SELECT id, title FROM tasks WHERE status = 'open' AND deleted_at IS NULL`)
       .all() as Array<{ id: number; title: string }>;
     const match = matchTitles(intent.words, open);
     if (match.kind === "one") return completeAndReply(match.id, text);

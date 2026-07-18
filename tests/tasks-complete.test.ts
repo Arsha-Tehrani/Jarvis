@@ -15,7 +15,8 @@ function freshDb(): Database.Database {
     title TEXT NOT NULL,
     due_at TEXT,
     status TEXT NOT NULL DEFAULT 'open',
-    completed_at TEXT
+    completed_at TEXT,
+    deleted_at TEXT
   )`);
   return db;
 }

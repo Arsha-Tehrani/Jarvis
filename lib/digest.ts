@@ -91,7 +91,9 @@ export function assembleDigestFacts(): DigestFacts {
   }));
 
   const gymDays = (
-    db.prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ?").get(weekAgo) as {
+    db
+      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ? AND deleted_at IS NULL")
+      .get(weekAgo) as {
       n: number;
     }
   ).n;

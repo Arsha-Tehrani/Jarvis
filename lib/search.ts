@@ -61,7 +61,8 @@ function exactSearch(query: string): SearchGroup[] {
   const tasks = db
     .prepare(
       `SELECT id, title, status, due_at FROM tasks
-       WHERE title LIKE ? ESCAPE '\\' ORDER BY status ASC, id DESC LIMIT ?`
+       WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL
+       ORDER BY status ASC, id DESC LIMIT ?`
     )
     .all(like, LIMIT_PER_SOURCE) as {
     id: number;
@@ -194,7 +195,9 @@ function exactSearch(query: string): SearchGroup[] {
   }
 
   const habits = db
-    .prepare("SELECT name FROM habits WHERE name LIKE ? ESCAPE '\\' LIMIT ?")
+    .prepare(
+      "SELECT name FROM habits WHERE name LIKE ? ESCAPE '\\' AND deleted_at IS NULL LIMIT ?"
+    )
     .all(like, LIMIT_PER_SOURCE) as { name: string }[];
   if (habits.length > 0) {
     groups.push({

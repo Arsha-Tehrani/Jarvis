@@ -164,7 +164,8 @@ function freshDb(): Database.Database {
     llm_rank INTEGER,
     llm_rank_source TEXT,
     llm_suggested_priority TEXT,
-    llm_rationale TEXT
+    llm_rationale TEXT,
+    deleted_at TEXT
   )`);
   return db;
 }

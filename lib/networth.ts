@@ -127,12 +127,20 @@ export function takeSnapshot(): void {
   const now = computeNetWorth();
   const date = new Date().toISOString().slice(0, 10);
   const db = getDb();
+  // Replace-by-date as an undeleting upsert (not DELETE+INSERT): the row
+  // keeps its sync identity, and a re-snapshot of a tombstoned date revives it.
   const save = db.transaction(() => {
-    db.prepare("DELETE FROM networth_snapshots WHERE date = ?").run(date);
     db.prepare(
       `INSERT INTO networth_snapshots
          (date, accounts_total, holdings_value, total, stocks_value, cash_equivalent_value)
-       VALUES (?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(date) DO UPDATE SET
+         accounts_total = excluded.accounts_total,
+         holdings_value = excluded.holdings_value,
+         total = excluded.total,
+         stocks_value = excluded.stocks_value,
+         cash_equivalent_value = excluded.cash_equivalent_value,
+         deleted_at = NULL`
     ).run(
       date,
       now.accountsTotal,
@@ -163,7 +171,7 @@ export function snapshots(days = 180): Snapshot[] {
   const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
   return getDb()
     .prepare(
-      `SELECT ${SNAPSHOT_COLUMNS} FROM networth_snapshots WHERE date >= ? ORDER BY date ASC`
+      `SELECT ${SNAPSHOT_COLUMNS} FROM networth_snapshots WHERE date >= ? AND deleted_at IS NULL ORDER BY date ASC`
     )
     .all(since) as Snapshot[];
 }
@@ -175,7 +183,9 @@ export function snapshots(days = 180): Snapshot[] {
 // existing daily snapshot, not a second snapshot mechanism.
 export function allSnapshots(): Snapshot[] {
   return getDb()
-    .prepare(`SELECT ${SNAPSHOT_COLUMNS} FROM networth_snapshots ORDER BY date ASC`)
+    .prepare(
+      `SELECT ${SNAPSHOT_COLUMNS} FROM networth_snapshots WHERE deleted_at IS NULL ORDER BY date ASC`
+    )
     .all() as Snapshot[];
 }
 

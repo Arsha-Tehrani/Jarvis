@@ -14,7 +14,11 @@ import type { PullRow, PushRow, SyncTableSpec } from "./tables";
 // for their own rows from the push response, so a client's clean rows only
 // ever hold host timestamps; a locally-modified row is marked sync_dirty and
 // wins locally until its push lands, at which point the host's receipt order
-// decides globally. Deletes are NOT propagated — sync is additive.
+// decides globally. Deletes propagate as TOMBSTONES (deleted_at, a spec
+// column like any other): a delete is just the newest write happening to be
+// a delete, resolved by the same host-stamp rules — nothing in this engine
+// special-cases it. The one hard-delete exception (manual-habit cascade)
+// lives in lib/tracker-delete.ts, documented there.
 
 export type DbLike = {
   prepare(sql: string): {

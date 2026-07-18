@@ -82,7 +82,7 @@ export async function GET(req: NextRequest) {
   // message's derived title means the button already fired.
   const mailTaskTitles = new Set(
     (
-      db.prepare("SELECT title FROM tasks WHERE source = 'mail'").all() as {
+      db.prepare("SELECT title FROM tasks WHERE source = 'mail' AND deleted_at IS NULL").all() as {
         title: string;
       }[]
     ).map((t) => t.title)

@@ -63,21 +63,31 @@ function sourcedActual(source: string): {
     }
     case "gym_logs": {
       const actual = (
-        db.prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ?").get(weekAgo) as { n: number }
+        db
+          .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ? AND deleted_at IS NULL")
+          .get(weekAgo) as { n: number }
       ).n;
       return { actual, unit: "days", displayActual: `${actual}`, href: "/trackers" };
     }
     case "leetcode": {
       const latest = db
-        .prepare("SELECT total_solved FROM leetcode_stats ORDER BY date DESC LIMIT 1")
+        .prepare(
+          "SELECT total_solved FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 1"
+        )
         .get() as { total_solved: number } | undefined;
       const baseline = db
-        .prepare("SELECT total_solved FROM leetcode_stats WHERE date <= ? ORDER BY date DESC LIMIT 1")
+        .prepare(
+          "SELECT total_solved FROM leetcode_stats WHERE date <= ? AND deleted_at IS NULL ORDER BY date DESC LIMIT 1"
+        )
         .get(weekAgo) as { total_solved: number } | undefined;
       const actual =
         latest && baseline
           ? Math.max(0, latest.total_solved - baseline.total_solved)
-          : (db.prepare("SELECT COUNT(*) AS n FROM leetcode_stats WHERE date > ?").get(weekAgo) as {
+          : (db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM leetcode_stats WHERE date > ? AND deleted_at IS NULL"
+              )
+              .get(weekAgo) as {
               n: number;
             }).n;
       return { actual, unit: "solved", displayActual: `${actual}`, href: "/trackers" };
@@ -112,7 +122,9 @@ function sourcedActual(source: string): {
 export function listTrackers(): Tracker[] {
   const db = getDb();
   const rows = db
-    .prepare("SELECT id, name, cadence, goal, source, target FROM habits ORDER BY (source IS NULL), name")
+    .prepare(
+      "SELECT id, name, cadence, goal, source, target FROM habits WHERE deleted_at IS NULL ORDER BY (source IS NULL), name"
+    )
     .all() as {
     id: number;
     name: string;
@@ -151,7 +163,9 @@ export function listTrackers(): Tracker[] {
     // Manual tracker → heatmap + cadence-correct streak/count label.
     const dates = (
       db
-        .prepare("SELECT date FROM habit_logs WHERE habit_id = ? AND date >= ? ORDER BY date DESC")
+        .prepare(
+          "SELECT date FROM habit_logs WHERE habit_id = ? AND date >= ? AND deleted_at IS NULL ORDER BY date DESC"
+        )
         .all(r.id, since) as { date: string }[]
     ).map((x) => x.date);
     const set = new Set(dates);
@@ -164,7 +178,9 @@ export function listTrackers(): Tracker[] {
     const thisWeek = dates.filter((d) => d > isoDaysAgo(7)).length;
     const doneToday = set.has(today);
     const logCount = (
-      db.prepare("SELECT COUNT(*) AS n FROM habit_logs WHERE habit_id = ?").get(r.id) as {
+      db
+        .prepare("SELECT COUNT(*) AS n FROM habit_logs WHERE habit_id = ? AND deleted_at IS NULL")
+        .get(r.id) as {
         n: number;
       }
     ).n;
@@ -226,7 +242,7 @@ export function computeGoalsProgress(): GoalProgress[] {
 // suggestion, never a block.
 export function checkTrackerDuplicate(name: string): DuplicateSuggestion {
   const existing = getDb()
-    .prepare("SELECT id, name, source FROM habits")
+    .prepare("SELECT id, name, source FROM habits WHERE deleted_at IS NULL")
     .all() as { id: number; name: string; source: string | null }[];
   return findLikelyDuplicate(name, existing);
 }

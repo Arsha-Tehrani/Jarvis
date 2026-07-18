@@ -55,7 +55,8 @@ export function computeRanks(tasks: readonly RankableTask[]): Array<{ id: number
 export function applyDeterministicRanks(db: DbLike): number {
   const open = db
     .prepare(
-      `SELECT id, due_at, priority, created_at FROM tasks WHERE status = 'open'`
+      `SELECT id, due_at, priority, created_at FROM tasks
+       WHERE status = 'open' AND deleted_at IS NULL`
     )
     .all() as RankableTask[];
   const update = db.prepare(

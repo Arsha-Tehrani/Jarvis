@@ -454,7 +454,7 @@ export async function makeTaskFromMessage(
   const title = mailTaskTitle(message.sender, message.subject);
 
   const existing = db
-    .prepare("SELECT 1 FROM tasks WHERE title = ? AND status = 'open'")
+    .prepare("SELECT 1 FROM tasks WHERE title = ? AND status = 'open' AND deleted_at IS NULL")
     .get(title);
   if (existing) return `A task for this message is already open: "${title}"`;
 

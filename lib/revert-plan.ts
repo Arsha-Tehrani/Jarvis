@@ -5,6 +5,11 @@
 // prior state we can't recover (log_contact bumped last_contacted), touched
 // an external system (calendar, notes on disk), or was read-only is refused
 // with a reason instead of guessed at.
+//
+// Inverses on SYNCED tables (tasks, gym_logs, leetcode_stats, habit_logs)
+// tombstone instead of hard-deleting — the removal must propagate to other
+// devices like any write (lib/sync/tombstone.ts). Unsynced tables
+// (nutrition_logs, health_logs) keep plain DELETEs.
 
 export type RevertPlan = {
   sql: string;
@@ -41,12 +46,27 @@ function dateOf(args: Record<string, unknown>, fallbackDate: string): string {
   return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : fallbackDate;
 }
 
+// Tombstone-shaped inverse for a synced table: pure SQL (this module has no
+// db import), same bookkeeping as lib/sync/tombstone.ts — setting
+// sync_dirty/updated_at inline keeps the sync triggers out of the loop. The
+// AND deleted_at IS NULL guard preserves the "nothing matched" error when
+// the row was already removed by hand.
+const SQLITE_NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
+function tombstoneSql(table: string, where: string): string {
+  return `UPDATE ${table} SET deleted_at = ${SQLITE_NOW}, sync_dirty = 1,
+            updated_at = ${SQLITE_NOW}
+          WHERE (${where}) AND deleted_at IS NULL`;
+}
+
 const PLANNERS: Record<string, Planner> = {
   add_task: (args) => {
     const title = str(args, "title");
     return {
-      sql: `DELETE FROM tasks WHERE id = (
-              SELECT MAX(id) FROM tasks WHERE title = ? AND source = 'agent')`,
+      sql: tombstoneSql(
+        "tasks",
+        `id = (SELECT MAX(id) FROM tasks
+               WHERE title = ? AND source = 'agent' AND deleted_at IS NULL)`
+      ),
       params: [title],
       description: `delete the agent-added task "${title}"`,
     };
@@ -54,7 +74,7 @@ const PLANNERS: Record<string, Planner> = {
   log_gym: (args, fallback) => {
     const date = dateOf(args, fallback);
     return {
-      sql: "DELETE FROM gym_logs WHERE date = ?",
+      sql: tombstoneSql("gym_logs", "date = ?"),
       params: [date],
       description: `remove the gym log for ${date}`,
     };
@@ -62,7 +82,7 @@ const PLANNERS: Record<string, Planner> = {
   log_leetcode: (args, fallback) => {
     const date = dateOf(args, fallback);
     return {
-      sql: "DELETE FROM leetcode_stats WHERE date = ?",
+      sql: tombstoneSql("leetcode_stats", "date = ?"),
       params: [date],
       description: `remove the LeetCode entry for ${date}`,
     };
@@ -80,8 +100,11 @@ const PLANNERS: Record<string, Planner> = {
     const name = str(args, "name");
     const date = dateOf(args, fallback);
     return {
-      sql: `DELETE FROM habit_logs WHERE date = ? AND habit_id =
-              (SELECT id FROM habits WHERE LOWER(name) = LOWER(?))`,
+      sql: tombstoneSql(
+        "habit_logs",
+        `date = ? AND habit_id =
+           (SELECT id FROM habits WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL)`
+      ),
       params: [date, name],
       description: `un-check the habit "${name}" for ${date}`,
     };

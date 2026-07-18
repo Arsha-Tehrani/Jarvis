@@ -86,7 +86,7 @@ export function assembleBriefFacts(): BriefFacts {
   // run), falling back through due date and age like lib/tasks/sort.ts.
   const tasks = db
     .prepare(
-      `SELECT id, title, due_at FROM tasks WHERE status = 'open'
+      `SELECT id, title, due_at FROM tasks WHERE status = 'open' AND deleted_at IS NULL
        ORDER BY llm_rank IS NULL, llm_rank ASC,
          due_at IS NULL, due_at ASC, created_at ASC
        LIMIT 5`

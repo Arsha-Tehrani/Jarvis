@@ -201,7 +201,9 @@ export async function taskCalendarReconcileJob(): Promise<void> {
     getDb()
       .prepare(
         `SELECT id, title, description, due_at, status, gcal_event_id, sync_id, created_at
-         FROM tasks WHERE status = 'open' AND due_at IS NOT NULL AND gcal_event_id IS NULL`
+         FROM tasks
+         WHERE status = 'open' AND due_at IS NOT NULL AND gcal_event_id IS NULL
+           AND deleted_at IS NULL`
       )
       .all() as TaskRow[]
   ).filter((t) => shouldReconcile(t, now, true));

@@ -64,7 +64,7 @@ export function applyLlmRankings(
   rankings: readonly LlmRanking[]
 ): void {
   const current = db
-    .prepare(`SELECT id, priority FROM tasks WHERE status = 'open'`)
+    .prepare(`SELECT id, priority FROM tasks WHERE status = 'open' AND deleted_at IS NULL`)
     .all() as Array<{ id: number; priority: Priority }>;
   const priorityOf = new Map(current.map((t) => [t.id, t.priority]));
   const update = db.prepare(

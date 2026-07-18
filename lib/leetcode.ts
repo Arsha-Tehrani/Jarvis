@@ -71,11 +71,20 @@ export async function fetchLeetCodeStats(username: string): Promise<LeetCodeStat
 // Store one row per date: pulls and manual entries both land here.
 export function saveLeetCodeStats(date: string, stats: LeetCodeStats): void {
   const db = getDb();
+  // Replace-by-date as an UPDATE-else-INSERT (not DELETE+INSERT): the row
+  // keeps its sync identity, and re-logging a tombstoned date revives it.
   const save = db.transaction(() => {
-    db.prepare("DELETE FROM leetcode_stats WHERE date = ?").run(date);
-    db.prepare(
-      "INSERT INTO leetcode_stats (date, total_solved, streak, recent) VALUES (?, ?, ?, ?)"
-    ).run(date, stats.totalSolved, stats.streak, JSON.stringify(stats.recent));
+    const info = db
+      .prepare(
+        `UPDATE leetcode_stats SET total_solved = ?, streak = ?, recent = ?, deleted_at = NULL
+         WHERE date = ?`
+      )
+      .run(stats.totalSolved, stats.streak, JSON.stringify(stats.recent), date);
+    if (info.changes === 0) {
+      db.prepare(
+        "INSERT INTO leetcode_stats (date, total_solved, streak, recent) VALUES (?, ?, ?, ?)"
+      ).run(date, stats.totalSolved, stats.streak, JSON.stringify(stats.recent));
+    }
   });
   save();
 }
@@ -85,7 +94,7 @@ export function latestLeetCodeRow():
   | undefined {
   return getDb()
     .prepare(
-      "SELECT date, total_solved, streak, recent FROM leetcode_stats ORDER BY date DESC LIMIT 1"
+      "SELECT date, total_solved, streak, recent FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 1"
     )
     .get() as
     | { date: string; total_solved: number; streak: number; recent: string | null }

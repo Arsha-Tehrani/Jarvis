@@ -8,9 +8,12 @@ import {
 
 const DAY = "2026-07-06";
 
-test("add_task inverse deletes the newest agent-added task with that title", () => {
+test("add_task inverse tombstones the newest agent-added task with that title", () => {
   const plan = planRevert("add_task", { title: "Call the bank" }, DAY);
-  assert.match(plan.sql, /DELETE FROM tasks/);
+  // Synced table → tombstone UPDATE, not a hard DELETE (the removal must
+  // propagate through sync).
+  assert.match(plan.sql, /UPDATE tasks SET deleted_at/);
+  assert.match(plan.sql, /sync_dirty = 1/);
   assert.match(plan.sql, /source = 'agent'/);
   assert.match(plan.sql, /MAX\(id\)/);
   assert.deepEqual(plan.params, ["Call the bank"]);
@@ -33,8 +36,28 @@ test("date-keyed tools fall back to the log row's date, not today", () => {
 
 test("log_metric inverse targets date + kind", () => {
   const plan = planRevert("log_metric", { kind: "sleep_hours", value: 7.5 }, DAY);
+  // health_logs is NOT synced — stays a genuine hard delete.
   assert.match(plan.sql, /DELETE FROM health_logs WHERE date = \? AND kind = \?/);
   assert.deepEqual(plan.params, [DAY, "sleep_hours"]);
+});
+
+test("synced-table inverses tombstone; unsynced-table inverses hard-delete", () => {
+  for (const [tool, args] of [
+    ["log_gym", {}],
+    ["log_leetcode", {}],
+    ["log_habit", { name: "x" }],
+  ] as const) {
+    const plan = planRevert(tool, args, DAY);
+    assert.match(plan.sql, /SET deleted_at/, `${tool} must tombstone`);
+    assert.doesNotMatch(plan.sql, /^DELETE/, `${tool} must not hard-delete`);
+  }
+  for (const [tool, args] of [
+    ["log_meal", { item: "x" }],
+    ["log_metric", { kind: "mood" }],
+  ] as const) {
+    const plan = planRevert(tool, args, DAY);
+    assert.match(plan.sql, /^DELETE FROM/, `${tool} (unsynced) stays a hard delete`);
+  }
 });
 
 test("log_habit inverse resolves the habit id case-insensitively", () => {
