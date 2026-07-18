@@ -21,7 +21,7 @@ export { CONTRIBUTION_PERIODS, type ContributionPeriod };
 // that click-to-chart already uses (getStockChart) — no second cache, no second
 // client, no bypass of the once-per-ticker-per-calendar-day rate protection.
 
-const PERIOD_DAYS: Record<ContributionPeriod, number> = { "1w": 7, "1m": 30 };
+const PERIOD_DAYS: Record<ContributionPeriod, number> = { "1w": 7, "2w": 14, "1m": 30 };
 
 // period → the YYYY-MM-DD we measure from: today minus the period's calendar
 // days. We then take the closest trading-day close at or before it.

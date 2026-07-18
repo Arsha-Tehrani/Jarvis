@@ -24,9 +24,10 @@ type Data = {
   concentration: ConcentrationSummary | null;
 };
 
-const PERIOD_LABELS: Record<ContributionPeriod, string> = { "1w": "1W", "1m": "1M" };
+const PERIOD_LABELS: Record<ContributionPeriod, string> = { "1w": "1W", "2w": "2W", "1m": "1M" };
 const PERIOD_WORDS: Record<ContributionPeriod, string> = {
   "1w": "this week",
+  "2w": "these two weeks",
   "1m": "this month",
 };
 
@@ -127,8 +128,8 @@ export function StockContributionCard() {
               {data!.concentration && (
                 <p className="text-muted-foreground">
                   {data!.concentration.topN} of {data!.concentration.holdingsWithData} holdings
-                  account for {Math.round(data!.concentration.coverageFraction * 100)}% of{" "}
-                  {PERIOD_WORDS[period]}&apos;s move.
+                  account for {Math.round(data!.concentration.coverageFraction * 100)}% of the
+                  move over {PERIOD_WORDS[period]}.
                 </p>
               )}
             </div>

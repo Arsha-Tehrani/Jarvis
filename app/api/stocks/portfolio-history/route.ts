@@ -7,16 +7,20 @@ import {
   hasBreakdown,
 } from "@/lib/stocks/portfolio-history";
 
-// Portfolio value over time for the Stocks page. Reads the SAME daily
-// net-worth snapshot rows the Net Worth page draws (no second snapshot
-// mechanism) and windows them through the pure filter. Named
-// /portfolio-history to avoid colliding with /api/stocks/history, which is
-// the per-ticker EOD price-history endpoint.
+// Portfolio value over time for the Stocks page — the INVESTMENT ACCOUNT
+// only (stocks vs. cash-equivalent), never the manual bank/checking/savings
+// accounts_total (that blended view lives on the Net Worth page, exactly
+// once). Reads the SAME daily net-worth snapshot rows the Net Worth page
+// draws (no second snapshot mechanism) and windows them through the pure
+// filter. Named /portfolio-history to avoid colliding with
+// /api/stocks/history, which is the per-ticker EOD price-history endpoint.
 //
-// Each snapshot stores accounts_total (manual account balances) + holdings
-// value separately; the chart plots them as "cash/account" and "holdings"
-// lines. Rows predating the split have null holdings/cash and render as a gap
-// rather than a fabricated $0.
+// Rows predating the stocks/cash-equivalent split have null stocks_value/
+// cash_equivalent_value and render as a gap rather than a fabricated $0;
+// `total` for those legacy rows falls back to `holdings_value`, which was
+// ALREADY investment-account-only before this split existed — never
+// `s.total` (the blended net-worth figure), so bank data never leaks in even
+// on the no-breakdown fallback path.
 
 const querySchema = z.object({
   range: z.enum(PORTFOLIO_RANGES).default("3m"),
@@ -32,9 +36,11 @@ export async function GET(req: NextRequest) {
 
   const rows = allSnapshots().map((s) => ({
     date: s.date,
-    holdings_value: s.holdings_value,
-    cash_value: s.accounts_total,
-    total: s.total,
+    stocks_value: s.stocks_value,
+    cash_equivalent_value: s.cash_equivalent_value,
+    total: s.stocks_value != null && s.cash_equivalent_value != null
+      ? s.stocks_value + s.cash_equivalent_value
+      : s.holdings_value,
   }));
   const series = filterPortfolioHistory(rows, range);
 

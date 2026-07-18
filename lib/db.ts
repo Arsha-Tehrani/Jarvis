@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import { syncColumnMigrations, syncTriggerSql } from "@/lib/sync/tables";
 import { migrateGoalsToTrackers } from "@/lib/trackers-migrate";
+import { CASH_EQUIVALENT_TABLE } from "@/lib/stocks/cash-equivalents";
 
 // One connection per process. Next.js dev hot-reload re-evaluates modules,
 // so stash the handle on globalThis to avoid leaking connections.
@@ -329,7 +330,15 @@ const MIGRATIONS: string[] = [
 
 // Column adds on existing tables. SQLite has no ADD COLUMN IF NOT EXISTS,
 // so idempotency comes from checking pragma table_info first.
-const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+// `seed` runs exactly once — inside the same `if column doesn't exist yet`
+// branch as the ALTER TABLE that adds it (see applyMigrations below) — so a
+// later user correction to the column is never clobbered on a future boot.
+const COLUMN_MIGRATIONS: Array<{
+  table: string;
+  column: string;
+  ddl: string;
+  seed?: (db: Database.Database) => void;
+}> = [
   // Phase 22 — agent cost/latency per turn (filled by /api/agent from
   // lib/llm.ts chat() meta; cost_usd is 0 for local Ollama, null when the
   // pricing table has no entry for the model).
@@ -389,7 +398,43 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   // Phase 23 — sync bookkeeping columns on every allowlisted table,
   // generated from the allowlist itself (lib/sync/tables.ts).
   ...syncColumnMigrations(),
+  // Round 2 — scope the Stocks-page chart to the investment account only:
+  // split a holding's value into "stocks" (real ticker price) vs
+  // "cash-equivalent" (money-market/sweep, e.g. SPAXX). is_cash_equivalent
+  // is a real, user-overridable column, seeded ONCE from the known-ticker
+  // table (lib/stocks/cash-equivalents.ts) — never re-derived from that
+  // table on render, so a manual correction in the Stocks page UI sticks.
+  {
+    table: "holdings",
+    column: "is_cash_equivalent",
+    ddl: "is_cash_equivalent INTEGER NOT NULL DEFAULT 0",
+    seed: seedCashEquivalentHoldings,
+  },
+  // The daily snapshot already writes `holdings_value`; these two sum to it
+  // and let the Stocks chart plot equity vs. cash-equivalent within the
+  // investment account, separate from the Net Worth page's blended total.
+  // Nullable: rows written before this split has no seed value, correctly
+  // null rather than fabricated (same rule as holdings_value/cash_value in
+  // Round 1) — the chart renders a gap for that period, never a fake $0.
+  { table: "networth_snapshots", column: "stocks_value", ddl: "stocks_value REAL" },
+  {
+    table: "networth_snapshots",
+    column: "cash_equivalent_value",
+    ddl: "cash_equivalent_value REAL",
+  },
 ];
+
+function seedCashEquivalentHoldings(db: Database.Database): void {
+  const tickers = CASH_EQUIVALENT_TABLE.map((r) => r.ticker);
+  if (tickers.length === 0) return;
+  const placeholders = tickers.map(() => "?").join(",");
+  const info = db
+    .prepare(`UPDATE holdings SET is_cash_equivalent = 1 WHERE upper(ticker) IN (${placeholders})`)
+    .run(...tickers);
+  if (info.changes > 0) {
+    console.log(`[db] seeded is_cash_equivalent for ${info.changes} existing holding(s)`);
+  }
+}
 
 // Runs AFTER the column adds (indexes/triggers reference sync columns).
 const POST_MIGRATIONS: string[] = [
@@ -501,6 +546,7 @@ function applyMigrations(db: Database.Database): void {
     const cols = db.prepare(`PRAGMA table_info(${m.table})`).all() as { name: string }[];
     if (!cols.some((c) => c.name === m.column)) {
       db.exec(`ALTER TABLE ${m.table} ADD COLUMN ${m.ddl}`);
+      m.seed?.(db);
     }
   }
   for (const sql of POST_MIGRATIONS) db.exec(sql);
