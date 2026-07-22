@@ -192,6 +192,60 @@ const PLANNERS: Record<string, Planner> = {
 
 export const REVERTIBLE_TOOLS = Object.keys(PLANNERS);
 
+// ---- reading executed calls back out of an agent_log row (pure) -------------
+
+// executed_calls is the canonical store (a top-level JSON array). Rows logged
+// before the Agent Log viewer migration have it NULL — fall back to the legacy
+// tool_calls bundle's `.executed` field so old actions stay revertible. Returns
+// null (skip the row) on anything malformed; never guesses.
+export function parseExecutedCalls(
+  executedCalls: string | null,
+  legacyToolCalls: string | null
+): unknown[] | null {
+  if (executedCalls) {
+    try {
+      const parsed = JSON.parse(executedCalls);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  if (legacyToolCalls) {
+    try {
+      const parsed = JSON.parse(legacyToolCalls) as { executed?: unknown };
+      return Array.isArray(parsed?.executed) ? parsed.executed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+type ExecutedEntry = { name?: unknown; args?: unknown; result?: unknown };
+
+// The newest revertible, successful call within a turn's executed list. Pure:
+// the "already reverted" lookup is injected so the db stays out of this module.
+// Only calls with a string `result` are eligible — a call logged with `error`
+// (it threw) never actually wrote the state its inverse would remove.
+export function pickRevertableEntry(
+  entries: unknown[],
+  toolFilter: string | undefined,
+  isReverted: (index: number) => boolean
+): { index: number; tool: string; args: Record<string, unknown> } | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as ExecutedEntry;
+    if (typeof entry.result !== "string") continue;
+    const name = typeof entry.name === "string" ? entry.name : "";
+    if (!REVERTIBLE_TOOLS.includes(name)) continue;
+    if (toolFilter && name !== toolFilter) continue;
+    if (isReverted(i)) continue;
+    const args =
+      entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {};
+    return { index: i, tool: name, args };
+  }
+  return null;
+}
+
 // Refusal reasons for tools we deliberately don't invert.
 const NOT_REVERTIBLE: Record<string, string> = {
   set_goal: "the previous goal value wasn't kept — set the goal again instead",
@@ -200,7 +254,16 @@ const NOT_REVERTIBLE: Record<string, string> = {
     "Google Calendar is the source of truth — delete the event in Google Calendar",
   set_reminder:
     "reminders are Google Calendar events — delete the event in Google Calendar",
+  // Kept deliberately non-revertible (spec §1.5): a Google delete isn't
+  // trivially invertible without reading Google's trash (showDeleted), and an
+  // edit's prior title/time isn't kept. Re-create / re-edit explicitly.
+  edit_calendar_event:
+    "the event's previous title/time wasn't kept — edit it back explicitly",
+  delete_calendar_event:
+    "a deleted Google event can't be restored from here — re-create it explicitly",
   log_contact: "the previous last-contacted date was overwritten and can't be restored",
+  bulk_import_tasks:
+    "the analyze step creates no tasks; a committed import has its own bulk undo in Tasks → Bulk Import",
   delete_habit:
     "a deleted manual habit's logged entries are gone with it — recreate the tracker and re-log instead",
   advance_application: "the previous stage was overwritten — move it back explicitly",

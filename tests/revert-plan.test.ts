@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   REVERTIBLE_TOOLS,
+  parseExecutedCalls,
+  pickRevertableEntry,
   planRevert,
   revertRefusalReason,
 } from "../lib/revert-plan.ts";
@@ -145,4 +147,53 @@ test("missing identifying args and bad fallback dates are hard errors", () => {
   assert.throws(() => planRevert("add_task", {}, DAY), /missing "title"/);
   assert.throws(() => planRevert("log_meal", { calories: 1 }, DAY), /missing "item"/);
   assert.throws(() => planRevert("log_gym", {}, "yesterday"), /invalid fallback date/);
+});
+
+// ---- reading executed calls back: new column + legacy fallback --------------
+
+test("parseExecutedCalls reads the new executed_calls array, falling back to legacy tool_calls.executed", () => {
+  // New shape: a top-level JSON array.
+  const fresh = parseExecutedCalls(JSON.stringify([{ name: "add_task", args: { title: "x" }, result: "ok" }]), null);
+  assert.equal(fresh?.length, 1);
+
+  // Legacy shape: the bundled { executed: [...] } object under tool_calls.
+  const legacy = parseExecutedCalls(null, JSON.stringify({ executed: [{ name: "log_gym", args: {}, result: "ok" }] }));
+  assert.equal(legacy?.length, 1);
+
+  // executed_calls wins when both are present.
+  const both = parseExecutedCalls(JSON.stringify([{ name: "new_one" }]), JSON.stringify({ executed: [{ name: "old_one" }] }));
+  assert.equal((both?.[0] as { name: string }).name, "new_one");
+
+  // Malformed / empty → null (skip the row, never guess).
+  assert.equal(parseExecutedCalls("not json", null), null);
+  assert.equal(parseExecutedCalls(null, null), null);
+  assert.equal(parseExecutedCalls(JSON.stringify({ nope: 1 }), null), null); // array-only
+});
+
+test("pickRevertableEntry picks the newest successful revertible call and skips failed attempts", () => {
+  const entries = [
+    { name: "add_task", args: { title: "first" }, result: "ok" }, // 0 revertible, older
+    { name: "add_task", args: { title: "threw" }, error: "boom" }, // 1 failed — must be skipped
+    { name: "query_finance", args: {}, result: "ok" }, // 2 not revertible
+  ];
+  const pick = pickRevertableEntry(entries, undefined, () => false);
+  assert.deepEqual(pick, { index: 0, tool: "add_task", args: { title: "first" } });
+
+  // A failed-only list yields nothing (reverting a throw could corrupt state).
+  assert.equal(
+    pickRevertableEntry([{ name: "add_task", args: {}, error: "boom" }], undefined, () => false),
+    null
+  );
+
+  // Already-reverted index is skipped.
+  assert.equal(
+    pickRevertableEntry([{ name: "add_task", args: { title: "x" }, result: "ok" }], undefined, () => true),
+    null
+  );
+
+  // toolFilter narrows the match.
+  assert.equal(
+    pickRevertableEntry([{ name: "add_task", args: {}, result: "ok" }], "log_gym", () => false),
+    null
+  );
 });
