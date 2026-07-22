@@ -50,9 +50,15 @@ export type ChatResult = {
 export async function chat({
   messages,
   tools,
+  jsonMode,
 }: {
   messages: ChatMessage[];
   tools?: LlmToolDef[];
+  // Strict JSON output. Ollama's OpenAI-compatible endpoint enforces it via
+  // response_format (local models otherwise wander into prose); Anthropic has
+  // no equivalent flag — the prompt's "ONLY JSON" instruction suffices there,
+  // and callers validate the reply with zod either way.
+  jsonMode?: boolean;
 }): Promise<ChatResult> {
   const provider = process.env.LLM_PROVIDER ?? "ollama";
   const started = Date.now();
@@ -67,7 +73,7 @@ export async function chat({
     ({ result, usage } = await chatAnthropic(messages, tools));
   } else {
     model = process.env.LLM_MODEL ?? "llama3.1:8b";
-    ({ result, usage } = await chatOllama(messages, tools));
+    ({ result, usage } = await chatOllama(messages, tools, jsonMode));
   }
   result.meta = {
     provider: provider === "anthropic" ? "anthropic" : "ollama",
@@ -137,12 +143,14 @@ type ProviderUsage = { inputTokens: number | null; outputTokens: number | null }
 
 async function chatOllama(
   messages: ChatMessage[],
-  tools?: LlmToolDef[]
+  tools?: LlmToolDef[],
+  jsonMode?: boolean
 ): Promise<{ result: ChatResult; usage: ProviderUsage }> {
   const baseUrl = process.env.LLM_BASE_URL ?? "http://localhost:11434/v1";
   const model = process.env.LLM_MODEL ?? "llama3.1:8b";
 
   const body: Record<string, unknown> = { model, messages, stream: false };
+  if (jsonMode) body.response_format = { type: "json_object" };
   if (tools && tools.length > 0) {
     body.tools = tools.map((t) => ({
       type: "function",
