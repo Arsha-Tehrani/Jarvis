@@ -90,7 +90,9 @@ test("tombstone marks the row deleted+dirty; undelete reverses; both are guarded
 
 test("tombstone refuses non-synced tables", () => {
   const db = freshDb();
-  assert.throws(() => tombstone(db, "transactions", "id = ?", [1]), /not a synced table/);
+  // agent_log is never registered for sync (transactions/statements are now
+  // toggleable, so they'd pass this guard); oauth_tokens is hard-excluded.
+  assert.throws(() => tombstone(db, "agent_log", "id = ?", [1]), /not a synced table/);
   assert.throws(() => undelete(db, "oauth_tokens", "1=1", []), /not a synced table/);
 });
 

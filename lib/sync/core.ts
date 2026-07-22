@@ -39,14 +39,17 @@ function nowIso(): string {
 // Assign sync identity to rows that predate sync or were just written by an
 // app path (which never sets sync_id). Runs before every push/pull-serve.
 export function backfillSyncIds(db: DbLike, spec: SyncTableSpec, deviceId: string): number {
+  // Row identity is `id` for almost every table; a couple (category_budgets,
+  // category_overrides) use a TEXT primary key instead, declared via spec.pk.
+  const pk = spec.pk ?? "id";
   const rows = db
-    .prepare(`SELECT id FROM ${spec.table} WHERE sync_id IS NULL`)
-    .all() as Array<{ id: number }>;
+    .prepare(`SELECT ${pk} AS pk FROM ${spec.table} WHERE sync_id IS NULL`)
+    .all() as Array<{ pk: number | string }>;
   const stamp = db.prepare(
     `UPDATE ${spec.table} SET sync_id = ?, origin_device_id = ?,
-       updated_at = COALESCE(updated_at, ?) WHERE id = ?`
+       updated_at = COALESCE(updated_at, ?) WHERE ${pk} = ?`
   );
-  for (const row of rows) stamp.run(randomUUID(), deviceId, nowIso(), row.id);
+  for (const row of rows) stamp.run(randomUUID(), deviceId, nowIso(), row.pk);
   return rows.length;
 }
 
@@ -130,15 +133,18 @@ function toLocalData(db: DbLike, spec: SyncTableSpec, data: LocalRow): LocalRow 
 // by natural key (two devices logged the same day independently) — the
 // natural-key match "adopts" the incoming sync_id instead of violating the
 // table's UNIQUE constraint with a duplicate insert.
+type LocalMatch = { pk: number | string; updated_at: string | null; sync_dirty: number };
+
 function findLocal(
   db: DbLike,
   spec: SyncTableSpec,
   syncId: string,
   local: LocalRow
-): { id: number; updated_at: string | null; sync_dirty: number } | undefined {
+): LocalMatch | undefined {
+  const pk = spec.pk ?? "id";
   const bySyncId = db
-    .prepare(`SELECT id, updated_at, sync_dirty FROM ${spec.table} WHERE sync_id = ?`)
-    .get(syncId) as { id: number; updated_at: string | null; sync_dirty: number } | undefined;
+    .prepare(`SELECT ${pk} AS pk, updated_at, sync_dirty FROM ${spec.table} WHERE sync_id = ?`)
+    .get(syncId) as LocalMatch | undefined;
   if (bySyncId || !spec.naturalKey) return bySyncId;
   const where = spec.naturalKey
     .map((c) =>
@@ -146,10 +152,8 @@ function findLocal(
     )
     .join(" AND ");
   return db
-    .prepare(`SELECT id, updated_at, sync_dirty FROM ${spec.table} WHERE ${where}`)
-    .get(...spec.naturalKey.map((c) => local[c])) as
-    | { id: number; updated_at: string | null; sync_dirty: number }
-    | undefined;
+    .prepare(`SELECT ${pk} AS pk, updated_at, sync_dirty FROM ${spec.table} WHERE ${where}`)
+    .get(...spec.naturalKey.map((c) => local[c])) as LocalMatch | undefined;
 }
 
 function upsert(
@@ -159,15 +163,16 @@ function upsert(
   origin: string,
   local: LocalRow,
   updatedAt: string,
-  existingId: number | undefined
+  existingPk: number | string | undefined
 ): void {
+  const pk = spec.pk ?? "id";
   const cols = Object.keys(local); // registered spec columns only — never request input
-  if (existingId != null) {
+  if (existingPk != null) {
     const sets = cols.map((c) => `${c} = ?`).join(", ");
     db.prepare(
       `UPDATE ${spec.table} SET ${sets}, sync_id = ?, origin_device_id = ?,
-         updated_at = ?, sync_dirty = 0 WHERE id = ?`
-    ).run(...cols.map((c) => local[c]), syncId, origin, updatedAt, existingId);
+         updated_at = ?, sync_dirty = 0 WHERE ${pk} = ?`
+    ).run(...cols.map((c) => local[c]), syncId, origin, updatedAt, existingPk);
   } else {
     const names = [...cols, "sync_id", "origin_device_id", "updated_at", "sync_dirty"];
     db.prepare(
@@ -196,7 +201,7 @@ export function applyPush(
       continue;
     }
     const existing = findLocal(db, spec, row.sync_id, local);
-    upsert(db, spec, row.sync_id, row.origin_device_id, local, hostStamp, existing?.id);
+    upsert(db, spec, row.sync_id, row.origin_device_id, local, hostStamp, existing?.pk);
     stamped.push({ sync_id: row.sync_id, updated_at: hostStamp });
   }
   return { stamped, fkMissing };
@@ -230,7 +235,7 @@ export function applyPull(
       skipped++;
       continue;
     }
-    upsert(db, spec, row.sync_id, row.origin_device_id, local, row.updated_at, existing?.id);
+    upsert(db, spec, row.sync_id, row.origin_device_id, local, row.updated_at, existing?.pk);
     applied++;
   }
   return { applied, skipped, fkMissing };

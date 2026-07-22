@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import { syncColumnMigrations, syncTriggerSql } from "@/lib/sync/tables";
+import { seedSyncConfig } from "@/lib/sync/config";
 import { migrateGoalsToTrackers } from "@/lib/trackers-migrate";
 import { CASH_EQUIVALENT_TABLE } from "@/lib/stocks/cash-equivalents";
 
@@ -284,6 +285,17 @@ const MIGRATIONS: string[] = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+  // Sync Control Center — per-device selection of which registry categories
+  // this machine sends/receives (the /sync page). table_id is a CATEGORY id
+  // from lib/sync/tables.ts (NOT a raw table name). Local-only and itself
+  // hard-excluded from sync (each device owns its own config, like
+  // device_meta). Seeded from the registry defaults by seedSyncConfig() after
+  // migrations: today's allowlist enabled, everything new off.
+  `CREATE TABLE IF NOT EXISTS sync_config (
+    table_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  )`,
   // Part D6 (reworked for multi-timeframe charts) — click-to-chart price
   // history, cached per (ticker, interval). `series` is the whole fetched
   // series as one JSON blob, replaced wholesale — no partial-range SQL
@@ -311,6 +323,25 @@ const MIGRATIONS: string[] = [
     task_ids TEXT NOT NULL,
     sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(date, slot)
+  )`,
+  // Bulk task-list import (spec: parse, group, reason, log). One row per
+  // paste: the raw text, the validated pre-edit model output, what the user
+  // actually confirmed, and the created task ids (the bulk-undo target).
+  // PRIVACY: raw_input_text/proposed_json routinely carry sensitive personal
+  // content (the same category Notes/Finance/Mail keep local-only), so this
+  // table is deliberately NOT in the sync allowlist (lib/sync/tables.ts) and
+  // NOT in BACKUP_TABLES (lib/backup-tables.ts) — like oauth_tokens.
+  `CREATE TABLE IF NOT EXISTS bulk_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    raw_input_text TEXT NOT NULL,
+    source_mode TEXT NOT NULL CHECK (source_mode IN ('structured','unstructured')),
+    model_used TEXT,
+    proposed_json TEXT NOT NULL,
+    final_json TEXT,
+    status TEXT NOT NULL DEFAULT 'proposed'
+      CHECK (status IN ('proposed','committed','discarded','reverted')),
+    created_task_ids TEXT
   )`,
   // Phase 6c — career / job hunt
   `CREATE TABLE IF NOT EXISTS applications (
@@ -348,6 +379,23 @@ const COLUMN_MIGRATIONS: Array<{
   { table: "agent_log", column: "input_tokens", ddl: "input_tokens INTEGER" },
   { table: "agent_log", column: "output_tokens", ddl: "output_tokens INTEGER" },
   { table: "agent_log", column: "cost_usd", ddl: "cost_usd REAL" },
+  // Agent Log viewer — every turn now records a terminal status + debug detail
+  // so a bad run (Ollama down, invalid model output, a tool that threw) is
+  // readable after the fact instead of vanishing into a thrown error. Nullable:
+  // rows logged before this migration keep NULL (status unknown, rendered as
+  // "legacy" in the viewer — not retroactively claimed to be 'ok').
+  //   status         'ok' | 'validation_error' | 'execution_error' | 'llm_error' | 'pending_confirmation'
+  //   error_message  human-readable detail when status != 'ok'
+  //   input_source   'typed' | 'voice_mic' | 'voice_ptt' (how the turn arrived)
+  //   requested_calls raw tool calls the model returned, BEFORE zod validation
+  //   executed_calls  the calls that actually ran, with validated args + result
+  //                   (canonical undo source — see lib/revert.ts; the legacy
+  //                    tool_calls column is read as a fallback for old rows)
+  { table: "agent_log", column: "status", ddl: "status TEXT" },
+  { table: "agent_log", column: "error_message", ddl: "error_message TEXT" },
+  { table: "agent_log", column: "input_source", ddl: "input_source TEXT" },
+  { table: "agent_log", column: "requested_calls", ddl: "requested_calls TEXT" },
+  { table: "agent_log", column: "executed_calls", ddl: "executed_calls TEXT" },
   // Part A — retain the redacted extracted text/table of each imported file
   // so a downstream number that looks off can be traced back to what was
   // actually parsed (the "logs" pattern), not just a pass/fail flag.
@@ -558,6 +606,9 @@ function applyMigrations(db: Database.Database): void {
   // Data migrations (not DDL) — each idempotent, safe to run on every connect.
   migrateTaskPriorities(db);
   migrateGoalsToTrackers(db);
+  // Seed the sync control-center config from the registry defaults (idempotent:
+  // INSERT OR IGNORE, so a user's later toggle is never clobbered on reboot).
+  seedSyncConfig(db);
 }
 
 function connect(): Database.Database {

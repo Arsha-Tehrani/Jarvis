@@ -2,7 +2,8 @@ import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { loggedFetch } from "@/lib/network-log";
 import { applyPull, collectPending, markPushed } from "@/lib/sync/core";
-import { SYNC_TABLES, pullRowSchema } from "@/lib/sync/tables";
+import { getEnabledSyncTables, readSyncConfig } from "@/lib/sync/config";
+import { SYNC_TABLES, TOGGLEABLE_CATEGORY_IDS, pullRowSchema } from "@/lib/sync/tables";
 import { z } from "zod";
 
 // Client half of selective sync (SYNC_ROLE=client). Pushes locally-dirty
@@ -140,7 +141,14 @@ async function pullTable(table: (typeof SYNC_TABLES)[number]): Promise<void> {
 // habit_logs — the allowlist order is load-bearing for the FK).
 export async function runSyncPass(pushOnly = false): Promise<void> {
   const deviceId = getDeviceId();
+  // Only push/pull tables this device currently has enabled — no point sending
+  // rows the host will reject, and no point pulling tables we don't want. The
+  // allowlist order is still load-bearing for FK resolution (habits before
+  // habit_logs, statements before transactions), so we filter without
+  // reordering.
+  const enabled = getEnabledSyncTables(getDb());
   for (const table of SYNC_TABLES) {
+    if (!enabled.has(table.table)) continue;
     try {
       await pushTable(table, deviceId);
       if (!pushOnly) await pullTable(table);
@@ -191,23 +199,29 @@ export function queueSyncPush(): void {
 
 // ---- /status section -----------------------------------------------------
 
+export type SyncTableMark = {
+  table: string;
+  enabled: boolean;
+  pending: number;
+  lastPushAt: string | null;
+  lastPullAt: string | null;
+};
+
 export type SyncStatus = {
   role: SyncRole;
   configured: boolean;
   deviceId?: string;
   hostUrl?: string;
-  tables?: Array<{
-    table: string;
-    pending: number;
-    lastPushAt: string | null;
-    lastPullAt: string | null;
-  }>;
+  // "3 of 12 categories syncing" for the /status summary card.
+  categories?: { total: number; enabled: number };
+  tables?: SyncTableMark[];
 };
 
 export function getSyncStatus(): SyncStatus {
   const role = syncRole();
   if (role === "disabled") return { role, configured: false };
   const db = getDb();
+  const enabled = getEnabledSyncTables(db);
   const tables = SYNC_TABLES.map((spec) => {
     const pending = (
       db.prepare(`SELECT COUNT(*) AS n FROM ${spec.table} WHERE sync_dirty = 1`).get() as {
@@ -217,16 +231,20 @@ export function getSyncStatus(): SyncStatus {
     const state = getSyncState(spec.table);
     return {
       table: spec.table,
+      enabled: enabled.has(spec.table),
       pending,
       lastPushAt: state?.last_push_at ?? null,
       lastPullAt: state?.last_pull_at ?? null,
     };
   });
+  const cfg = readSyncConfig(db);
+  const enabledCategories = TOGGLEABLE_CATEGORY_IDS.filter((id) => cfg.get(id) === true).length;
   return {
     role,
     configured: role === "host" ? !!process.env.SYNC_AUTH_TOKEN : isSyncClientConfigured(),
     deviceId: getDeviceId(),
     hostUrl: role === "client" ? process.env.SYNC_HOST_URL : undefined,
+    categories: { total: TOGGLEABLE_CATEGORY_IDS.length, enabled: enabledCategories },
     tables,
   };
 }

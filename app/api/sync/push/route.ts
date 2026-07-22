@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { applyPush } from "@/lib/sync/core";
+import { getEnabledSyncTables } from "@/lib/sync/config";
 import { hostStamp, requireSyncHost } from "@/lib/sync/host";
 import { getSyncSpec, pushBodySchema } from "@/lib/sync/tables";
 
@@ -27,6 +28,14 @@ export async function POST(req: NextRequest) {
   if (!spec) {
     return NextResponse.json({ error: `table ${parsed.data.table} is not syncable` }, { status: 400 });
   }
-  const { stamped, fkMissing } = applyPush(getDb(), spec, parsed.data.rows, hostStamp());
+  const db = getDb();
+  // The host only ACCEPTS rows for tables it itself has enabled. A client with
+  // a stale toggle shouldn't break the whole sync tick, so a disabled table is
+  // a silent drop (nothing stamped → the client keeps those rows dirty and
+  // stops resending once it, too, sees the table disabled), not a hard error.
+  if (!getEnabledSyncTables(db).has(spec.table)) {
+    return NextResponse.json({ stamped: [], fkMissing: 0 });
+  }
+  const { stamped, fkMissing } = applyPush(db, spec, parsed.data.rows, hostStamp());
   return NextResponse.json({ stamped, fkMissing });
 }
