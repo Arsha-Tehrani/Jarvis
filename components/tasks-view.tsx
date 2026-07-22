@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BulkImportPanel } from "@/components/bulk-import-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -84,6 +85,20 @@ export function TasksView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // ?task={id} (the Calendar page's task-chip dispatch) expands that card
+  // once the list has loaded, so a chip click lands on the task's edit UI.
+  const urlTaskApplied = useRef(false);
+  useEffect(() => {
+    if (urlTaskApplied.current || tasks.length === 0) return;
+    urlTaskApplied.current = true;
+    const id = Number(new URLSearchParams(window.location.search).get("task"));
+    const target = tasks.find((t) => t.id === id);
+    if (target) {
+      setExpandedId(target.id);
+      setDescDraft(target.description ?? "");
+    }
+  }, [tasks]);
 
   async function addTask(e: React.FormEvent) {
     e.preventDefault();
@@ -172,6 +187,8 @@ export function TasksView() {
           Add
         </Button>
       </form>
+
+      <BulkImportPanel onCommitted={load} />
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {loading ? (

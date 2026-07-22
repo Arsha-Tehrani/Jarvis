@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
-import { createCalendarEvent } from "@/lib/google";
+import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google";
 import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
 import { applicationDateSchema } from "@/lib/career-dates";
 import { CATEGORIES } from "@/lib/finance/categorize";
@@ -307,6 +307,99 @@ const setReminderTool: Tool<typeof setReminderSchema> = {
   },
 };
 
+// Resolve "my 3pm dentist thing" to a concrete cached Google event id.
+// Task-mirror events are refused — editing/deleting the mirror directly would
+// desync it from its task; the task tools (update_task, etc.) own those.
+// Ambiguity is an error listing the matches, never a guess.
+function findCachedEvent(titleContains: string, date?: string): { id: string; title: string; start: string } {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT google_event_id AS id, title, start FROM calendar_cache
+       WHERE title LIKE ? COLLATE NOCASE ${date ? "AND start LIKE ?" : ""}
+       ORDER BY start LIMIT 10`
+    )
+    .all(...(date ? [`%${titleContains}%`, `${date}%`] : [`%${titleContains}%`])) as Array<{
+    id: string;
+    title: string;
+    start: string;
+  }>;
+  if (rows.length === 0) {
+    throw new Error(`No calendar event matching "${titleContains}"${date ? ` on ${date}` : ""} found.`);
+  }
+  if (rows.length > 1) {
+    const list = rows.map((r) => `"${r.title}" (${r.start})`).join(", ");
+    throw new Error(`Multiple events match "${titleContains}": ${list}. Be more specific.`);
+  }
+  const mirror = db
+    .prepare("SELECT title FROM tasks WHERE gcal_event_id = ? AND deleted_at IS NULL")
+    .get(rows[0].id) as { title: string } | undefined;
+  if (mirror) {
+    throw new Error(
+      `"${rows[0].title}" mirrors the task "${mirror.title}" — edit or delete the task instead, and its calendar event follows.`
+    );
+  }
+  return rows[0];
+}
+
+const editEventSchema = z.object({
+  title_contains: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("Part of the existing event's title, used to find it (case-insensitive)"),
+  date: dateField,
+  new_title: z.string().trim().min(1).max(300).optional().describe("New event title"),
+  new_start: isoDatetime("New start time").optional(),
+  new_end: isoDatetime("New end time").optional().describe("New end time; requires new_start"),
+});
+
+// Writes to an external system (Google) → confirm-gated like every other
+// destructive/external-write tool. `date` narrows the title match.
+const editEventTool: Tool<typeof editEventSchema> = {
+  name: "edit_calendar_event",
+  description:
+    "Change the title and/or time of an existing Google Calendar event (not a task — use update_task for tasks). Finds the event by a fragment of its title, optionally narrowed to a date. Requires user confirmation.",
+  schema: editEventSchema,
+  requiresConfirm: true,
+  handler: async (args) => {
+    if (!args.new_title && !args.new_start) {
+      throw new Error("Nothing to change — provide new_title and/or new_start");
+    }
+    const event = findCachedEvent(args.title_contains, args.date);
+    await updateCalendarEvent(event.id, {
+      title: args.new_title,
+      start: args.new_start,
+      end: args.new_end,
+    });
+    return `Updated event "${args.new_title ?? event.title}"${args.new_start ? ` → ${args.new_start}` : ""}.`;
+  },
+};
+
+const deleteEventSchema = z.object({
+  title_contains: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("Part of the event's title, used to find it (case-insensitive)"),
+  date: dateField,
+});
+
+const deleteEventTool: Tool<typeof deleteEventSchema> = {
+  name: "delete_calendar_event",
+  description:
+    "Delete an event from the user's Google Calendar (not a task — tasks have their own delete). Finds the event by a fragment of its title, optionally narrowed to a date. Requires user confirmation and cannot be undone.",
+  schema: deleteEventSchema,
+  requiresConfirm: true,
+  handler: async (args) => {
+    const event = findCachedEvent(args.title_contains, args.date);
+    await deleteCalendarEvent(event.id);
+    return `Deleted event "${event.title}" (${event.start}).`;
+  },
+};
+
 const logMetricSchema = z.object({
   kind: z
     .enum(HEALTH_KINDS)
@@ -594,6 +687,35 @@ const askTextbookTool: Tool<typeof askTextbookSchema> = {
   },
 };
 
+const bulkImportSchema = z.object({
+  text: z
+    .string()
+    .min(1)
+    .max(100_000)
+    .describe(
+      "The user's pasted task list / notes dump, verbatim — do not summarize or reword it"
+    ),
+});
+
+// Analyze ONLY — no tasks are created here. The proposal lands in
+// bulk_imports (status 'proposed') and the user reviews/edits/confirms it in
+// the Tasks page's Bulk Import panel (the preview-then-confirm gate every
+// write path of this feature must pass through). requiresConfirm=false is
+// correct because analyzing writes nothing but the proposal log row.
+const bulkImportTool: Tool<typeof bulkImportSchema> = {
+  name: "bulk_import_tasks",
+  description:
+    "Parse a pasted list of many to-dos (a checklist, meeting notes, a task dump) into grouped, structured task proposals. Creates NOTHING directly — the user reviews and confirms the proposal on the Tasks page. Use when the user pastes a list and asks to add these as tasks.",
+  schema: bulkImportSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const { analyzeBulkImport } = await import("@/lib/bulk-import/parse");
+    const result = await analyzeBulkImport(args.text);
+    const taskCount = result.proposal.groups.reduce((n, g) => n + g.tasks.length, 0);
+    return `Parsed ${taskCount} task(s) in ${result.proposal.groups.length} group(s) (${result.sourceMode} input). Nothing is created yet — review and confirm in Tasks → Bulk Import.`;
+  },
+};
+
 const revertActionSchema = z.object({
   tool: z
     .enum(REVERTIBLE_TOOLS as [string, ...string[]])
@@ -711,6 +833,8 @@ export const tools: Tool[] = [
   setGoal as Tool,
   appendNoteTool as Tool,
   createEventTool as Tool,
+  editEventTool as Tool,
+  deleteEventTool as Tool,
   setReminderTool as Tool,
   logMetricTool as Tool,
   logHabitTool as Tool,
@@ -723,6 +847,7 @@ export const tools: Tool[] = [
   queryStockContributionTool as Tool,
   askTextbookTool as Tool,
   logMealTool as Tool,
+  bulkImportTool as Tool,
   revertActionTool as Tool,
 ];
 
