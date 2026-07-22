@@ -451,31 +451,35 @@ function SyncNowButton({ onSynced }: { onSynced: () => void }) {
   );
 }
 
-// The Sync section: role + per-table push/pull marks and pending counts.
-// Same card language as the checks above; "disabled" is a calm one-liner.
+// Compact Sync summary: role + health + "N of M categories syncing", with a
+// link into /sync (the full control center). The per-category toggles and
+// per-table marks live on /sync now — this page just surfaces state.
 function SyncSection({ sync, onSynced }: { sync: SyncStatus; onSynced: () => void }) {
-  const timeOf = (iso: string | null) =>
-    iso
-      ? new Date(iso).toLocaleString("en-US", {
-          month: "short",
-          day: "numeric",
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      : "never";
+  const totalPending = (sync.tables ?? [])
+    .filter((t) => t.enabled)
+    .reduce((n, t) => n + t.pending, 0);
 
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold tracking-tight">Sync</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold tracking-tight">Sync</h2>
+        <Link href="/sync" className="text-xs text-muted-foreground hover:text-foreground">
+          Manage sync →
+        </Link>
+      </div>
       {sync.role === "disabled" ? (
         <Card className="px-(--card-spacing)">
           <p className="text-xs text-muted-foreground">
             Device sync is disabled — set SYNC_ROLE (host/client) in .env.local to enable it.
-            Only allowlisted tracker tables ever sync; finance, mail, and notes stay local.
+            Choose what syncs on the{" "}
+            <Link href="/sync" className="underline hover:text-foreground">
+              Sync page
+            </Link>
+            .
           </p>
         </Card>
       ) : (
-        <Card className="gap-3 px-(--card-spacing)">
+        <Card className="gap-2 px-(--card-spacing)">
           <div className="flex items-center gap-2 text-xs">
             <span
               className={cn(
@@ -484,9 +488,7 @@ function SyncSection({ sync, onSynced }: { sync: SyncStatus; onSynced: () => voi
               )}
               aria-hidden
             />
-            <span className="font-medium">
-              {sync.role === "host" ? "Host" : "Client"}
-            </span>
+            <span className="font-medium">{sync.role === "host" ? "Host" : "Client"}</span>
             <span className="text-muted-foreground">
               {sync.role === "host"
                 ? sync.configured
@@ -498,24 +500,11 @@ function SyncSection({ sync, onSynced }: { sync: SyncStatus; onSynced: () => voi
               {sync.deviceId && ` · device ${sync.deviceId.slice(0, 8)}`}
             </span>
           </div>
-          {sync.tables && (
-            <div className="grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2">
-              {sync.tables.map((t) => (
-                <div key={t.table} className="flex items-baseline justify-between gap-3 text-xs">
-                  <span className="font-mono">{t.table}</span>
-                  <span className="text-muted-foreground">
-                    {t.pending > 0 && (
-                      <span className="text-warn">
-                        {t.pending} pending ·{" "}
-                      </span>
-                    )}
-                    {sync.role === "client"
-                      ? `push ${timeOf(t.lastPushAt)} · pull ${timeOf(t.lastPullAt)}`
-                      : "served live"}
-                  </span>
-                </div>
-              ))}
-            </div>
+          {sync.categories && (
+            <p className="text-xs text-muted-foreground">
+              {sync.categories.enabled} of {sync.categories.total} categories syncing
+              {totalPending > 0 && <span className="text-warn"> · {totalPending} pending</span>}
+            </p>
           )}
           {sync.role === "client" && sync.configured && <SyncNowButton onSynced={onSynced} />}
         </Card>

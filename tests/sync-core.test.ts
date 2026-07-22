@@ -10,6 +10,7 @@ import {
   markPushed,
 } from "../lib/sync/core.ts";
 import {
+  HARD_EXCLUDED_TABLES,
   SYNC_TABLE_NAMES,
   getSyncSpec,
   pullQuerySchema,
@@ -20,13 +21,19 @@ import {
 // All against in-memory sqlite — no network, no jarvis.db, no two machines.
 
 // ---- THE test: excluded tables can never be requested ----------------------
+//
+// The old flat allowlist rejected a big fixed list. Now most of those are
+// user-toggleable via the Sync Control Center — so the permanent guarantee
+// narrows to two sets:
+//   1. HARD_EXCLUDED_TABLES — locked forever (would break the app, not just
+//      leak): oauth_tokens, device_meta, sync_state, sync_config.
+//   2. Tables never entered in the registry at all (mail, agent_log, …) — no
+//      spec, so no wire schema will name them either.
 
-const FORBIDDEN = [
-  "transactions",
-  "statements",
+const NEVER_SYNCABLE = [
+  ...HARD_EXCLUDED_TABLES,
   "mail_messages",
   "mail_accounts",
-  "oauth_tokens",
   "agent_log",
   "network_log",
   "health_logs",
@@ -36,8 +43,8 @@ const FORBIDDEN = [
   "goals",
 ];
 
-test("non-allowlisted tables are rejected by the push endpoint schema", () => {
-  for (const table of FORBIDDEN) {
+test("non-syncable tables are rejected by the push endpoint schema", () => {
+  for (const table of NEVER_SYNCABLE) {
     const parsed = pushBodySchema.safeParse({
       table,
       rows: [
@@ -52,16 +59,16 @@ test("non-allowlisted tables are rejected by the push endpoint schema", () => {
   }
 });
 
-test("non-allowlisted tables are rejected by the pull endpoint schema", () => {
-  for (const table of FORBIDDEN) {
+test("non-syncable tables are rejected by the pull endpoint schema", () => {
+  for (const table of NEVER_SYNCABLE) {
     const parsed = pullQuerySchema.safeParse({ table });
     assert.equal(parsed.success, false, `${table} must be rejected by pull`);
   }
 });
 
-test("the allowlist itself contains no raw finance/mail/token tables", () => {
-  for (const table of FORBIDDEN) {
-    assert.ok(!SYNC_TABLE_NAMES.includes(table), `${table} must never be allowlisted`);
+test("the registry never lists a hard-excluded table (impossible to even name on the wire)", () => {
+  for (const table of HARD_EXCLUDED_TABLES) {
+    assert.ok(!SYNC_TABLE_NAMES.includes(table), `${table} must never be syncable`);
   }
 });
 

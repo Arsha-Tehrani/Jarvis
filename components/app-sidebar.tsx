@@ -15,6 +15,7 @@ import {
   Mail,
   Menu,
   Repeat,
+  RefreshCw,
   Search,
   ShieldCheck,
   Target,
@@ -41,6 +42,7 @@ export const NAV_ITEMS = [
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
   { href: "/networth", label: "Net worth", icon: Landmark },
   { href: "/notes", label: "Notes", icon: FileText },
+  { href: "/sync", label: "Sync", icon: RefreshCw },
   { href: "/status", label: "Status", icon: ShieldCheck },
 ];
 
