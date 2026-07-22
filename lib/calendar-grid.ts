@@ -60,6 +60,34 @@ export function resolveGoogleEventTimes(start: string, end?: string): GoogleEven
   };
 }
 
+/**
+ * Google event-PATCH body from the partial fields an edit form or tool call
+ * sends. Only the provided fields appear in the body (PATCH semantics: absent
+ * fields stay untouched on Google). A time change goes through the same
+ * resolveGoogleEventTimes as creation, so all-day-vs-timed detection is never
+ * forked. `end` without `start` is rejected — Google needs both halves to
+ * move an event, and guessing the start would silently misdate it.
+ */
+export function buildGoogleEventPatch(fields: {
+  title?: string;
+  start?: string;
+  end?: string;
+  description?: string;
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (fields.title !== undefined) body.summary = fields.title;
+  if (fields.description !== undefined) body.description = fields.description;
+  if (fields.start !== undefined) {
+    Object.assign(body, resolveGoogleEventTimes(fields.start, fields.end));
+  } else if (fields.end !== undefined) {
+    throw new Error("An end time requires a start time");
+  }
+  if (Object.keys(body).length === 0) {
+    throw new Error("Nothing to update — provide at least one field");
+  }
+  return body;
+}
+
 /** Parse date-only strings as LOCAL midnight; anything else as-is. */
 function parseLocal(s: string): Date {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);

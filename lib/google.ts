@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db";
-import { resolveGoogleEventTimes } from "@/lib/calendar-grid";
+import { buildGoogleEventPatch, resolveGoogleEventTimes } from "@/lib/calendar-grid";
 import { loggedFetch } from "@/lib/network-log";
 
 // Google Calendar via OAuth (Testing mode: refresh tokens expire ~weekly —
@@ -239,6 +239,59 @@ export async function createCalendarEvent({
   // Google is the source of truth: read back rather than writing the cache.
   await pollCalendar().catch((err) => console.error("[google] read-back poll failed:", err));
   return data.id;
+}
+
+// Edit a genuine Google event (NOT a task mirror — those are edited through
+// the task write path so task and event never desync). Same shape decisions
+// as creation via buildGoogleEventPatch/resolveGoogleEventTimes; same
+// read-back-after-write, since Google stays the source of truth.
+export async function updateCalendarEvent(
+  eventId: string,
+  fields: { title?: string; start?: string; end?: string; notes?: string }
+): Promise<void> {
+  const token = await getGoogleAccessToken();
+  const body = buildGoogleEventPatch({
+    title: fields.title,
+    start: fields.start,
+    end: fields.end,
+    description: fields.notes,
+  });
+  const res = await loggedFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+    { feature: "calendar-write", purpose: "update event" }
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(`Event update failed (${res.status}): ${data.error?.message ?? "unknown"}`);
+  }
+  await pollCalendar().catch((err) => console.error("[google] read-back poll failed:", err));
+}
+
+// Delete a genuine Google event. 404/410 count as success — the event being
+// already gone IS the desired end state (hand-deleted on Google, or a retry).
+export async function deleteCalendarEvent(eventId: string): Promise<void> {
+  const token = await getGoogleAccessToken();
+  const res = await loggedFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+    { feature: "calendar-write", purpose: "delete event" }
+  );
+  if (!res.ok && res.status !== 404 && res.status !== 410) {
+    const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(`Event deletion failed (${res.status}): ${data.error?.message ?? "unknown"}`);
+  }
+  await pollCalendar().catch((err) => console.error("[google] read-back poll failed:", err));
 }
 
 // Cron job: hourly poll (+ catch-up at launch). Not connected → skip quietly.

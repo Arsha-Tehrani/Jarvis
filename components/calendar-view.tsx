@@ -109,6 +109,18 @@ export function CalendarView() {
   const [eventBusy, setEventBusy] = useState(false);
   const eventTitleRef = useRef<HTMLInputElement>(null);
 
+  // Edit/delete for GENUINE Google events only. Task chips never open this —
+  // they dispatch to the Tasks page's own edit UI (see taskChipHref), because
+  // editing a task's mirror event directly would desync it from the task.
+  const [editEvent, setEditEvent] = useState<CalEvent | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDate, setEditDate] = useState("");
+  const [editAllDay, setEditAllDay] = useState(false);
+  const [editStartTime, setEditStartTime] = useState("09:00");
+  const [editEndTime, setEditEndTime] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+
   const load = useCallback(async () => {
     // Google and tasks load independently — a Google failure never hides
     // local tasks, and vice versa.
@@ -240,6 +252,100 @@ export function CalendarView() {
     setAddError(null);
     setEventDate(key);
     setEventError(null);
+    setEditEvent(null);
+    setEditError(null);
+  }
+
+  // Clicking a task chip routes to the Tasks page's edit UI (?task= expands
+  // that card) — the one-line dispatch that keeps task mirrors out of the
+  // Google edit/delete flow.
+  function taskChipHref(t: Task): string {
+    return `/tasks?task=${t.id}`;
+  }
+
+  function openEditEvent(e: CalEvent) {
+    const allDay = isAllDay(e.start);
+    setEditEvent(e);
+    setEditTitle(e.title);
+    setEditAllDay(allDay);
+    setEditError(null);
+    if (allDay) {
+      setEditDate(e.start);
+      setEditStartTime("09:00");
+      setEditEndTime("");
+    } else {
+      const d = new Date(e.start);
+      setEditDate(localDateKey(d));
+      setEditStartTime(
+        `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+      );
+      const end = new Date(e.end);
+      setEditEndTime(
+        Number.isNaN(end.getTime()) || localDateKey(end) !== localDateKey(d)
+          ? ""
+          : `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`
+      );
+    }
+  }
+
+  async function saveEventEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editEvent || !editTitle.trim() || !editDate) return;
+    if (!editAllDay && !editStartTime) return;
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      const start = editAllDay ? editDate : `${editDate}T${editStartTime}:00`;
+      const end = !editAllDay && editEndTime ? `${editDate}T${editEndTime}:00` : undefined;
+      const res = await fetch(
+        `/api/calendar/events/${encodeURIComponent(editEvent.google_event_id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: editTitle.trim(), start, end }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // OAuth failures surface the standard "…reconnect from the Calendar
+        // tab" message verbatim, same as every other Google action here.
+        setEditError(data.error ?? "Failed to update event");
+        return;
+      }
+      setEditEvent(null);
+      // The API route already re-polled Google server-side (read-back);
+      // this refreshes local state from the now-current calendar_cache.
+      await load();
+    } catch {
+      setEditError("Could not reach the API.");
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  async function removeEvent(ev: CalEvent) {
+    // Destructive write against an external system → plain confirm, per the
+    // same confirm-gated discipline as money actions and tracker deletion.
+    if (!window.confirm(`Delete "${ev.title}" from Google Calendar?`)) return;
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      const res = await fetch(
+        `/api/calendar/events/${encodeURIComponent(ev.google_event_id)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setEditError(data.error ?? "Failed to delete event");
+        return;
+      }
+      if (editEvent?.google_event_id === ev.google_event_id) setEditEvent(null);
+      await load();
+    } catch {
+      setEditError("Could not reach the API.");
+    } finally {
+      setEditBusy(false);
+    }
   }
 
   // The + on a day cell: select that day, default to the Task tab (unchanged
@@ -446,10 +552,18 @@ export function CalendarView() {
                   key={key}
                   className={`group relative flex flex-col ${outside ? "opacity-40" : ""}`}
                 >
-                  <button
-                    type="button"
+                  {/* The cell is a div (not a button) so the chips inside can
+                      be real interactive elements: an event chip opens the
+                      Google edit/delete flow, a task chip links to the Tasks
+                      edit UI — never the other way around. */}
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => selectDay(key)}
-                    className={`flex flex-1 flex-col items-stretch gap-1 bg-background p-1.5 text-left align-top transition-colors hover:bg-accent/50 ${
+                    onKeyDown={(ev) => {
+                      if (ev.key === "Enter" || ev.key === " ") selectDay(key);
+                    }}
+                    className={`flex flex-1 cursor-pointer flex-col items-stretch gap-1 bg-background p-1.5 text-left align-top transition-colors hover:bg-accent/50 ${
                       view === "month" ? "min-h-24" : "min-h-48"
                     } ${selectedDay === key ? "bg-accent/60" : ""}`}
                   >
@@ -463,10 +577,16 @@ export function CalendarView() {
                       {day.getDate()}
                     </span>
                     {shownEvents.map((e) => (
-                      <span
+                      <button
+                        type="button"
                         key={`${e.google_event_id}:${key}`}
-                        className="truncate rounded bg-primary/10 px-1 py-0.5 text-xs text-primary"
-                        title={e.title}
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          selectDay(key);
+                          openEditEvent(e);
+                        }}
+                        className="truncate rounded bg-primary/10 px-1 py-0.5 text-left text-xs text-primary hover:bg-primary/20"
+                        title={`Edit "${e.title}"`}
                       >
                         {eventTimeLabel(e.start) && (
                           <span className="mr-1 text-[10px] text-muted-foreground">
@@ -474,24 +594,26 @@ export function CalendarView() {
                           </span>
                         )}
                         {e.title}
-                      </span>
+                      </button>
                     ))}
                     {shownTasks.map((t) => (
-                      <span
+                      <a
                         key={`task:${t.id}`}
-                        className="truncate rounded border-l-2 border-warn bg-muted/70 px-1 py-0.5 text-xs text-foreground"
-                        title={`Task: ${t.title}`}
+                        href={taskChipHref(t)}
+                        onClick={(ev) => ev.stopPropagation()}
+                        className="truncate rounded border-l-2 border-warn bg-muted/70 px-1 py-0.5 text-xs text-foreground hover:bg-muted"
+                        title={`Task: ${t.title} — edit on the Tasks page`}
                       >
                         <span className="mr-1 text-[10px] text-muted-foreground">○</span>
                         {t.title}
-                      </span>
+                      </a>
                     ))}
                     {overflow > 0 && (
                       <span className="px-1 text-[10px] text-muted-foreground">
                         +{overflow} more
                       </span>
                     )}
-                  </button>
+                  </div>
                   <div className="absolute right-1 top-1 hidden gap-0.5 group-hover:flex">
                     <button
                       type="button"
@@ -553,6 +675,25 @@ export function CalendarView() {
                       {isAllDay(e.start) ? "All day" : eventTimeLabel(e.start)}
                     </span>
                     <span className="font-medium">{e.title}</span>
+                    <span className="ml-auto flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEditEvent(e)}
+                        disabled={editBusy}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive"
+                        onClick={() => removeEvent(e)}
+                        disabled={editBusy}
+                      >
+                        Delete
+                      </Button>
+                    </span>
                   </li>
                 ))}
                 {selectedTasks.map((t) => (
@@ -562,12 +703,117 @@ export function CalendarView() {
                       <span className="mr-1 text-muted-foreground">○</span>
                       {t.title}
                     </span>
-                    <span className="ml-auto text-xs capitalize text-muted-foreground">
-                      {t.priority}
+                    <span className="ml-auto flex items-baseline gap-2">
+                      <span className="text-xs capitalize text-muted-foreground">
+                        {t.priority}
+                      </span>
+                      {/* Task rows dispatch to the Tasks page, never to the
+                          Google event flow — the mirror must follow the task. */}
+                      <Button variant="ghost" size="sm" asChild>
+                        <a href={taskChipHref(t)}>Edit</a>
+                      </Button>
                     </span>
                   </li>
                 ))}
               </ul>
+            )}
+
+            {editEvent && (
+              <form
+                onSubmit={saveEventEdit}
+                className="flex flex-col gap-2 rounded-md border border-line bg-muted/30 p-3"
+              >
+                <p className="text-xs font-medium text-muted-foreground">
+                  Editing “{editEvent.title}” — saved straight to Google Calendar
+                </p>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="cal-edit-title" className="text-xs">
+                      Title
+                    </Label>
+                    <Input
+                      id="cal-edit-title"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      className="w-56"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="cal-edit-date" className="text-xs">
+                      Date
+                    </Label>
+                    <Input
+                      id="cal-edit-date"
+                      type="date"
+                      value={editDate}
+                      onChange={(e) => setEditDate(e.target.value)}
+                      className="w-40"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5 pb-2">
+                    <Checkbox
+                      id="cal-edit-allday"
+                      checked={editAllDay}
+                      onCheckedChange={(v) => setEditAllDay(v === true)}
+                    />
+                    <Label htmlFor="cal-edit-allday" className="text-xs">
+                      All day
+                    </Label>
+                  </div>
+                  {!editAllDay && (
+                    <>
+                      <div className="flex flex-col gap-1">
+                        <Label htmlFor="cal-edit-start" className="text-xs">
+                          Start
+                        </Label>
+                        <Input
+                          id="cal-edit-start"
+                          type="time"
+                          value={editStartTime}
+                          onChange={(e) => setEditStartTime(e.target.value)}
+                          className="w-28"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <Label htmlFor="cal-edit-end" className="text-xs">
+                          End
+                        </Label>
+                        <Input
+                          id="cal-edit-end"
+                          type="time"
+                          value={editEndTime}
+                          onChange={(e) => setEditEndTime(e.target.value)}
+                          placeholder="+1h"
+                          className="w-28"
+                        />
+                      </div>
+                    </>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={
+                      editBusy ||
+                      !editTitle.trim() ||
+                      !editDate ||
+                      (!editAllDay && !editStartTime)
+                    }
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setEditEvent(null)}
+                    disabled={editBusy}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                {editError && <p className="text-sm text-destructive">{editError}</p>}
+              </form>
+            )}
+            {!editEvent && editError && (
+              <p className="text-sm text-destructive">{editError}</p>
             )}
 
             {/* Task and Event are two distinct actions from the same panel —
