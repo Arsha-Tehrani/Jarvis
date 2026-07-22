@@ -1,13 +1,11 @@
 import { getDb } from "@/lib/db";
-import { REVERTIBLE_TOOLS, planRevert } from "@/lib/revert-plan";
+import { parseExecutedCalls, pickRevertableEntry, planRevert } from "@/lib/revert-plan";
 import { reopenTaskEvent, type TaskRow } from "@/lib/tasks/calendar";
 
 // Undo: find the most recent executed tool call in agent_log that has a
 // clean inverse (lib/revert-plan.ts) and hasn't been reverted yet, then run
 // that inverse. The delete and the reverted_actions marker commit in one
 // transaction, so a revert can never half-apply or double-apply.
-
-type ExecutedEntry = { name?: unknown; args?: unknown };
 
 export type RevertTarget = {
   logId: number;
@@ -24,11 +22,12 @@ export function findRevertTarget(toolFilter?: string): RevertTarget | null {
   const db = getDb();
   const rows = db
     .prepare(
-      "SELECT id, user_text, tool_calls, created_at FROM agent_log ORDER BY id DESC LIMIT ?"
+      "SELECT id, user_text, executed_calls, tool_calls, created_at FROM agent_log ORDER BY id DESC LIMIT ?"
     )
     .all(SCAN_LIMIT) as Array<{
     id: number;
     user_text: string;
+    executed_calls: string | null;
     tool_calls: string | null;
     created_at: string;
   }>;
@@ -37,36 +36,20 @@ export function findRevertTarget(toolFilter?: string): RevertTarget | null {
     .pluck();
 
   for (const row of rows) {
-    if (!row.tool_calls) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(row.tool_calls);
-    } catch {
-      continue; // malformed log row — skip, never guess
-    }
-    const executed = (parsed as { executed?: unknown })?.executed;
-    if (!Array.isArray(executed)) continue;
-
-    // Newest call within the turn first.
-    for (let i = executed.length - 1; i >= 0; i--) {
-      const entry = executed[i] as ExecutedEntry;
-      const name = typeof entry.name === "string" ? entry.name : "";
-      if (!REVERTIBLE_TOOLS.includes(name)) continue;
-      if (toolFilter && name !== toolFilter) continue;
-      if (alreadyReverted.get(row.id, i)) continue;
-      const args =
-        entry.args && typeof entry.args === "object"
-          ? (entry.args as Record<string, unknown>)
-          : {};
-      return {
-        logId: row.id,
-        callIndex: i,
-        tool: name,
-        args,
-        userText: row.user_text,
-        fallbackDate: row.created_at.slice(0, 10),
-      };
-    }
+    const executed = parseExecutedCalls(row.executed_calls, row.tool_calls);
+    if (!executed) continue;
+    const pick = pickRevertableEntry(executed, toolFilter, (i) =>
+      Boolean(alreadyReverted.get(row.id, i))
+    );
+    if (!pick) continue;
+    return {
+      logId: row.id,
+      callIndex: pick.index,
+      tool: pick.tool,
+      args: pick.args,
+      userText: row.user_text,
+      fallbackDate: row.created_at.slice(0, 10),
+    };
   }
   return null;
 }

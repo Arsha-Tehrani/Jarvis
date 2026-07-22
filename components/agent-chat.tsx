@@ -1,15 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Mic, Square } from "lucide-react";
+import { Mic, ScrollText, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { deriveVoiceIndicator, type VoiceIndicatorState } from "@/lib/sidecars/voice-indicator";
 
 type PendingCall = { name: string; args: unknown; description: string };
+
+// How the turn arrived, sent to /api/agent and recorded in agent_log so the
+// Agent Log viewer can tell "the mic mis-transcribed" from "I typed this and
+// it still picked the wrong tool". (voice_ptt is reserved for a future
+// push-to-talk path; the current UI emits only typed / voice_mic.)
+type InputSource = "typed" | "voice_mic" | "voice_ptt";
 
 type Entry =
   | { kind: "user"; text: string }
@@ -17,12 +23,13 @@ type Entry =
   // linkHref/linkLabel: e.g. pointing at /status's Set-up flow when the
   // voice sidecar needs setup — never just the raw terminal-command message.
   | { kind: "error"; text: string; linkHref?: string; linkLabel?: string }
-  | { kind: "pending"; originalText: string; calls: PendingCall[]; resolved?: string };
+  | { kind: "pending"; originalText: string; calls: PendingCall[]; source: InputSource; resolved?: string };
 
 type MicState = "idle" | "starting-sidecar" | "recording" | "transcribing";
 
 const VOICE_POLL_MS = 10_000;
 const VOICE_START_TIMEOUT_MS = 20_000;
+const ERROR_BADGE_POLL_MS = 15_000;
 
 export function AgentChat() {
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -30,8 +37,28 @@ export function AgentChat() {
   const [busy, setBusy] = useState(false);
   const [mic, setMic] = useState<MicState>("idle");
   const [voiceState, setVoiceState] = useState<VoiceIndicatorState>("needs-setup");
+  const [errorCount, setErrorCount] = useState(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const router = useRouter();
+
+  // Poll the 24h error count so a bad run shows a badge on the Log button
+  // without opening anything. Also nudged right after a turn resolves.
+  const refreshErrorCount = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agent-log/summary");
+      if (!res.ok) return;
+      const data = (await res.json()) as { errors24h: number };
+      setErrorCount(data.errors24h);
+    } catch {
+      /* leave the badge as-is on a transient failure */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshErrorCount();
+    const id = setInterval(() => void refreshErrorCount(), ERROR_BADGE_POLL_MS);
+    return () => clearInterval(id);
+  }, [refreshErrorCount]);
 
   // If the card unmounts mid-recording, release the mic.
   useEffect(() => {
@@ -176,7 +203,7 @@ export function AgentChat() {
         return;
       }
       // Same routing as typing: the agent tool-calls it into the right section.
-      await send(data.text);
+      await send(data.text, "voice_mic");
     } catch {
       pushError("Could not reach the transcription API.");
     } finally {
@@ -184,7 +211,7 @@ export function AgentChat() {
     }
   }
 
-  async function send(spoken?: string) {
+  async function send(spoken?: string, source: InputSource = "typed") {
     const text = (spoken ?? input).trim();
     if (!text || busy) return;
     setInput("");
@@ -194,7 +221,7 @@ export function AgentChat() {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, source }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -202,15 +229,17 @@ export function AgentChat() {
           ...prev,
           { kind: "error", text: data.error ?? "Agent request failed" },
         ]);
+        void refreshErrorCount();
         return;
       }
       setEntries((prev) => [...prev, { kind: "agent", text: data.reply }]);
       if (data.pending?.length) {
         setEntries((prev) => [
           ...prev,
-          { kind: "pending", originalText: text, calls: data.pending },
+          { kind: "pending", originalText: text, calls: data.pending, source },
         ]);
       }
+      void refreshErrorCount();
       router.refresh();
     } catch {
       setEntries((prev) => [
@@ -241,6 +270,7 @@ export function AgentChat() {
         body: JSON.stringify({
           originalText: entry.originalText,
           confirmedCalls: entry.calls.map((c) => ({ name: c.name, args: c.args })),
+          source: entry.source,
         }),
       });
       const data = await res.json();
@@ -250,6 +280,7 @@ export function AgentChat() {
           i === index && e.kind === "pending" ? { ...e, resolved } : e
         )
       );
+      void refreshErrorCount();
       router.refresh();
     } catch {
       setEntries((prev) =>
@@ -268,6 +299,25 @@ export function AgentChat() {
     <Card>
       <CardHeader>
         <CardTitle>Ask Jarvis</CardTitle>
+        <CardAction>
+          <Link
+            href="/agent-log"
+            title="Agent log — every turn, including errors"
+            aria-label={
+              errorCount > 0
+                ? `Agent log — ${errorCount} error(s) in the last 24h`
+                : "Agent log"
+            }
+            className="relative flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ScrollText className="size-4" />
+            {errorCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 flex min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground">
+                {errorCount > 9 ? "9+" : errorCount}
+              </span>
+            )}
+          </Link>
+        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {entries.length > 0 && (
