@@ -25,6 +25,15 @@ type Account = {
   updated_at: string;
 };
 
+type BalanceSuggestion = {
+  label: string;
+  kind: "cash" | "debt";
+  balance: number;
+  month: string | null;
+  accountId: number | null;
+  currentBalance: number | null;
+};
+
 type Data = {
   accounts: Account[];
   now: {
@@ -35,6 +44,7 @@ type Data = {
   };
   snapshots: { date: string; total: number }[];
   weeklyDelta: number | null;
+  balanceSuggestions: BalanceSuggestion[];
 };
 
 const usd = (v: number) =>
@@ -112,6 +122,35 @@ export function NetWorthView() {
     await load();
   }
 
+  // B5: apply a captured statement balance to the matching account. Explicit
+  // click only — the write goes through the same confirm-gated accounts
+  // endpoint (PATCH an existing account, POST a new one).
+  async function applySuggestion(s: BalanceSuggestion) {
+    setBusy(true);
+    try {
+      const res = s.accountId
+        ? await fetch("/api/networth", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: s.accountId, balance: s.balance }),
+          })
+        : await fetch("/api/networth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: s.label, kind: s.kind, balance: s.balance }),
+          });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Failed to apply balance");
+      } else {
+        setError(null);
+      }
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (error && !data) return <p className="text-sm text-destructive">{error}</p>;
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
@@ -140,9 +179,7 @@ export function NetWorthView() {
               <span
                 className={cn(
                   "ml-3 text-base font-medium",
-                  data.weeklyDelta >= 0
-                    ? "text-emerald-600 dark:text-emerald-500"
-                    : "text-destructive"
+                  data.weeklyDelta >= 0 ? "text-gain" : "text-loss"
                 )}
               >
                 {data.weeklyDelta >= 0 ? "▲" : "▼"} {usd(Math.abs(data.weeklyDelta))} this week
@@ -158,6 +195,45 @@ export function NetWorthView() {
           {trend.length > 1 && <Sparkline data={trend} height={72} formatValue={usd} />}
         </CardContent>
       </Card>
+
+      {data.balanceSuggestions?.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>From your statements</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 text-sm">
+            <p className="text-muted-foreground">
+              Balances read from imported statements. Account balances are entered
+              by hand, so apply these to keep net worth current — nothing is written
+              until you confirm.
+            </p>
+            {data.balanceSuggestions.map((s) => (
+              <div
+                key={s.label}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border p-2"
+              >
+                <span>
+                  <span className="font-medium">{s.label}</span>{" "}
+                  {s.month ? `(${s.month})` : ""} shows a{" "}
+                  {s.kind === "debt" ? "balance owed" : "balance"} of{" "}
+                  <span className="font-semibold tabular-nums">{usd(s.balance)}</span>
+                  {s.currentBalance != null ? (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      — account currently {usd(s.currentBalance)}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground"> — no matching account yet</span>
+                  )}
+                </span>
+                <Button size="sm" disabled={busy} onClick={() => applySuggestion(s)}>
+                  {s.accountId ? "Update" : "Create account"}
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -176,7 +252,7 @@ export function NetWorthView() {
                   <span className="w-40 font-medium">{a.name}</span>
                   <span
                     className={cn(
-                      "rounded-full px-2 py-0.5 text-xs capitalize",
+                      "rounded-[var(--radius)] px-2 py-0.5 text-xs capitalize",
                       a.kind === "debt"
                         ? "bg-destructive/10 text-destructive"
                         : "bg-muted text-muted-foreground"
@@ -199,7 +275,7 @@ export function NetWorthView() {
                       onChange={(e) =>
                         setEdits((m) => ({ ...m, [a.id]: e.target.value }))
                       }
-                      className="h-8 w-32 text-right text-sm"
+                      className="h-8 w-32 text-right font-data text-[13px]"
                       aria-label={`${a.name} balance`}
                     />
                     <Button

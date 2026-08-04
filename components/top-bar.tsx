@@ -2,8 +2,9 @@
 
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "@/components/app-sidebar";
+import { SystemClock } from "@/components/system-clock";
 
-// Top bar: current page title left, backup + identity right.
+// Top bar: current page title left, server clock + backup + identity right.
 export function TopBar() {
   const pathname = usePathname();
   const current =
@@ -13,8 +14,11 @@ export function TopBar() {
 
   return (
     <header className="flex items-center justify-between gap-4 py-1">
-      <h1 className="text-xl font-semibold tracking-tight">{current}</h1>
+      <h1 className="font-heading text-[26px] font-semibold tracking-tight text-foreground">
+        {current}
+      </h1>
       <div className="flex items-center gap-3">
+        <SystemClock />
         <a href="/api/backup" download className="action-link text-sm">
           Backup ↓
         </a>

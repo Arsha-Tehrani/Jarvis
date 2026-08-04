@@ -6,6 +6,7 @@ import {
   computeBudgetStatus,
 } from "@/lib/finance/budget-math";
 import { CATEGORIES, type Category } from "@/lib/finance/categorize";
+import { getLatestPeriod } from "@/lib/finance/query";
 
 // Category budgets: one optional monthly limit per fixed transaction
 // category. Reads/writes here; the arithmetic lives in budget-math.ts.
@@ -29,9 +30,12 @@ export function setBudget(category: Category, limit: number | null): void {
   ).run(category, limit);
 }
 
-// Month-to-date spend per category (money out only), keyed by category.
+// Spend per category (money out only) for a month, keyed by category. The
+// month is derived from the data (latest imported), not the system clock, so
+// budgets track the statement you actually have — not an empty current month.
 export function mtdSpendByCategory(month?: string): Record<string, number> {
-  const ym = month ?? new Date().toISOString().slice(0, 7);
+  const ym = month ?? getLatestPeriod();
+  if (!ym) return {};
   const rows = getDb()
     .prepare(
       `SELECT category, SUM(-amount) AS spent FROM transactions

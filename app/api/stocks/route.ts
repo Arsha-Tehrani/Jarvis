@@ -8,6 +8,9 @@ import {
   trackedTickers,
   type Quote,
 } from "@/lib/stocks";
+import { computePortfolioTotal } from "@/lib/stocks/portfolio-total";
+import { queueSyncPush } from "@/lib/sync/client";
+import { tombstone } from "@/lib/sync/tombstone";
 
 const tickerField = z
   .string()
@@ -30,10 +33,18 @@ const addSchema = z.discriminatedUnion("kind", [
 export async function GET() {
   const db = getDb();
   const holdings = db
-    .prepare("SELECT id, ticker, shares, cost_basis FROM holdings ORDER BY ticker")
-    .all() as { id: number; ticker: string; shares: number; cost_basis: number }[];
+    .prepare(
+      "SELECT id, ticker, shares, cost_basis, is_cash_equivalent FROM holdings WHERE deleted_at IS NULL ORDER BY ticker"
+    )
+    .all() as {
+    id: number;
+    ticker: string;
+    shares: number;
+    cost_basis: number;
+    is_cash_equivalent: number;
+  }[];
   const watchlist = db
-    .prepare("SELECT id, ticker FROM watchlist ORDER BY ticker")
+    .prepare("SELECT id, ticker FROM watchlist WHERE deleted_at IS NULL ORDER BY ticker")
     .all() as { id: number; ticker: string }[];
 
   let quotes: Map<string, Quote> = new Map();
@@ -50,20 +61,16 @@ export async function GET() {
     }
   }
 
+  // Same computePortfolioTotal the Today card and net worth use, so a
+  // holding with no live quote (e.g. the SPAXX money-market core, which has
+  // no Finnhub symbol) is valued at cost basis identically everywhere
+  // instead of three independent implementations drifting apart.
+  const { holdings: priced } = computePortfolioTotal(holdings, (t) => quotes.get(t));
+
   return NextResponse.json({
     configured: isStocksConfigured(),
     quotesError,
-    holdings: holdings.map((h) => {
-      const q = quotes.get(h.ticker.toUpperCase());
-      return {
-        ...h,
-        price: q?.price ?? null,
-        value: q ? q.price * h.shares : null,
-        pl: q ? (q.price - h.cost_basis) * h.shares : null,
-        dayMove: q ? q.change * h.shares : null,
-        changePercent: q?.changePercent ?? null,
-      };
-    }),
+    holdings: priced,
     watchlist: watchlist.map((w) => {
       const q = quotes.get(w.ticker.toUpperCase());
       return {
@@ -84,14 +91,49 @@ export async function POST(req: NextRequest) {
   const db = getDb();
   if (parsed.data.kind === "holding") {
     const { ticker, shares, cost_basis } = parsed.data;
+    // deleted_at = NULL: re-adding a sold/tombstoned ticker revives its row
+    // (sync natural key) instead of colliding on the UNIQUE constraint.
     db.prepare(
       `INSERT INTO holdings (ticker, shares, cost_basis) VALUES (?, ?, ?)
-       ON CONFLICT(ticker) DO UPDATE SET shares = excluded.shares, cost_basis = excluded.cost_basis`
+       ON CONFLICT(ticker) DO UPDATE SET
+         shares = excluded.shares, cost_basis = excluded.cost_basis, deleted_at = NULL`
     ).run(ticker, shares, cost_basis);
   } else {
-    db.prepare("INSERT OR IGNORE INTO watchlist (ticker) VALUES (?)").run(parsed.data.ticker);
+    // Revive a tombstoned ticker; re-adding a live one stays a no-op.
+    db.prepare(
+      `INSERT INTO watchlist (ticker) VALUES (?)
+       ON CONFLICT(ticker) DO UPDATE SET deleted_at = NULL
+       WHERE watchlist.deleted_at IS NOT NULL`
+    ).run(parsed.data.ticker);
   }
+  queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
   return NextResponse.json({ ok: true }, { status: 201 });
+}
+
+const correctionSchema = z.object({
+  id: z.number().int().positive(),
+  is_cash_equivalent: z.boolean(),
+});
+
+// Manual override for the Stocks page's Stocks-vs-Cash-equivalent chart
+// split — same pattern as the Finance import log's account-type correction
+// dropdown: a real, per-row column, corrected by hand, and never re-derived
+// from the seed ticker table afterward (lib/stocks/cash-equivalents.ts only
+// seeds it once, at migration time).
+export async function PATCH(req: NextRequest) {
+  const parsed = correctionSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
+  }
+  const { id, is_cash_equivalent } = parsed.data;
+  const info = getDb()
+    .prepare("UPDATE holdings SET is_cash_equivalent = ? WHERE id = ? AND deleted_at IS NULL")
+    .run(is_cash_equivalent ? 1 : 0, id);
+  if (info.changes === 0) {
+    return NextResponse.json({ error: "Holding not found" }, { status: 404 });
+  }
+  queueSyncPush();
+  return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(req: NextRequest) {
@@ -101,9 +143,11 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "Need kind=holding|watch and a valid id" }, { status: 400 });
   }
   const table = kind === "holding" ? "holdings" : "watchlist";
-  const info = getDb().prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
-  if (info.changes === 0) {
+  // Tombstone (lib/sync/tombstone.ts): the removal propagates through sync.
+  const changes = tombstone(getDb(), table, "id = ?", [id]);
+  if (changes === 0) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  queueSyncPush();
   return NextResponse.json({ ok: true });
 }

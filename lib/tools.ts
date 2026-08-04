@@ -1,11 +1,18 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { GOAL_KINDS, upsertGoal } from "@/lib/finance/goals";
-import { createCalendarEvent } from "@/lib/google";
+import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google";
 import { STAGES, addApplication, advanceApplicationByCompany } from "@/lib/career";
+import { applicationDateSchema } from "@/lib/career-dates";
 import { CATEGORIES } from "@/lib/finance/categorize";
 import { formatFinanceAnswer, runFinanceQuery } from "@/lib/finance/query";
+import {
+  CONTRIBUTION_PERIODS,
+  computeContributionData,
+} from "@/lib/stocks/contribution-data";
+import { formatContributionAnswer } from "@/lib/stocks/contribution";
 import { logHabitByName } from "@/lib/habits";
+import { deleteTracker, findHabitByName } from "@/lib/tracker-delete";
 import { HEALTH_KINDS, logMetric } from "@/lib/health";
 import { logContactByName } from "@/lib/people";
 import { READING_KINDS, addReadingItem } from "@/lib/reading";
@@ -13,6 +20,14 @@ import { appendNote } from "@/lib/notes";
 import { addMeals } from "@/lib/nutrition";
 import { REVERTIBLE_TOOLS } from "@/lib/revert-plan";
 import { executeRevert, findRevertTarget } from "@/lib/revert";
+import { applyDeterministicRanks } from "@/lib/tasks/rank";
+import { queueLlmRankRefresh } from "@/lib/tasks/rank-llm";
+import { completeTaskCore } from "@/lib/tasks/complete";
+import {
+  closeTaskEvent,
+  updateTaskEvent,
+  type TaskRow,
+} from "@/lib/tasks/calendar";
 import type { LlmToolDef } from "@/lib/llm";
 
 // Tool registry. Every tool the agent can call is defined here with a zod
@@ -31,17 +46,32 @@ export type Tool<S extends z.ZodType = z.ZodType> = {
 
 const addTaskSchema = z.object({
   title: z.string().min(1).describe("Short imperative title of the task"),
+  description: z
+    .string()
+    .max(2000)
+    .optional()
+    .describe("Optional longer detail for the task, if the user gave any"),
   due: z
     .string()
     .optional()
     .describe(
-      "Due date as ISO 8601 (YYYY-MM-DD or full datetime). Resolve relative dates like 'Friday' to a concrete date before calling."
+      "Due date as ISO 8601 (YYYY-MM-DD or full datetime). Resolve relative dates like 'Friday' to a concrete date before calling. Omit this field entirely if no due date was mentioned — never pass placeholder text like 'none' or 'n/a'."
     ),
+  // Canonical values are urgent/high/later; the legacy low/medium/high are
+  // still accepted (and normalized below) so pre-redesign agent calls and
+  // any cached model behavior keep working.
   priority: z
-    .enum(["low", "medium", "high"])
+    .enum(["urgent", "high", "later", "low", "medium"])
     .optional()
-    .describe("Task priority; omit for medium"),
+    .describe("Task priority: urgent, high, or later; omit for high"),
 });
+
+// Legacy → canonical priority (same mapping as the DB migration).
+function normalizePriority(p: string | undefined): "urgent" | "high" | "later" {
+  if (p === "urgent" || p === "later") return p;
+  if (p === "low") return "later";
+  return "high"; // 'high', 'medium', or unspecified
+}
 
 const addTask: Tool<typeof addTaskSchema> = {
   name: "add_task",
@@ -53,29 +83,48 @@ const addTask: Tool<typeof addTaskSchema> = {
     const due = normalizeDue(args.due);
     getDb()
       .prepare(
-        "INSERT INTO tasks (title, due_at, priority, status, source) VALUES (?, ?, ?, 'open', 'agent')"
+        "INSERT INTO tasks (title, description, due_at, priority, status, source) VALUES (?, ?, ?, ?, 'open', 'agent')"
       )
-      .run(args.title, due, args.priority ?? "medium");
+      .run(args.title, args.description ?? null, due, normalizePriority(args.priority));
+    applyDeterministicRanks(getDb());
+    queueLlmRankRefresh();
     return `Added task "${args.title}"${due ? ` due ${due}` : ""}.`;
   },
 };
 
+// Placeholder text a tool-calling model sometimes sends for an optional
+// field instead of omitting it — treat these as "no due date" rather than
+// failing the whole call.
+const NO_DUE_DATE_PLACEHOLDERS = new Set([
+  "none",
+  "n/a",
+  "na",
+  "null",
+  "tbd",
+  "unspecified",
+  "unknown",
+]);
+
 // Reject due dates the DB would store but the UI couldn't parse.
 function normalizeDue(due: string | undefined): string | null {
   if (!due) return null;
-  const parsed = new Date(due);
+  const trimmed = due.trim();
+  if (trimmed === "" || NO_DUE_DATE_PLACEHOLDERS.has(trimmed.toLowerCase())) return null;
+  const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`Unparseable due date: "${due}"`);
   }
   // Keep date-only strings as-is (no fake midnight timezone shifts).
-  return /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : parsed.toISOString();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : parsed.toISOString();
 }
 
 const dateField = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD")
   .optional()
-  .describe("Date as YYYY-MM-DD; omit for today. Resolve relative dates yourself.");
+  .describe(
+    "Date as YYYY-MM-DD; omit for today. Resolve relative dates yourself. Never pass placeholder text like 'none' or 'n/a' — omit the field instead."
+  );
 
 const logGymSchema = z.object({
   date: dateField,
@@ -93,7 +142,8 @@ const logGym: Tool<typeof logGymSchema> = {
     getDb()
       .prepare(
         `INSERT INTO gym_logs (date, notes) VALUES (?, ?)
-         ON CONFLICT(date) DO UPDATE SET notes = COALESCE(excluded.notes, notes)`
+         ON CONFLICT(date) DO UPDATE SET
+           notes = COALESCE(excluded.notes, notes), deleted_at = NULL`
       )
       .run(date, args.notes ?? null);
     return `Logged gym for ${date}.`;
@@ -125,7 +175,7 @@ const logLeetcode: Tool<typeof logLeetcodeSchema> = {
     const date = args.date ?? new Date().toISOString().slice(0, 10);
     const previous = db
       .prepare(
-        "SELECT total_solved, streak FROM leetcode_stats ORDER BY date DESC LIMIT 1"
+        "SELECT total_solved, streak FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 1"
       )
       .get() as { total_solved: number; streak: number } | undefined;
     const total = (previous?.total_solved ?? 0) + (args.count ?? 0);
@@ -134,11 +184,21 @@ const logLeetcode: Tool<typeof logLeetcodeSchema> = {
       titleSlug: "",
       timestamp: String(Math.floor(Date.now() / 1000)),
     }));
+    // Replace-by-date as UPDATE-else-INSERT (same pattern as
+    // lib/leetcode.ts saveLeetCodeStats): keeps sync identity, revives a
+    // tombstoned date.
     const save = db.transaction(() => {
-      db.prepare("DELETE FROM leetcode_stats WHERE date = ?").run(date);
-      db.prepare(
-        "INSERT INTO leetcode_stats (date, total_solved, streak, recent) VALUES (?, ?, ?, ?)"
-      ).run(date, total, previous?.streak ?? 0, JSON.stringify(recent));
+      const info = db
+        .prepare(
+          `UPDATE leetcode_stats SET total_solved = ?, streak = ?, recent = ?, deleted_at = NULL
+           WHERE date = ?`
+        )
+        .run(total, previous?.streak ?? 0, JSON.stringify(recent), date);
+      if (info.changes === 0) {
+        db.prepare(
+          "INSERT INTO leetcode_stats (date, total_solved, streak, recent) VALUES (?, ?, ?, ?)"
+        ).run(date, total, previous?.streak ?? 0, JSON.stringify(recent));
+      }
     });
     save();
     return `Logged LeetCode for ${date}${args.count ? ` (+${args.count}, total ${total})` : ""}.`;
@@ -247,6 +307,99 @@ const setReminderTool: Tool<typeof setReminderSchema> = {
   },
 };
 
+// Resolve "my 3pm dentist thing" to a concrete cached Google event id.
+// Task-mirror events are refused — editing/deleting the mirror directly would
+// desync it from its task; the task tools (update_task, etc.) own those.
+// Ambiguity is an error listing the matches, never a guess.
+function findCachedEvent(titleContains: string, date?: string): { id: string; title: string; start: string } {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT google_event_id AS id, title, start FROM calendar_cache
+       WHERE title LIKE ? COLLATE NOCASE ${date ? "AND start LIKE ?" : ""}
+       ORDER BY start LIMIT 10`
+    )
+    .all(...(date ? [`%${titleContains}%`, `${date}%`] : [`%${titleContains}%`])) as Array<{
+    id: string;
+    title: string;
+    start: string;
+  }>;
+  if (rows.length === 0) {
+    throw new Error(`No calendar event matching "${titleContains}"${date ? ` on ${date}` : ""} found.`);
+  }
+  if (rows.length > 1) {
+    const list = rows.map((r) => `"${r.title}" (${r.start})`).join(", ");
+    throw new Error(`Multiple events match "${titleContains}": ${list}. Be more specific.`);
+  }
+  const mirror = db
+    .prepare("SELECT title FROM tasks WHERE gcal_event_id = ? AND deleted_at IS NULL")
+    .get(rows[0].id) as { title: string } | undefined;
+  if (mirror) {
+    throw new Error(
+      `"${rows[0].title}" mirrors the task "${mirror.title}" — edit or delete the task instead, and its calendar event follows.`
+    );
+  }
+  return rows[0];
+}
+
+const editEventSchema = z.object({
+  title_contains: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("Part of the existing event's title, used to find it (case-insensitive)"),
+  date: dateField,
+  new_title: z.string().trim().min(1).max(300).optional().describe("New event title"),
+  new_start: isoDatetime("New start time").optional(),
+  new_end: isoDatetime("New end time").optional().describe("New end time; requires new_start"),
+});
+
+// Writes to an external system (Google) → confirm-gated like every other
+// destructive/external-write tool. `date` narrows the title match.
+const editEventTool: Tool<typeof editEventSchema> = {
+  name: "edit_calendar_event",
+  description:
+    "Change the title and/or time of an existing Google Calendar event (not a task — use update_task for tasks). Finds the event by a fragment of its title, optionally narrowed to a date. Requires user confirmation.",
+  schema: editEventSchema,
+  requiresConfirm: true,
+  handler: async (args) => {
+    if (!args.new_title && !args.new_start) {
+      throw new Error("Nothing to change — provide new_title and/or new_start");
+    }
+    const event = findCachedEvent(args.title_contains, args.date);
+    await updateCalendarEvent(event.id, {
+      title: args.new_title,
+      start: args.new_start,
+      end: args.new_end,
+    });
+    return `Updated event "${args.new_title ?? event.title}"${args.new_start ? ` → ${args.new_start}` : ""}.`;
+  },
+};
+
+const deleteEventSchema = z.object({
+  title_contains: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("Part of the event's title, used to find it (case-insensitive)"),
+  date: dateField,
+});
+
+const deleteEventTool: Tool<typeof deleteEventSchema> = {
+  name: "delete_calendar_event",
+  description:
+    "Delete an event from the user's Google Calendar (not a task — tasks have their own delete). Finds the event by a fragment of its title, optionally narrowed to a date. Requires user confirmation and cannot be undone.",
+  schema: deleteEventSchema,
+  requiresConfirm: true,
+  handler: async (args) => {
+    const event = findCachedEvent(args.title_contains, args.date);
+    await deleteCalendarEvent(event.id);
+    return `Deleted event "${event.title}" (${event.start}).`;
+  },
+};
+
 const logMetricSchema = z.object({
   kind: z
     .enum(HEALTH_KINDS)
@@ -288,6 +441,34 @@ const logHabitTool: Tool<typeof logHabitSchema> = {
   handler: (args) => logHabitByName(args.name, args.date),
 };
 
+const deleteHabitSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .describe("The tracker/habit's name (matched case-insensitively; fails with the known list)"),
+});
+
+// Deleting a manual habit cascades its logged entries — real data loss, so
+// this is confirm-gated and deliberately NOT revertible via revert_action
+// (the logs are gone; a fake/lossy inverse would be worse than refusing).
+const deleteHabitTool: Tool<typeof deleteHabitSchema> = {
+  name: "delete_habit",
+  description:
+    "Delete a tracker/habit by name. A manual habit is removed along with ALL its logged entries (irreversible); a sourced tracker (linked to gym/LeetCode/sleep/calories/savings data) only removes the tracker config — the underlying data stays. Use when the user wants to stop tracking something.",
+  schema: deleteHabitSchema,
+  requiresConfirm: true,
+  handler: (args) => {
+    const db = getDb();
+    const habit = findHabitByName(db, args.name);
+    const result = deleteTracker(db, habit.id);
+    return result.kind === "manual"
+      ? `Deleted "${result.name}" and its ${result.deletedLogs} logged entr${result.deletedLogs === 1 ? "y" : "ies"}.`
+      : `Removed the "${result.name}" tracker. The underlying ${result.source} data is untouched — a new tracker can point at it again later.`;
+  },
+};
+
 const addApplicationSchema = z.object({
   company: z.string().trim().min(1).max(200).describe("Company name"),
   role: z.string().trim().min(1).max(200).describe("Role / job title"),
@@ -296,6 +477,7 @@ const addApplicationSchema = z.object({
   next_action_at: dateField,
   contact: z.string().max(200).optional().describe("Recruiter / referral contact"),
   link: z.string().max(1000).optional().describe("Job-posting URL"),
+  date_applied: applicationDateSchema,
 });
 
 const addApplicationTool: Tool<typeof addApplicationSchema> = {
@@ -409,6 +591,26 @@ const queryFinanceTool: Tool<typeof queryFinanceSchema> = {
   handler: (args) => formatFinanceAnswer(args, runFinanceQuery(args)),
 };
 
+const queryStockContributionSchema = z.object({
+  period: z
+    .enum(CONTRIBUTION_PERIODS)
+    .default("1w")
+    .describe("Window to analyze: '1w' for the past week (default), '1m' for the past month"),
+});
+
+// Read-only, like query_finance: the same core the /api/stocks/contribution
+// route runs, formatted as a plain answer. Historical prices come through the
+// existing stock_chart_cache + audited Yahoo client, so this adds no new
+// external-API surface. No confirm gate (read-only).
+const queryStockContributionTool: Tool<typeof queryStockContributionSchema> = {
+  name: "query_stock_contribution",
+  description:
+    "Answer 'which stocks moved my portfolio this week/month' — per-holding dollar and % contribution to the portfolio's move over the past week ('1w') or month ('1m'), and which few holdings drove most of it. Read-only.",
+  schema: queryStockContributionSchema,
+  requiresConfirm: false,
+  handler: async (args) => formatContributionAnswer(await computeContributionData(args.period)),
+};
+
 const logMealSchema = z.object({
   item: z.string().trim().min(1).max(200).describe("What was eaten, e.g. 'chicken burrito'"),
   calories: z.number().int().min(0).max(10_000).describe("Estimated calories"),
@@ -485,6 +687,35 @@ const askTextbookTool: Tool<typeof askTextbookSchema> = {
   },
 };
 
+const bulkImportSchema = z.object({
+  text: z
+    .string()
+    .min(1)
+    .max(100_000)
+    .describe(
+      "The user's pasted task list / notes dump, verbatim — do not summarize or reword it"
+    ),
+});
+
+// Analyze ONLY — no tasks are created here. The proposal lands in
+// bulk_imports (status 'proposed') and the user reviews/edits/confirms it in
+// the Tasks page's Bulk Import panel (the preview-then-confirm gate every
+// write path of this feature must pass through). requiresConfirm=false is
+// correct because analyzing writes nothing but the proposal log row.
+const bulkImportTool: Tool<typeof bulkImportSchema> = {
+  name: "bulk_import_tasks",
+  description:
+    "Parse a pasted list of many to-dos (a checklist, meeting notes, a task dump) into grouped, structured task proposals. Creates NOTHING directly — the user reviews and confirms the proposal on the Tasks page. Use when the user pastes a list and asks to add these as tasks.",
+  schema: bulkImportSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const { analyzeBulkImport } = await import("@/lib/bulk-import/parse");
+    const result = await analyzeBulkImport(args.text);
+    const taskCount = result.proposal.groups.reduce((n, g) => n + g.tasks.length, 0);
+    return `Parsed ${taskCount} task(s) in ${result.proposal.groups.length} group(s) (${result.sourceMode} input). Nothing is created yet — review and confirm in Tasks → Bulk Import.`;
+  },
+};
+
 const revertActionSchema = z.object({
   tool: z
     .enum(REVERTIBLE_TOOLS as [string, ...string[]])
@@ -517,23 +748,106 @@ const revertActionTool: Tool<typeof revertActionSchema> = {
   },
 };
 
+const completeTaskSchema = z.object({
+  task_id: z.number().int().positive().describe("The id of the task to mark done"),
+});
+
+// Cleanly invertible (revert clears completed_at and renames the calendar
+// event back), so no confirmation. Idempotency lives in completeTaskCore —
+// the single write path every completion entry point (agent, Slack reply)
+// funnels through: an already-done task is a successful no-op that does NOT
+// re-fire the calendar close, and a missing id is a typed not-found.
+const completeTaskTool: Tool<typeof completeTaskSchema> = {
+  name: "complete_task",
+  description:
+    "Mark a task done by its id. Use when the user says they finished or completed a task.",
+  schema: completeTaskSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const result = completeTaskCore(getDb(), args.task_id);
+    if (result.outcome === "not-found") {
+      throw new Error(`Task ${args.task_id} not found`);
+    }
+    if (result.outcome === "already-done") {
+      return `Already marked done: ${result.title}`;
+    }
+    const row = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(args.task_id) as TaskRow;
+    await closeTaskEvent(row, "completed").catch((err) =>
+      console.error(`[tools] complete_task calendar close failed:`, err)
+    );
+    applyDeterministicRanks(getDb());
+    queueLlmRankRefresh();
+    return `✓ Completed: ${result.title}`;
+  },
+};
+
+const updateTaskSchema = z.object({
+  task_id: z.number().int().positive().describe("The id of the task to update"),
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  due_at: z
+    .string()
+    .optional()
+    .describe("New due date, ISO 8601; resolve relative dates before calling"),
+  priority: z.enum(["urgent", "high", "later"]).optional(),
+});
+
+const updateTaskTool: Tool<typeof updateTaskSchema> = {
+  name: "update_task",
+  description:
+    "Update a task's title, description, due date, or priority by its id. Use when the user asks to change or reschedule an existing task.",
+  schema: updateTaskSchema,
+  requiresConfirm: false,
+  handler: async (args) => {
+    const { task_id, ...fields } = args;
+    const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) throw new Error("Nothing to update — provide at least one field");
+    const db = getDb();
+    const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
+    const info = db
+      .prepare(`UPDATE tasks SET ${setClause} WHERE id = ? AND deleted_at IS NULL`)
+      .run(...entries.map(([, v]) => v), task_id);
+    if (info.changes === 0) throw new Error(`Task ${task_id} not found`);
+    // Same calendar path as the API route: mirror title/due changes onto the
+    // linked event; failures logged, never surfaced as a task-write failure.
+    if (fields.title !== undefined || fields.due_at !== undefined) {
+      const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as TaskRow;
+      await updateTaskEvent(row).catch((err) =>
+        console.error(`[tools] update_task calendar update failed:`, err)
+      );
+    }
+    applyDeterministicRanks(db);
+    queueLlmRankRefresh();
+    const changed = entries.map(([k, v]) => `${k} → ${v}`).join(", ");
+    const title = (db.prepare("SELECT title FROM tasks WHERE id = ?").get(task_id) as { title: string }).title;
+    return `Updated "${title}": ${changed}.`;
+  },
+};
+
 export const tools: Tool[] = [
   addTask as Tool,
+  completeTaskTool as Tool,
+  updateTaskTool as Tool,
   logGym as Tool,
   logLeetcode as Tool,
   setGoal as Tool,
   appendNoteTool as Tool,
   createEventTool as Tool,
+  editEventTool as Tool,
+  deleteEventTool as Tool,
   setReminderTool as Tool,
   logMetricTool as Tool,
   logHabitTool as Tool,
+  deleteHabitTool as Tool,
   addApplicationTool as Tool,
   advanceApplicationTool as Tool,
   addToReadingListTool as Tool,
   logContactTool as Tool,
   queryFinanceTool as Tool,
+  queryStockContributionTool as Tool,
   askTextbookTool as Tool,
   logMealTool as Tool,
+  bulkImportTool as Tool,
   revertActionTool as Tool,
 ];
 

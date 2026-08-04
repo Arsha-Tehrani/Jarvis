@@ -272,6 +272,39 @@ export function parsePdfText(text: string): ParsedTransaction[] {
   return rows;
 }
 
+// The statement's summary balance, for the net-worth suggestion. Checking
+// statements print "Ending Balance $X" (an asset → cash); credit-card
+// statements print "New Balance: $X" alongside "Minimum Payment Due" (a
+// liability → debt). Returns null when no summary line is found, so we only
+// suggest an account update when we're confident what the number means.
+//
+// `accountLabel` is the classifier's actual sub-type (classify.ts's
+// "Checking"/"Savings"/"Credit Card"), so a savings statement suggests a
+// "Savings" account instead of colliding with "Checking" — two accounts of
+// different real-world types must not merge into one suggestion slot.
+// Falls back to the old hardcoded labels when the caller has no sub-type
+// (content-ambiguous CSVs still get a sane default, not a missing label).
+export type StatementBalance = { balance: number; kind: "cash" | "debt"; label: string };
+
+export function extractStatementBalance(
+  text: string,
+  accountLabel?: string
+): StatementBalance | null {
+  const isCard = /Minimum Payment Due|New Balance/i.test(text);
+  if (isCard) {
+    const m = /New Balance:?\s*\$?([\d,]+\.\d{2})/i.exec(text);
+    const bal = m ? parseAmount(m[1]) : null;
+    if (bal != null) return { balance: Math.abs(bal), kind: "debt", label: accountLabel ?? "Credit Card" };
+  }
+  // Prefer the LAST "Ending Balance" (statements repeat it per section).
+  const endings = [...text.matchAll(/Ending Balance\s*\$?([\d,]+\.\d{2})/gi)];
+  if (endings.length > 0) {
+    const bal = parseAmount(endings[endings.length - 1][1]);
+    if (bal != null) return { balance: Math.abs(bal), kind: "cash", label: accountLabel ?? "Checking" };
+  }
+  return null;
+}
+
 // A real transaction always names a payee/merchant. Requiring a couple of
 // letters drops numeric fragments that a date-led line can otherwise produce.
 function hasPayeeName(description: string): boolean {

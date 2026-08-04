@@ -191,47 +191,102 @@ const round4 = (v: number) => Math.round(v * 10000) / 10000;
 
 // ---- Fidelity brokerage/investment PDF holdings ----
 //
-// Fidelity statements list holdings one per line as:
+// Fidelity statements list each holding as:
 //   <NAME> (<SYMBOL>) <begin> <qty> <price> <mkt value> <cost> <unrealized> <eai|->
 // e.g.  MICROSOFT CORP (MSFT) 450.24 2.000 373.0200 746.04 770.47 -24.43 7.28
 // The leading columns vary, so instead of trusting positions we locate the
 // qty/price/value/cost run by arithmetic: qty*price must equal the market
 // value and value-cost must equal the unrealized gain. That self-check makes
 // false matches (disclaimer text, transaction lines) essentially impossible.
+//
+// Long security names wrap: for many rows the "(SYMBOL)" ends one line and the
+// numeric columns land on the NEXT line (or two). Missing those wraps is why
+// an earlier build captured only a third of the account and net worth read
+// far too low — so a holding record starts at the ticker and absorbs the
+// following wrap line(s) until it has enough numbers to resolve.
+//
+// The core money-market position (SPAXX) prints "not applicable" where cost /
+// unrealized would be; its cost basis is taken as its price ($1.00) so its
+// market value (≈ its cash balance) is right and it shows no phantom gain.
 
-// Ticker in parentheses followed by only numeric columns to end of line.
-const HOLDING_LINE = /\(([A-Z][A-Z0-9.\-]{0,9})\)\s+((?:-?[\d,]+\.\d+\s+)*-?[\d,]+\.\d+)\s*-?\s*$/;
+// Ticker in parentheses, anywhere on the line.
+const TICKER_IN_LINE = /\(([A-Z][A-Z0-9.\-]{0,9})\)/;
+// Lines that must not be pulled into a holding's number run.
+const HOLDING_BOUNDARY = /^(total\b|subtotal|core account|estimated|page \d|beginning|ending)/i;
+// Non-priced/pseudo tickers that aren't real positions.
+const HOLDING_SKIP = new Set(["AI", "CASH", "PENDING"]);
 
 function approx(a: number, b: number): boolean {
   return Math.abs(a - b) <= Math.max(0.02, Math.abs(b) * 0.002);
 }
 
-function parseHoldingLine(line: string): BrokerageHolding | null {
-  const m = HOLDING_LINE.exec(line.trim());
-  if (!m) return null;
-  const ticker = cleanTicker(m[1]);
-  if (!ticker) return null;
-  const nums = (m[2].match(/-?\d[\d,]*\.\d+/g) ?? []).map((s) => Number(s.replace(/,/g, "")));
+// Numeric columns as Fidelity prints them: optional leading "-", optional "$"
+// (which can sit between the minus and the digits, e.g. "-$105.09"), and
+// accounting-style "(…)" negatives. Sign is taken from the "-" or the parens.
+function numberTokens(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/(-)?\$?(\()?(\d[\d,]*\.\d+)(\))?/g)) {
+    let v = Number(m[3].replace(/,/g, ""));
+    if (m[1] === "-" || (m[2] === "(" && m[4] === ")")) v = -v;
+    out.push(v);
+  }
+  return out;
+}
 
-  // Slide a window until qty*price == market value (and, when present,
-  // value - cost == unrealized). That pins the four columns unambiguously.
-  for (let i = 0; i + 3 < nums.length; i++) {
-    const qty = nums[i];
-    const price = nums[i + 1];
-    const value = nums[i + 2];
-    const cost = nums[i + 3];
+// Resolve a holding from the numeric columns following a ticker. Prefers the
+// full six-column match (qty*price==value AND value-cost==unrealized), which
+// unambiguously skips the leading "begin value" column. Falls back to the
+// three-column match (qty*price==value) only when the cost/unrealized columns
+// are "not applicable" — i.e. a money-market/core position.
+function resolveHolding(
+  ticker: string,
+  buffer: string,
+  costNotApplicable: boolean
+): BrokerageHolding | null {
+  const nums = numberTokens(buffer);
+
+  // Full match first.
+  for (let i = 0; i + 4 < nums.length; i++) {
+    const [qty, price, value, cost, unreal] = [nums[i], nums[i + 1], nums[i + 2], nums[i + 3], nums[i + 4]];
     if (qty <= 0 || price <= 0 || value <= 0 || cost < 0) continue;
     if (!approx(qty * price, value)) continue;
-    if (i + 4 < nums.length && !approx(value - cost, nums[i + 4])) continue;
+    if (!approx(value - cost, unreal)) continue;
     return { ticker, shares: round4(qty), cost_basis: round2(cost / qty) };
+  }
+
+  // Money-market / "not applicable" cost: only qty, price, value are present.
+  if (costNotApplicable) {
+    for (let i = 0; i + 2 < nums.length; i++) {
+      const [qty, price, value] = [nums[i], nums[i + 1], nums[i + 2]];
+      if (qty <= 0 || price <= 0 || value <= 0) continue;
+      if (!approx(qty * price, value)) continue;
+      return { ticker, shares: round4(qty), cost_basis: round2(price) };
+    }
   }
   return null;
 }
 
 export function parseFidelityPdfHoldings(text: string): BrokerageHolding[] {
+  const lines = text.split(/\r?\n/).map((l) => l.trim());
   const holdings: BrokerageHolding[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const h = parseHoldingLine(line);
+  for (let i = 0; i < lines.length; i++) {
+    const m = TICKER_IN_LINE.exec(lines[i]);
+    if (!m) continue;
+    const ticker = cleanTicker(m[1]);
+    if (!ticker || HOLDING_SKIP.has(ticker)) continue;
+
+    // Numbers after the ticker on this line, plus up to two following wrap
+    // lines (stop at the next ticker or a section boundary).
+    let buffer = lines[i].slice(m.index + m[0].length);
+    let notApplicable = /not applicable|n\/a/i.test(buffer);
+    for (let j = i + 1; numberTokens(buffer).length < 5 && j < lines.length && j <= i + 2; j++) {
+      const next = lines[j];
+      if (!next || TICKER_IN_LINE.test(next) || HOLDING_BOUNDARY.test(next)) break;
+      buffer += " " + next;
+      if (/not applicable|n\/a/i.test(next)) notApplicable = true;
+    }
+
+    const h = resolveHolding(ticker, buffer, notApplicable);
     if (h) holdings.push(h);
   }
   return dedupe(holdings);

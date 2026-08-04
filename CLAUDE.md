@@ -73,8 +73,8 @@ Create these via a migration run on startup (`lib/db.ts`). Booleans `0/1`, times
 - `agent_log(id, user_text, tool_calls, result, created_at)`
 - `gym_logs(id, date, notes)`
 - `leetcode_stats(id, date, total_solved, streak, recent)`
-- `transactions(id, date, amount, merchant, category, raw_description, statement_id, is_recurring)`
-- `statements(id, month, file_path, imported_at)`
+- `transactions(id, date, amount, merchant, category, raw_description, statement_id, is_recurring, account_type)`
+- `statements(id, month, file_path, imported_at, kind, raw_text, ending_balance, balance_kind, balance_label, account_type)`
 - `holdings(id, ticker, shares, cost_basis)`
 - `watchlist(id, ticker)`
 - `calendar_cache(id, google_event_id, title, start, end, updated_at)`

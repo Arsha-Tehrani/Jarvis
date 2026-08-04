@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { STAGES, addApplication, followUpsDue, listApplications } from "@/lib/career";
+import { applicationDateSchema } from "@/lib/career-dates";
+import { queueSyncPush } from "@/lib/sync/client";
+import { tombstone } from "@/lib/sync/tombstone";
 
 const createSchema = z.object({
   company: z.string().trim().min(1).max(200),
@@ -12,6 +15,7 @@ const createSchema = z.object({
   contact: z.string().max(200).optional(),
   link: z.string().max(1000).optional(),
   notes: z.string().max(5000).optional(),
+  date_applied: applicationDateSchema,
 });
 
 const updateSchema = z.object({
@@ -39,6 +43,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   }
   const id = addApplication(parsed.data);
+  queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
   return NextResponse.json({ id }, { status: 201 });
 }
 
@@ -54,11 +59,12 @@ export async function PATCH(req: NextRequest) {
   }
   const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
   const info = getDb()
-    .prepare(`UPDATE applications SET ${setClause} WHERE id = ?`)
+    .prepare(`UPDATE applications SET ${setClause} WHERE id = ? AND deleted_at IS NULL`)
     .run(...entries.map(([, v]) => v), id);
   if (info.changes === 0) {
     return NextResponse.json({ error: "Application not found" }, { status: 404 });
   }
+  queueSyncPush();
   return NextResponse.json({ ok: true });
 }
 
@@ -67,9 +73,11 @@ export async function DELETE(req: NextRequest) {
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-  const info = getDb().prepare("DELETE FROM applications WHERE id = ?").run(id);
-  if (info.changes === 0) {
+  // Tombstone (lib/sync/tombstone.ts): the removal propagates through sync.
+  const changes = tombstone(getDb(), "applications", "id = ?", [id]);
+  if (changes === 0) {
     return NextResponse.json({ error: "Application not found" }, { status: 404 });
   }
+  queueSyncPush();
   return NextResponse.json({ ok: true });
 }

@@ -8,7 +8,16 @@ import {
   recurringCharges,
   spendByCategory,
 } from "@/lib/finance/analyze";
-import { importNewStatements, statementsDir } from "@/lib/finance/ingest";
+import { categoryReference } from "@/lib/finance/categorize";
+import {
+  commitReanalyze,
+  importNewStatements,
+  importWithForcedKind,
+  previewReanalyze,
+  setStatementAccountType,
+  statementsDir,
+} from "@/lib/finance/ingest";
+import { getComparisonPeriod, getLatestPeriod, periodsWithData } from "@/lib/finance/query";
 import { billRadar } from "@/lib/finance/radar";
 import { getTool } from "@/lib/tools";
 
@@ -28,24 +37,62 @@ const actionSchema = z.discriminatedUnion("action", [
       .min(1)
       .max(20),
   }),
+  // Re-Analyze: a destructive financial-data write (CLAUDE.md rule 2), so the
+  // UI must call reanalyze_preview first and only send reanalyze_commit after
+  // an explicit user confirm click.
+  z.object({ action: z.literal("reanalyze_preview"), statementId: z.number().int().positive() }),
+  z.object({ action: z.literal("reanalyze_commit"), statementId: z.number().int().positive() }),
+  // Manual account-type correction (Phase 2, Symptom A) — scoped to one
+  // statement, not confirm-gated: a lightweight, freely-reversible relabel,
+  // the same class of action as the transaction category PATCH.
+  z.object({
+    action: z.literal("set_account_type"),
+    statementId: z.number().int().positive(),
+    accountType: z.enum(["checking", "savings", "credit_card", "investment"]).nullable(),
+  }),
+  // Option B, docs/multi-institution-parsing.md: the deterministic scorer
+  // rejected this file as unknown/below-floor, but the local LLM suggested a
+  // kind/subKind and the user explicitly confirmed it in the import UI.
+  // Never runs without this explicit confirm — nothing is auto-applied.
+  z.object({
+    action: z.literal("import_with_suggestion"),
+    file: z.string().min(1).max(300),
+    kind: z.enum(["transaction", "brokerage"]),
+    subKind: z.enum(["checking", "savings", "credit_card", "investment"]).optional(),
+  }),
 ]);
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const db = getDb();
   const statements = db
-    .prepare("SELECT id, month, file_path, imported_at FROM statements ORDER BY imported_at DESC")
+    .prepare(
+      "SELECT id, month, file_path, imported_at, kind, account_type FROM statements ORDER BY imported_at DESC"
+    )
     .all();
   const txCount = (db.prepare("SELECT COUNT(*) AS n FROM transactions").get() as { n: number }).n;
+
+  // Month navigation: an explicit ?month=YYYY-MM the user paged to, but only if
+  // it actually has data; otherwise fall back to the derived latest period so a
+  // stale/empty request can't render a misleading all-zero month.
+  const periods = periodsWithData();
+  const requested = req.nextUrl.searchParams.get("month");
+  const period =
+    requested && periods.includes(requested) ? requested : getLatestPeriod();
+
   return NextResponse.json({
     statementsDir: statementsDir(),
     statements,
     transactionCount: txCount,
-    spendByCategory: spendByCategory(),
+    periods, // every YYYY-MM with data, for the month selector
+    currentPeriod: period, // the month being shown (derived or explicit)
+    comparisonPeriod: getComparisonPeriod(),
+    spendByCategory: spendByCategory(period ?? undefined),
     recurring: recurringCharges(),
     radar: billRadar(),
-    summaries: monthSummaries(),
+    summaries: monthSummaries(period ?? undefined),
     goals: listGoals(),
     cutbacks: cutbackSuggestions(),
+    categoryReference: categoryReference(), // 15 categories + real keyword rules
   });
 }
 
@@ -58,6 +105,58 @@ export async function POST(req: NextRequest) {
   if (parsed.data.action === "import") {
     const results = await importNewStatements();
     return NextResponse.json({ results });
+  }
+
+  if (parsed.data.action === "reanalyze_preview") {
+    try {
+      const preview = await previewReanalyze(parsed.data.statementId);
+      return NextResponse.json({ preview });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Preview failed" },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (parsed.data.action === "reanalyze_commit") {
+    try {
+      const result = await commitReanalyze(parsed.data.statementId);
+      return NextResponse.json({ result });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Re-analyze failed" },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (parsed.data.action === "set_account_type") {
+    try {
+      const result = setStatementAccountType(parsed.data.statementId, parsed.data.accountType);
+      return NextResponse.json(result);
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Could not update account type" },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (parsed.data.action === "import_with_suggestion") {
+    try {
+      const result = await importWithForcedKind(
+        parsed.data.file,
+        parsed.data.kind,
+        parsed.data.subKind
+      );
+      return NextResponse.json({ result });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Import failed" },
+        { status: 400 }
+      );
+    }
   }
 
   // create_renewal_events — executes only after the user's explicit

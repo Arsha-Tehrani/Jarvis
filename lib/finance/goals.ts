@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { setTrackerTarget } from "@/lib/trackers-migrate";
 
 export const GOAL_KINDS = [
   "savings_rate",
@@ -18,11 +19,11 @@ export const DEFAULT_PERIOD: Record<GoalKind, "week" | "month"> = {
   calories_per_day: "week", // target is per-day; measured daily, reviewed weekly
 };
 
-export function upsertGoal(kind: GoalKind, target: number, period?: "week" | "month"): void {
-  getDb()
-    .prepare(
-      `INSERT INTO goals (kind, target, period) VALUES (?, ?, ?)
-       ON CONFLICT(kind) DO UPDATE SET target = excluded.target, period = excluded.period`
-    )
-    .run(kind, target, period ?? DEFAULT_PERIOD[kind]);
+// Goals are folded into the unified Tracker model (Part E): "setting a goal" is
+// now setting a target on the corresponding Tracker. `period` is retained in
+// the signature for call-site compatibility but is no longer stored (the
+// Tracker's source drives its measurement window). The legacy `goals` table is
+// no longer written.
+export function upsertGoal(kind: GoalKind, target: number, _period?: "week" | "month"): void {
+  setTrackerTarget(getDb(), kind, target);
 }

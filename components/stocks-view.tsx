@@ -1,8 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -14,18 +30,92 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { PortfolioHistoryChart } from "@/components/portfolio-history-chart";
+import { StockContributionCard } from "@/components/stock-contribution-card";
+import { TIMEFRAMES, type Timeframe } from "@/lib/stocks/history-core";
+
+type HistoryChart = {
+  interval: string;
+  fallback: string | null;
+  series: { date: string; close: number }[];
+};
+
+// Intraday points carry a full ISO timestamp; daily/weekly/monthly a plain
+// YYYY-MM-DD (parsed at UTC noon so no timezone shows the previous day).
+const isIntradayInterval = (interval: string) => interval.endsWith("m") && interval !== "1mo";
+
+function historyLabel(date: string, interval: string): string {
+  if (isIntradayInterval(interval)) {
+    return new Date(date).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+  return new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function historyTick(date: string, interval: string): string {
+  if (interval === "5m") {
+    // 1D: a single session — time of day is the only axis that matters.
+    return new Date(date).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+  if (isIntradayInterval(interval)) {
+    return new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: interval === "1mo" || interval === "1wk" ? "2-digit" : undefined,
+    timeZone: "UTC",
+  });
+}
 
 type Holding = {
   id: number;
   ticker: string;
   shares: number;
   cost_basis: number;
+  priced: boolean;
   price: number | null;
   value: number | null;
+  percentOfPortfolio: number | null;
   pl: number | null;
+  plPercent: number | null;
   dayMove: number | null;
   changePercent: number | null;
+  is_cash_equivalent: number;
 };
+
+type DividendEvent = {
+  id: number;
+  ticker: string;
+  ex_date: string;
+  amount_per_share: number;
+  shares_at_date: number | null;
+  note: string | null;
+  status: "pending" | "confirmed";
+  payment_date: string | null;
+  source: "manual" | "yahoo_auto";
+  payout: number;
+  approximate: boolean;
+};
+type DividendData = {
+  total: number; // confirmed only — pending never counts until it pays
+  pendingTotal: number;
+  byHolding: Array<{ ticker: string; total: number; events: number; approximate: boolean }>;
+  events: DividendEvent[];
+};
+
+// Client-side sort spec for the holdings table (D1).
+type SortKey = "ticker" | "value" | "dayMove" | "pl" | "percentOfPortfolio";
+type SortState = { key: SortKey; dir: "asc" | "desc" };
 
 type WatchItem = {
   id: number;
@@ -42,7 +132,7 @@ function MoveCell({ value, percent }: { value: number | null; percent: number | 
   if (value == null) return <span className="text-muted-foreground">—</span>;
   const up = value >= 0;
   return (
-    <span className={cn("tabular-nums", up ? "text-emerald-600 dark:text-emerald-500" : "text-destructive")}>
+    <span className={cn("tabular-nums", up ? "text-gain" : "text-loss")}>
       {up ? "▲" : "▼"} {usd(Math.abs(value))}
       {percent != null && ` (${Math.abs(percent).toFixed(2)}%)`}
     </span>
@@ -60,6 +150,48 @@ export function StocksView() {
   const [shares, setShares] = useState("");
   const [costBasis, setCostBasis] = useState("");
   const [watchTicker, setWatchTicker] = useState("");
+  const [sort, setSort] = useState<SortState>({ key: "value", dir: "desc" });
+  const [dividends, setDividends] = useState<DividendData | null>(null);
+  const [divTicker, setDivTicker] = useState("");
+  const [divDate, setDivDate] = useState("");
+  const [divAmount, setDivAmount] = useState("");
+  const [historyTicker, setHistoryTicker] = useState<string | null>(null);
+  const [historyTimeframe, setHistoryTimeframe] = useState<Timeframe>("3M");
+  const [historyData, setHistoryData] = useState<HistoryChart | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Fetch one (ticker, timeframe) chart — lazy, on click / tab change only,
+  // never proactive for the whole table (docs/stock-history-feasibility.md).
+  // The server decides granularity and may degrade intraday → daily; when it
+  // does, body.fallback carries the label we must show.
+  async function fetchHistory(t: string, tf: Timeframe) {
+    setHistoryData(null);
+    setHistoryError(null);
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(
+        `/api/stocks/history?ticker=${encodeURIComponent(t)}&timeframe=${tf}`
+      );
+      const body = await res.json();
+      if (!res.ok || body.error) setHistoryError(body.error ?? "Failed to load price history");
+      else setHistoryData(body);
+    } catch {
+      setHistoryError("Could not reach the API.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function openHistory(t: string) {
+    setHistoryTicker(t);
+    void fetchHistory(t, historyTimeframe);
+  }
+
+  function changeTimeframe(tf: Timeframe) {
+    setHistoryTimeframe(tf);
+    if (historyTicker) void fetchHistory(historyTicker, tf);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -74,11 +206,70 @@ export function StocksView() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stocks");
     }
+    try {
+      const res = await fetch("/api/stocks/dividends");
+      if (res.ok) setDividends(await res.json());
+    } catch {
+      // dividend card just shows its empty state
+    }
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Click a header: same column flips direction, new column starts descending
+  // (except ticker, which starts A→Z). Pure client-side over fetched rows.
+  function toggleSort(key: SortKey) {
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "ticker" ? "asc" : "desc" }
+    );
+  }
+
+  const sortedHoldings = [...holdings].sort((a, b) => {
+    let cmp: number;
+    if (sort.key === "ticker") cmp = a.ticker.localeCompare(b.ticker);
+    else cmp = (a[sort.key] ?? -Infinity) - (b[sort.key] ?? -Infinity);
+    return sort.dir === "asc" ? cmp : -cmp;
+  });
+
+  const caret = (key: SortKey) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
+
+  async function logDividend(e: React.FormEvent) {
+    e.preventDefault();
+    const amount = Number(divAmount);
+    if (!divTicker.trim() || !divDate || !(amount > 0)) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/stocks/dividends", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticker: divTicker.trim(),
+          ex_date: divDate,
+          amount_per_share: amount,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to log dividend");
+      } else {
+        setDivTicker("");
+        setDivDate("");
+        setDivAmount("");
+        setDividends(await res.json());
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeDividend(id: number) {
+    const res = await fetch(`/api/stocks/dividends?id=${id}`, { method: "DELETE" });
+    if (res.ok) setDividends(await res.json());
+  }
 
   async function addHolding(e: React.FormEvent) {
     e.preventDefault();
@@ -134,9 +325,30 @@ export function StocksView() {
     await load();
   }
 
+  async function setCashEquivalent(id: number, isCashEquivalent: boolean) {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/stocks", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, is_cash_equivalent: isCashEquivalent }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to update classification");
+      }
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const totalValue = holdings.reduce((s, h) => s + (h.value ?? 0), 0);
   const totalDayMove = holdings.reduce((s, h) => s + (h.dayMove ?? 0), 0);
-  const havePrices = holdings.some((h) => h.value != null);
+  const havePrices = holdings.length > 0;
+  // Holdings with no live quote are counted at cost basis; name how many so the
+  // total isn't mistaken for fully market-priced.
+  const costBasisCount = holdings.filter((h) => !h.priced).length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -153,6 +365,8 @@ export function StocksView() {
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}
 
+      <PortfolioHistoryChart />
+
       <Card>
         <CardHeader>
           <CardTitle>Portfolio</CardTitle>
@@ -162,7 +376,12 @@ export function StocksView() {
             <div className="flex flex-wrap gap-8 text-sm">
               <div>
                 <p className="text-2xl font-semibold tabular-nums">{usd(totalValue)}</p>
-                <p className="text-muted-foreground">total value</p>
+                <p className="text-muted-foreground">
+                  total value
+                  {costBasisCount > 0 && (
+                    <span> · {costBasisCount} at cost basis (no live quote)</span>
+                  )}
+                </p>
               </div>
               <div>
                 <p className="text-2xl font-semibold">
@@ -178,20 +397,49 @@ export function StocksView() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Ticker</TableHead>
+                  <TableHead>
+                    <button className="hover:underline" onClick={() => toggleSort("ticker")}>
+                      Ticker{caret("ticker")}
+                    </button>
+                  </TableHead>
                   <TableHead className="text-right">Shares</TableHead>
                   <TableHead className="text-right">Cost basis</TableHead>
                   <TableHead className="text-right">Price</TableHead>
-                  <TableHead className="text-right">Value</TableHead>
-                  <TableHead className="text-right">P/L</TableHead>
-                  <TableHead className="text-right">Day</TableHead>
+                  <TableHead className="text-right">
+                    <button className="hover:underline" onClick={() => toggleSort("value")}>
+                      Value{caret("value")}
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <button
+                      className="hover:underline"
+                      onClick={() => toggleSort("percentOfPortfolio")}
+                    >
+                      % of portfolio{caret("percentOfPortfolio")}
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <button className="hover:underline" onClick={() => toggleSort("pl")}>
+                      P/L{caret("pl")}
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <button className="hover:underline" onClick={() => toggleSort("dayMove")}>
+                      Day{caret("dayMove")}
+                    </button>
+                  </TableHead>
+                  <TableHead>Type</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
-              <TableBody>
-                {holdings.map((h) => (
+              <TableBody className="font-data text-[13px]">
+                {sortedHoldings.map((h) => (
                   <TableRow key={h.id}>
-                    <TableCell className="font-medium">{h.ticker}</TableCell>
+                    <TableCell className="font-medium">
+                      <button className="hover:underline" onClick={() => openHistory(h.ticker)}>
+                        {h.ticker}
+                      </button>
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">{h.shares}</TableCell>
                     <TableCell className="text-right tabular-nums">{usd(h.cost_basis)}</TableCell>
                     <TableCell className="text-right tabular-nums">
@@ -200,11 +448,32 @@ export function StocksView() {
                     <TableCell className="text-right tabular-nums">
                       {h.value != null ? usd(h.value) : "—"}
                     </TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {h.percentOfPortfolio != null ? `${h.percentOfPortfolio.toFixed(1)}%` : "—"}
+                    </TableCell>
                     <TableCell className="text-right">
-                      <MoveCell value={h.pl} percent={null} />
+                      <MoveCell value={h.pl} percent={h.plPercent} />
                     </TableCell>
                     <TableCell className="text-right">
                       <MoveCell value={h.dayMove} percent={h.changePercent} />
+                    </TableCell>
+                    <TableCell>
+                      {/* Manual correction for the value-over-time chart's
+                          stocks-vs-cash-equivalent split — same pattern as
+                          the Finance import log's account-type dropdown.
+                          Seeded from lib/stocks/cash-equivalents.ts on
+                          import; a correction here persists and is never
+                          re-derived from that table afterward. */}
+                      <select
+                        className="rounded border border-border bg-transparent px-1 py-0.5 text-xs text-foreground"
+                        value={h.is_cash_equivalent ? "cash" : "stock"}
+                        disabled={busy}
+                        onChange={(e) => void setCashEquivalent(h.id, e.target.value === "cash")}
+                        aria-label={`Correct classification for ${h.ticker}`}
+                      >
+                        <option value="stock">Stock</option>
+                        <option value="cash">Cash</option>
+                      </select>
                     </TableCell>
                     <TableCell>
                       <Button variant="ghost" size="sm" onClick={() => remove("holding", h.id)}>
@@ -235,6 +504,8 @@ export function StocksView() {
           </form>
         </CardContent>
       </Card>
+
+      {holdings.length > 0 && <StockContributionCard />}
 
       <Card>
         <CardHeader>
@@ -270,6 +541,161 @@ export function StocksView() {
           </form>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-baseline justify-between">
+            Dividend income
+            <span className="flex items-baseline gap-2">
+              <span className="text-lg font-semibold tabular-nums text-gain">
+                {usd(dividends?.total ?? 0)}
+              </span>
+              {(dividends?.pendingTotal ?? 0) > 0 && (
+                <span className="text-sm font-normal tabular-nums text-muted-foreground">
+                  +{usd(dividends!.pendingTotal)} pending
+                </span>
+              )}
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <p className="text-xs text-muted-foreground">
+            Upcoming dividends on your holdings are detected automatically each morning
+            (amounts estimated from the last payment); a <span className="italic">pending</span>{" "}
+            payout counts toward the total only on its payment date, when the cash actually
+            lands. Manual logging below always works. Payout = shares × amount/share;
+            without a share count for the ex-date it uses your current shares, marked{" "}
+            <span className="italic">≈</span>.
+          </p>
+          {dividends && dividends.byHolding.length > 0 && (
+            <ul className="flex flex-col gap-1 text-sm">
+              {dividends.byHolding.map((b) => (
+                <li key={b.ticker} className="flex items-center gap-3">
+                  <span className="w-16 font-medium">{b.ticker}</span>
+                  <span className="w-24 text-right tabular-nums">{usd(b.total)}</span>
+                  <span className="text-muted-foreground">
+                    {b.events} event{b.events === 1 ? "" : "s"}
+                    {b.approximate && " ≈"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {dividends && dividends.events.length > 0 && (
+            <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+              {dividends.events.map((e) => (
+                <li key={e.id} className="flex items-center gap-2">
+                  <span className="tabular-nums">{e.ex_date}</span>
+                  <span className="font-medium text-foreground">{e.ticker}</span>
+                  <span className="tabular-nums">
+                    ${e.amount_per_share.toFixed(2)}/sh → {usd(e.payout)}
+                    {e.approximate && " ≈"}
+                    {e.source === "yahoo_auto" && " (est.)"}
+                  </span>
+                  {e.status === "pending" && (
+                    <Badge variant="secondary">
+                      pending{e.payment_date ? ` · pays ${e.payment_date}` : ""}
+                    </Badge>
+                  )}
+                  <button className="underline-offset-2 hover:underline" onClick={() => removeDividend(e.id)}>
+                    remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={logDividend} className="flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="d-ticker" className="text-xs">Ticker</Label>
+              <Input id="d-ticker" value={divTicker} onChange={(e) => setDivTicker(e.target.value)} className="w-24" placeholder="VOO" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="d-date" className="text-xs">Ex-date</Label>
+              <Input id="d-date" type="date" value={divDate} onChange={(e) => setDivDate(e.target.value)} className="w-40" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="d-amount" className="text-xs">$ / share</Label>
+              <Input id="d-amount" type="number" min={0} step="any" value={divAmount} onChange={(e) => setDivAmount(e.target.value)} className="w-28" />
+            </div>
+            <Button type="submit" variant="secondary" disabled={busy || !divTicker.trim() || !divDate || !(Number(divAmount) > 0)}>
+              Log dividend
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Dialog open={historyTicker != null} onOpenChange={(open) => !open && setHistoryTicker(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{historyTicker} — price history</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Timeframe">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf}
+                role="tab"
+                aria-selected={tf === historyTimeframe}
+                onClick={() => changeTimeframe(tf)}
+                className={cn(
+                  "rounded-[var(--radius)] border px-2.5 py-1 font-data text-xs",
+                  tf === historyTimeframe
+                    ? "border-(--accent) bg-accent text-accent-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tf === "MAX" ? "Max" : tf}
+              </button>
+            ))}
+          </div>
+          {historyData?.fallback && (
+            <p className="text-xs text-warn">{historyData.fallback}</p>
+          )}
+          {historyLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : historyError ? (
+            <p className="text-sm text-destructive">{historyError}</p>
+          ) : historyData && historyData.series.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={historyData.series}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  tickFormatter={(d) => historyTick(String(d), historyData.interval)}
+                  minTickGap={40}
+                />
+                <YAxis
+                  domain={["auto", "auto"]}
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  tickFormatter={(v) => `$${v}`}
+                  width={56}
+                />
+                <Tooltip
+                  formatter={(v) => [`$${Number(v).toFixed(2)}`, "Close"]}
+                  labelFormatter={(d) => historyLabel(String(d), historyData.interval)}
+                  cursor={{ stroke: "var(--ink-soft)", strokeWidth: 1 }}
+                  contentStyle={{
+                    borderRadius: "var(--radius)",
+                    border: "1px solid var(--border)",
+                    background: "var(--background)",
+                    color: "var(--foreground)",
+                    fontSize: 12,
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="close"
+                  stroke="var(--ink-soft)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-sm text-muted-foreground">No data.</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

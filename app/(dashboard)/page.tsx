@@ -25,6 +25,7 @@ import { birthdaysThisWeek, overduePeople } from "@/lib/people";
 import { currentReads } from "@/lib/reading";
 import { formatBedtime, latestMetric } from "@/lib/health";
 import { getCachedQuote } from "@/lib/stocks";
+import { computePortfolioTotal } from "@/lib/stocks/portfolio-total";
 import { AgentChat } from "@/components/agent-chat";
 import { MetricCard } from "@/components/metric-card";
 import { RingGauge } from "@/components/ring-gauge";
@@ -48,20 +49,22 @@ export default function TodayPage() {
 
   // Tasks
   const openTasks = (
-    db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'open'").get() as { n: number }
+    db
+      .prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND deleted_at IS NULL")
+      .get() as { n: number }
   ).n;
   const dueToday = (
     db
       .prepare(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND substr(due_at,1,10) <= ?"
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'open' AND substr(due_at,1,10) <= ? AND deleted_at IS NULL"
       )
       .get(today) as { n: number }
   ).n;
   const topTask = db
     .prepare(
-      `SELECT title FROM tasks WHERE status = 'open'
+      `SELECT title FROM tasks WHERE status = 'open' AND deleted_at IS NULL
        ORDER BY due_at IS NULL, due_at ASC,
-         CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+         CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END
        LIMIT 1`
     )
     .get() as { title: string } | undefined;
@@ -80,7 +83,7 @@ export default function TodayPage() {
   // Gym: rolling 7 days vs weekly goal
   const gymWeek = (
     db
-      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ?")
+      .prepare("SELECT COUNT(*) AS n FROM gym_logs WHERE date > ? AND deleted_at IS NULL")
       .get(isoDaysAgo(7)) as { n: number }
   ).n;
   const gymGoal =
@@ -89,18 +92,20 @@ export default function TodayPage() {
         | { target: number }
         | undefined
     )?.target ?? 4;
-  const wentToday = !!db.prepare("SELECT 1 FROM gym_logs WHERE date = ?").get(today);
+  const wentToday = !!db
+    .prepare("SELECT 1 FROM gym_logs WHERE date = ? AND deleted_at IS NULL")
+    .get(today);
 
   // LeetCode: latest + trend
   const leetcode = db
     .prepare(
-      "SELECT date, total_solved, streak FROM leetcode_stats ORDER BY date DESC LIMIT 1"
+      "SELECT date, total_solved, streak FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 1"
     )
     .get() as { date: string; total_solved: number; streak: number } | undefined;
   const lcTrend = (
     db
       .prepare(
-        "SELECT date, total_solved FROM leetcode_stats ORDER BY date DESC LIMIT 14"
+        "SELECT date, total_solved FROM leetcode_stats WHERE deleted_at IS NULL ORDER BY date DESC LIMIT 14"
       )
       .all() as { date: string; total_solved: number }[]
   )
@@ -196,33 +201,29 @@ export default function TodayPage() {
   // Net worth (accounts + holdings; cached quotes or cost basis)
   const hasNetWorthData = !!db
     .prepare("SELECT 1 FROM accounts LIMIT 1")
-    .get() || !!db.prepare("SELECT 1 FROM holdings LIMIT 1").get();
+    .get() || !!db.prepare("SELECT 1 FROM holdings WHERE deleted_at IS NULL LIMIT 1").get();
   const netWorth = hasNetWorthData ? computeNetWorth() : null;
   const nwDelta = hasNetWorthData ? weeklyDelta() : null;
 
-  // Portfolio from the quote cache only (no network in render)
+  // Portfolio from the quote cache only (no network in render). Same
+  // computePortfolioTotal as /api/stocks and lib/networth.ts, so a holding
+  // with no live quote (e.g. SPAXX) falls back to cost basis here too
+  // instead of being silently dropped from the sum — that drop was the
+  // actual reason this card used to under-count vs. the Stocks page total.
   const holdings = db
-    .prepare("SELECT ticker, shares FROM holdings")
-    .all() as { ticker: string; shares: number }[];
-  let portfolioValue: number | null = null;
-  let dayMove: number | null = null;
-  if (holdings.length > 0) {
-    let value = 0;
-    let move = 0;
-    let covered = false;
-    for (const h of holdings) {
-      const q = getCachedQuote(h.ticker);
-      if (q) {
-        value += q.price * h.shares;
-        move += q.change * h.shares;
-        covered = true;
-      }
-    }
-    if (covered) {
-      portfolioValue = value;
-      dayMove = move;
-    }
-  }
+    .prepare("SELECT ticker, shares, cost_basis FROM holdings WHERE deleted_at IS NULL")
+    .all() as { ticker: string; shares: number; cost_basis: number }[];
+  const portfolio = computePortfolioTotal(holdings, getCachedQuote);
+  const portfolioValue = portfolio.pricedBy === "none" ? null : portfolio.totalValue;
+  // Distinct from portfolioValue: day move is only MEANINGFUL when at least
+  // one holding has a live quote. All-cost-basis (pricedBy "cost-basis") has
+  // a perfectly good total but a genuinely unknown day move — null here (not
+  // 0) keeps the "quotes not loaded yet" sub-label honest instead of
+  // claiming a $0 move that was never actually measured.
+  const dayMove =
+    portfolio.pricedBy === "none" || portfolio.pricedBy === "cost-basis"
+      ? null
+      : portfolio.totalDayMove;
 
   return (
     <div className="flex flex-col gap-6">

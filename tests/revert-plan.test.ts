@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   REVERTIBLE_TOOLS,
+  parseExecutedCalls,
+  pickRevertableEntry,
   planRevert,
   revertRefusalReason,
 } from "../lib/revert-plan.ts";
 
 const DAY = "2026-07-06";
 
-test("add_task inverse deletes the newest agent-added task with that title", () => {
+test("add_task inverse tombstones the newest agent-added task with that title", () => {
   const plan = planRevert("add_task", { title: "Call the bank" }, DAY);
-  assert.match(plan.sql, /DELETE FROM tasks/);
+  // Synced table → tombstone UPDATE, not a hard DELETE (the removal must
+  // propagate through sync).
+  assert.match(plan.sql, /UPDATE tasks SET deleted_at/);
+  assert.match(plan.sql, /sync_dirty = 1/);
   assert.match(plan.sql, /source = 'agent'/);
   assert.match(plan.sql, /MAX\(id\)/);
   assert.deepEqual(plan.params, ["Call the bank"]);
@@ -33,8 +38,28 @@ test("date-keyed tools fall back to the log row's date, not today", () => {
 
 test("log_metric inverse targets date + kind", () => {
   const plan = planRevert("log_metric", { kind: "sleep_hours", value: 7.5 }, DAY);
+  // health_logs is NOT synced — stays a genuine hard delete.
   assert.match(plan.sql, /DELETE FROM health_logs WHERE date = \? AND kind = \?/);
   assert.deepEqual(plan.params, [DAY, "sleep_hours"]);
+});
+
+test("synced-table inverses tombstone; unsynced-table inverses hard-delete", () => {
+  for (const [tool, args] of [
+    ["log_gym", {}],
+    ["log_leetcode", {}],
+    ["log_habit", { name: "x" }],
+  ] as const) {
+    const plan = planRevert(tool, args, DAY);
+    assert.match(plan.sql, /SET deleted_at/, `${tool} must tombstone`);
+    assert.doesNotMatch(plan.sql, /^DELETE/, `${tool} must not hard-delete`);
+  }
+  for (const [tool, args] of [
+    ["log_meal", { item: "x" }],
+    ["log_metric", { kind: "mood" }],
+  ] as const) {
+    const plan = planRevert(tool, args, DAY);
+    assert.match(plan.sql, /^DELETE FROM/, `${tool} (unsynced) stays a hard delete`);
+  }
 });
 
 test("log_habit inverse resolves the habit id case-insensitively", () => {
@@ -56,23 +81,58 @@ test("add_application and add_to_reading_list invert by their identifying fields
   assert.deepEqual(read.params, ["SICP"]);
 });
 
-test("every inverse is a single parameterized DELETE (no string interpolation)", () => {
+test("every inverse is a single parameterized statement (no string interpolation)", () => {
   const samples: Record<string, Record<string, unknown>> = {
     add_task: { title: "x" },
     log_gym: {},
     log_leetcode: {},
     log_metric: { kind: "mood" },
     log_habit: { name: "x" },
+    unlog_gym: {},
+    unlog_habit: { name: "x" },
     log_meal: { item: "x" },
     add_application: { company: "x", role: "y" },
     add_to_reading_list: { title: "x" },
+    complete_task: { task_id: 7 },
   };
   for (const tool of REVERTIBLE_TOOLS) {
     const plan = planRevert(tool, samples[tool], DAY);
-    assert.match(plan.sql.trim(), /^DELETE FROM /, `${tool} must be a DELETE`);
+    // Adds invert by DELETE; complete_task inverts by a guarded UPDATE
+    // (reopen). Either way: one statement, only ? placeholders.
+    assert.match(plan.sql.trim(), /^(DELETE FROM|UPDATE) /, `${tool} must be DELETE or UPDATE`);
     const placeholders = (plan.sql.match(/\?/g) ?? []).length;
     assert.equal(placeholders, plan.params.length, `${tool} placeholder/param count`);
   }
+});
+
+test("heatmap un-log corrections invert by restoring the tombstone (both directions undoable)", () => {
+  // undo a "mark not done" → the row comes back
+  const gym = planRevert("unlog_gym", { date: "2026-07-02" }, DAY);
+  assert.match(gym.sql, /SET deleted_at = NULL/);
+  assert.match(gym.sql, /deleted_at IS NOT NULL/); // already-restored = nothing matched
+  assert.deepEqual(gym.params, ["2026-07-02"]);
+
+  const habit = planRevert("unlog_habit", { name: "Meditate", date: "2026-07-02" }, DAY);
+  assert.match(habit.sql, /SET deleted_at = NULL/);
+  assert.match(habit.sql, /LOWER\(name\) = LOWER\(\?\)/);
+  assert.deepEqual(habit.params, ["2026-07-02", "Meditate"]);
+
+  // undo a "mark done" → the log_gym/log_habit inverse tombstones (§1)
+  assert.match(planRevert("log_gym", { date: "2026-07-02" }, DAY).sql, /SET deleted_at = strftime/);
+});
+
+test("complete_task inverse reopens the task and asks for the calendar rename-back", () => {
+  const plan = planRevert("complete_task", { task_id: 7 }, DAY);
+  assert.match(plan.sql, /completed_at = NULL/);
+  assert.match(plan.sql, /status = 'open'/);
+  assert.match(plan.sql, /completed_at IS NOT NULL/); // already-open = no-op
+  assert.deepEqual(plan.params, [7]);
+  assert.deepEqual(plan.after, { kind: "reopen-task-event", taskId: 7 });
+  assert.throws(() => planRevert("complete_task", {}, DAY), /missing numeric "task_id"/);
+});
+
+test("update_task is refused with an overwrite reason", () => {
+  assert.throws(() => planRevert("update_task", { task_id: 1 }, DAY), /overwritten/);
 });
 
 test("unrevertible tools are refused with a reason, never guessed", () => {
@@ -87,4 +147,53 @@ test("missing identifying args and bad fallback dates are hard errors", () => {
   assert.throws(() => planRevert("add_task", {}, DAY), /missing "title"/);
   assert.throws(() => planRevert("log_meal", { calories: 1 }, DAY), /missing "item"/);
   assert.throws(() => planRevert("log_gym", {}, "yesterday"), /invalid fallback date/);
+});
+
+// ---- reading executed calls back: new column + legacy fallback --------------
+
+test("parseExecutedCalls reads the new executed_calls array, falling back to legacy tool_calls.executed", () => {
+  // New shape: a top-level JSON array.
+  const fresh = parseExecutedCalls(JSON.stringify([{ name: "add_task", args: { title: "x" }, result: "ok" }]), null);
+  assert.equal(fresh?.length, 1);
+
+  // Legacy shape: the bundled { executed: [...] } object under tool_calls.
+  const legacy = parseExecutedCalls(null, JSON.stringify({ executed: [{ name: "log_gym", args: {}, result: "ok" }] }));
+  assert.equal(legacy?.length, 1);
+
+  // executed_calls wins when both are present.
+  const both = parseExecutedCalls(JSON.stringify([{ name: "new_one" }]), JSON.stringify({ executed: [{ name: "old_one" }] }));
+  assert.equal((both?.[0] as { name: string }).name, "new_one");
+
+  // Malformed / empty → null (skip the row, never guess).
+  assert.equal(parseExecutedCalls("not json", null), null);
+  assert.equal(parseExecutedCalls(null, null), null);
+  assert.equal(parseExecutedCalls(JSON.stringify({ nope: 1 }), null), null); // array-only
+});
+
+test("pickRevertableEntry picks the newest successful revertible call and skips failed attempts", () => {
+  const entries = [
+    { name: "add_task", args: { title: "first" }, result: "ok" }, // 0 revertible, older
+    { name: "add_task", args: { title: "threw" }, error: "boom" }, // 1 failed — must be skipped
+    { name: "query_finance", args: {}, result: "ok" }, // 2 not revertible
+  ];
+  const pick = pickRevertableEntry(entries, undefined, () => false);
+  assert.deepEqual(pick, { index: 0, tool: "add_task", args: { title: "first" } });
+
+  // A failed-only list yields nothing (reverting a throw could corrupt state).
+  assert.equal(
+    pickRevertableEntry([{ name: "add_task", args: {}, error: "boom" }], undefined, () => false),
+    null
+  );
+
+  // Already-reverted index is skipped.
+  assert.equal(
+    pickRevertableEntry([{ name: "add_task", args: { title: "x" }, result: "ok" }], undefined, () => true),
+    null
+  );
+
+  // toolFilter narrows the match.
+  assert.equal(
+    pickRevertableEntry([{ name: "add_task", args: {}, result: "ok" }], "log_gym", () => false),
+    null
+  );
 });

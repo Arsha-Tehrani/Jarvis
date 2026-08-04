@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { findHabitByName } from "@/lib/tracker-delete";
 
 // Generic habits: daily cadence tracks a consecutive-day streak; weekly
 // cadence tracks this week's count against `goal` per week.
@@ -24,7 +25,11 @@ function isoDaysAgo(n: number): string {
 export function listHabits(): HabitWithStats[] {
   const db = getDb();
   const habits = db
-    .prepare("SELECT id, name, cadence, goal FROM habits ORDER BY name")
+    // Manual habits only (source IS NULL): sourced trackers (former Goals)
+    // have no habit_logs and render as rings on the Trackers page.
+    .prepare(
+      "SELECT id, name, cadence, goal FROM habits WHERE source IS NULL AND deleted_at IS NULL ORDER BY name"
+    )
     .all() as Habit[];
   const today = new Date().toISOString().slice(0, 10);
   const since = isoDaysAgo(370);
@@ -33,7 +38,7 @@ export function listHabits(): HabitWithStats[] {
     const dates = (
       db
         .prepare(
-          "SELECT date FROM habit_logs WHERE habit_id = ? AND date >= ? ORDER BY date DESC"
+          "SELECT date FROM habit_logs WHERE habit_id = ? AND date >= ? AND deleted_at IS NULL ORDER BY date DESC"
         )
         .all(habit.id, since) as { date: string }[]
     ).map((r) => r.date);
@@ -56,21 +61,16 @@ export function listHabits(): HabitWithStats[] {
 
 export function logHabitByName(name: string, date?: string): string {
   const db = getDb();
-  const habit = db
-    .prepare("SELECT id, name FROM habits WHERE LOWER(name) = LOWER(?)")
-    .get(name.trim()) as { id: number; name: string } | undefined;
-  if (!habit) {
-    const names = (db.prepare("SELECT name FROM habits ORDER BY name").all() as { name: string }[])
-      .map((r) => r.name)
-      .join(", ");
-    throw new Error(
-      `No habit named "${name}". Existing habits: ${names || "(none — create one on the Habits page first)"}`
-    );
-  }
+  // Shared name→tracker lookup (lib/tracker-delete.ts) — same
+  // fail-with-known-list behavior for log_habit and delete_habit.
+  const habit = findHabitByName(db, name);
   const day = date ?? new Date().toISOString().slice(0, 10);
-  db.prepare("INSERT OR IGNORE INTO habit_logs (habit_id, date) VALUES (?, ?)").run(
-    habit.id,
-    day
-  );
+  // Revive a tombstoned same-day row rather than duplicating it; a re-log of
+  // an already-live day stays a no-op (same pattern as /api/habits).
+  db.prepare(
+    `INSERT INTO habit_logs (habit_id, date) VALUES (?, ?)
+     ON CONFLICT(habit_id, date) DO UPDATE SET deleted_at = NULL
+     WHERE habit_logs.deleted_at IS NOT NULL`
+  ).run(habit.id, day);
   return `Logged "${habit.name}" for ${day}.`;
 }

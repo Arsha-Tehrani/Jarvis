@@ -3,6 +3,30 @@ import {
   buildFinanceFilter,
   type FinanceQueryArgs,
 } from "@/lib/finance/query-builder";
+import { comparisonPeriod, latestPeriod } from "@/lib/finance/period";
+
+// The distinct YYYY-MM months that actually have transactions, oldest→newest.
+// The single source of truth for "which months exist" — month navigation and
+// the derived current/comparison periods all read from this.
+export function periodsWithData(): string[] {
+  return (
+    getDb()
+      .prepare("SELECT DISTINCT substr(date, 1, 7) AS m FROM transactions ORDER BY m")
+      .all() as { m: string }[]
+  ).map((r) => r.m);
+}
+
+// The baseline "current" period: the month of the most recent imported
+// transaction, not the system clock. Null when there are no transactions.
+export function getLatestPeriod(): string | null {
+  return latestPeriod(periodsWithData());
+}
+
+// The month to compare against (immediately-preceding month, only if it has
+// data). Null when there isn't enough history.
+export function getComparisonPeriod(): string | null {
+  return comparisonPeriod(periodsWithData());
+}
 
 export type FinanceQueryResult = {
   total: number;

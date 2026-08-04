@@ -1,0 +1,50 @@
+/* Paper Ledger design tokens — editorial print-ledger aesthetic.
+   Raw palette only; app/globals.css maps these onto the shadcn
+   semantic variables (--background, --primary, --accent, …) that
+   components already consume. */
+:root {
+  /* Surfaces */
+  --paper: #F7F4EC;        /* page background — warm paper, NOT white */
+  --card: #FCFBF6;         /* card background */
+  --line: #D8D2C2;         /* hairline borders */
+  --line-heavy: #1C1B18;   /* heavy ledger rules (section tops) */
+
+  /* Ink */
+  --ink: #1C1B18;          /* primary text */
+  --ink-soft: #45423A;     /* secondary text */
+  --ink-muted: #6B6656;    /* captions, labels, metadata */
+
+  /* Accent — interactive/selected ONLY */
+  --accent: #7A2E2E;       /* oxblood: buttons, links, active nav, focus */
+  --accent-hover: #632424;
+  --accent-bg: #F2E6E3;    /* tint for selected nav item / active states */
+
+  /* Money — used ONLY on numeric values, never on controls */
+  --gain: #2F6B4F;
+  --gain-bg: #E7EFE7;
+  --loss: #B0492F;         /* deliberately lighter/warmer than --accent */
+  --loss-bg: #F6E9E2;
+
+  /* Attention */
+  --warn: #8A5A12;
+  --warn-bg: #F3EAD4;
+
+  /* Cash-equivalent (investment-account cash/money-market, distinct from
+     equity holdings on the Stocks chart) — a cool teal, deliberately not a
+     shade of --gain/--ink-soft (would read as one washed-out series) and
+     not red/amber (already --loss/--warn, which mean something else). */
+  --cash-equivalent: #2E6B75;
+  --cash-equivalent-bg: #E4EEF0;
+
+  /* Heatmap ramp (contribution grids) — --accent is forbidden here */
+  --heat-1: #DCD5C2;
+  --heat-2: #B5A98A;
+  --heat-3: #8A7A54;
+  --heat-4: #5C4F33;
+
+  /* Type */
+  --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-body: "Inter", -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+  --radius: 5px;
+}

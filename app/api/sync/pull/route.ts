@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { getDeviceId } from "@/lib/sync/client";
+import { getEnabledSyncTables } from "@/lib/sync/config";
 import { serializePullRows } from "@/lib/sync/core";
 import { requireSyncHost } from "@/lib/sync/host";
 import { getSyncSpec, pullQuerySchema } from "@/lib/sync/tables";
@@ -30,6 +31,13 @@ export async function GET(req: NextRequest) {
   if (!spec) {
     return NextResponse.json({ error: `table ${parsed.data.table} is not syncable` }, { status: 400 });
   }
-  const { rows, cursor } = serializePullRows(getDb(), spec, getDeviceId(), parsed.data.since);
+  const db = getDb();
+  // The host only SERVES tables it has enabled. A disabled table returns an
+  // empty page with a null cursor — the client advances nothing and simply
+  // stops seeing rows for it.
+  if (!getEnabledSyncTables(db).has(spec.table)) {
+    return NextResponse.json({ rows: [], cursor: null });
+  }
+  const { rows, cursor } = serializePullRows(db, spec, getDeviceId(), parsed.data.since);
   return NextResponse.json({ rows, cursor });
 }

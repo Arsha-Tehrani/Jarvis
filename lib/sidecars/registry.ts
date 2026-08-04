@@ -7,7 +7,7 @@
 // manual command (npm run doctor prints it when the venv is missing).
 
 export type SidecarDef = {
-  id: "textbook-rag" | "macro-sidecar"; // same ids as the status checks
+  id: "textbook-rag" | "macro-sidecar" | "voice-sidecar"; // same ids as the status checks
   label: string;
   dir: string; // working directory, relative to the repo root
   venvDir: string; // relative to dir
@@ -34,6 +34,19 @@ export const SIDECARS: SidecarDef[] = [
     module: "macro.server",
     port: 8017,
     healthUrl: () => `${process.env.MACRO_SIDECAR_URL ?? "http://localhost:8017"}/health`,
+  },
+  // voice/server.py — the HTTP mode used by the Ask Jarvis mic button (not
+  // push_to_talk.py, which is an interactive CLI tool with no server
+  // lifecycle to manage from here). Same Start/Stop/Set-up/logs machinery
+  // as the other two sidecars, entirely via this one registry entry.
+  {
+    id: "voice-sidecar",
+    label: "Voice sidecar",
+    dir: "sidecars/voice",
+    venvDir: ".venv",
+    module: "voice.server",
+    port: 8018,
+    healthUrl: () => `${process.env.VOICE_SIDECAR_URL ?? "http://localhost:8018"}/health`,
   },
 ];
 

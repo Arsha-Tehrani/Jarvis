@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { ContributionHeatmap } from "@/components/heatmap";
+import { RingGauge } from "@/components/ring-gauge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,10 +33,32 @@ type LeetCodeLatest = {
   recent: RecentProblem[];
 };
 
+type Tracker = {
+  id: number;
+  name: string;
+  cadence: "daily" | "weekly";
+  source: string | null;
+  target: number | null;
+  display: "ring" | "heatmap";
+  actual: number;
+  targetValue: number;
+  unit: string;
+  fraction: number;
+  onTrack: boolean;
+  label: string;
+  displayActual: string;
+  streak: number;
+  thisWeek: number;
+  doneToday: boolean;
+  dates: string[];
+  href: string;
+};
+
 export function TrackersView() {
   const [gymLogs, setGymLogs] = useState<GymLog[]>([]);
   const [leetcode, setLeetcode] = useState<LeetCodeLatest | null>(null);
   const [nutrition, setNutrition] = useState<DayNutrition | null>(null);
+  const [trackers, setTrackers] = useState<Tracker[]>([]);
   const [gymError, setGymError] = useState<string | null>(null);
   const [lcError, setLcError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -41,6 +66,13 @@ export function TrackersView() {
   const [manualStreak, setManualStreak] = useState("");
 
   const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/habits");
+      const data = await res.json();
+      if (res.ok) setTrackers(data.trackers);
+    } catch {
+      // section just stays empty
+    }
     try {
       const res = await fetch("/api/gym");
       const data = await res.json();
@@ -71,6 +103,46 @@ export function TrackersView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Manual trackers log/unlog through the same habits endpoint.
+  async function toggleTracker(t: Tracker) {
+    setBusy(true);
+    try {
+      await fetch("/api/habits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: t.doneToday ? "unlog" : "log", habitId: t.id }),
+      });
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Heatmap correction: same endpoint as the toggle, with an explicit
+  // backdated date (the API rejects future dates and logs the correction
+  // for "undo that").
+  async function correctTracker(t: Tracker, date: string, action: "log" | "unlog") {
+    await fetch("/api/habits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, habitId: t.id, date }),
+    });
+    await load();
+  }
+
+  async function correctGym(date: string, action: "log" | "unlog") {
+    if (action === "log") {
+      await fetch("/api/gym", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+    } else {
+      await fetch(`/api/gym?date=${date}`, { method: "DELETE" });
+    }
+    await load();
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const wentToday = gymLogs.some((l) => l.date === today);
@@ -137,8 +209,67 @@ export function TrackersView() {
 
   const daysThisMonth = gymLogs.filter((l) => l.date.slice(0, 7) === today.slice(0, 7)).length;
 
+  const sourced = trackers.filter((t) => t.source);
+  const manual = trackers.filter((t) => !t.source);
+
   return (
     <div className="flex flex-col gap-6">
+      {/* Unified Trackers — the single home for every tracked thing. Former
+          Goals (sourced) render as rings; manual habits as heatmaps/streaks.
+          Built-in gym/LeetCode/macro detail cards follow below. */}
+      {trackers.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              Trackers
+              <Link href="/habits" className="text-sm font-normal text-muted-foreground hover:underline">
+                manage
+              </Link>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {sourced.length > 0 && (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {sourced.map((t) => (
+                  <div key={t.id} className="flex items-center gap-3 rounded border p-3">
+                    <RingGauge value={Math.round(t.actual)} target={t.targetValue} />
+                    <div className="text-sm">
+                      <p className="font-medium">{t.name}</p>
+                      <p className="text-muted-foreground">{t.label}</p>
+                      <Badge variant={t.onTrack ? "secondary" : "outline"} className="mt-1">
+                        {t.onTrack ? "on track" : "behind"}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {manual.map((t) => (
+              <div key={t.id} className="flex flex-col gap-2 rounded border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">{t.name}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">{t.label}</span>
+                    <Button
+                      size="sm"
+                      variant={t.doneToday ? "outline" : "default"}
+                      disabled={busy}
+                      onClick={() => toggleTracker(t)}
+                    >
+                      {t.doneToday ? "Done ✓ (undo)" : "Done today"}
+                    </Button>
+                  </span>
+                </div>
+                <ContributionHeatmap
+                  loggedDates={t.dates}
+                  onCorrect={(date, action) => correctTracker(t, date, action)}
+                />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Gym</CardTitle>
@@ -153,7 +284,10 @@ export function TrackersView() {
             </span>
           </div>
           {gymError && <p className="text-sm text-destructive">{gymError}</p>}
-          <ContributionHeatmap loggedDates={gymLogs.map((l) => l.date)} />
+          <ContributionHeatmap
+            loggedDates={gymLogs.map((l) => l.date)}
+            onCorrect={correctGym}
+          />
         </CardContent>
       </Card>
 

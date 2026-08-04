@@ -48,7 +48,8 @@ export async function POST(req: NextRequest) {
   }
   try {
     if (parsed.data.action === "send_brief") {
-      await sendDm(await briefText());
+      const { text } = await briefText();
+      await sendDm(text);
       return NextResponse.json({ ok: true, result: "Brief sent." });
     }
     const result = await sendMorningCheckin(true);

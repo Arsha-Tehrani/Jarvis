@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { SystemClock } from "@/components/system-clock";
 import { cn } from "@/lib/utils";
 import type { HealthCheck, HealthSummary } from "@/lib/status-core";
 import type { SyncStatus } from "@/lib/sync/client";
@@ -17,8 +18,8 @@ const POLL_MS = 30_000;
 
 const DOT: Record<HealthCheck["status"], string> = {
   ok: "bg-emerald-500",
-  degraded: "bg-yellow-500",
-  down: "bg-destructive",
+  degraded: "bg-warn/60",
+  down: "bg-warn",
   unconfigured: "bg-muted-foreground/40",
 };
 
@@ -120,6 +121,9 @@ export function StatusView() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Cron-timing questions get debugged here — pair "what time does
+              the server think it is" with the integration checks. */}
+          <SystemClock />
           <Link href="/network-log" className="action-link text-xs">
             Network log
           </Link>
@@ -160,10 +164,47 @@ export function StatusView() {
                 onChanged={() => load(true)}
               />
             )}
+            {check.id === "google-drive" && check.status === "ok" && <GoodNotesSyncButton />}
           </Card>
         ))}
       </div>
-      {data?.sync && <SyncSection sync={data.sync} />}
+      {data?.sync && <SyncSection sync={data.sync} onSynced={() => load(true)} />}
+    </div>
+  );
+}
+
+// Manual trigger for the hourly GoodNotes->Drive->RAG poll (lib/goodnotes.ts),
+// which otherwise only runs on its own schedule + launch catch-up. Shown
+// next to Google Drive since that's the dependency GoodNotes sync needs.
+function GoodNotesSyncButton() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function syncNow() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/goodnotes/sync", { method: "POST" });
+      const body = await res.json();
+      setResult(
+        res.ok
+          ? `${body.ingested} ingested, ${body.skipped} unchanged of ${body.scanned} scanned` +
+              (body.failed?.length ? `, ${body.failed.length} failed` : "")
+          : (body.error ?? "Sync failed")
+      );
+    } catch {
+      setResult("Could not reach the app's API.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border pt-2">
+      <Button size="sm" variant="outline" disabled={busy} onClick={syncNow} className="self-start">
+        {busy ? "Syncing…" : "Sync GoodNotes now"}
+      </Button>
+      {result && <p className="text-xs text-muted-foreground">{result}</p>}
     </div>
   );
 }
@@ -183,6 +224,35 @@ function SidecarControls({
   const [actionError, setActionError] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState<string[] | null>(null);
+  const [reingestPath, setReingestPath] = useState("");
+  const [reingestResult, setReingestResult] = useState<string | null>(null);
+
+  // Manual re-ingest: the sidecar's /ingest is already idempotent (replaces
+  // rather than duplicates a book's chunks), so this is just a UI trigger
+  // for it — no confirm gate needed, nothing is deleted or overwritten
+  // destructively.
+  async function reingestTextbook() {
+    if (!reingestPath.trim()) return;
+    setBusy(true);
+    setReingestResult(null);
+    try {
+      const res = await fetch("/api/textbook/reingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: reingestPath.trim() }),
+      });
+      const body = await res.json();
+      setReingestResult(
+        res.ok
+          ? `Ingested ${body.chunks} chunk(s) from ${body.source} (${body.collection_total} total in the collection).`
+          : (body.error ?? "Re-ingest failed")
+      );
+    } catch {
+      setReingestResult("Could not reach the app's API.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const needsSetup =
     sidecar.kind === "bundled" &&
@@ -305,13 +375,30 @@ function SidecarControls({
         </span>
       </div>
       {sidecar.hint && !sidecar.settingUp && (
-        <p className="text-xs font-medium text-yellow-700 dark:text-yellow-500">{sidecar.hint}</p>
+        <p className="text-xs font-medium text-warn">{sidecar.hint}</p>
       )}
       {actionError && <p className="text-xs text-destructive">{actionError}</p>}
       {showLogs && (
         <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 text-[10px] leading-relaxed whitespace-pre-wrap">
           {logs === null ? "loading…" : logs.length > 0 ? logs.join("\n") : "(no output captured yet)"}
         </pre>
+      )}
+      {sidecar.id === "textbook-rag" && sidecar.state === "running" && (
+        <div className="flex flex-col gap-1 border-t border-border pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              placeholder="Absolute path to a book (.pdf/.md/.txt) to re-ingest"
+              value={reingestPath}
+              onChange={(e) => setReingestPath(e.target.value)}
+              className="min-w-64 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+            />
+            <Button size="sm" variant="outline" disabled={busy || !reingestPath.trim()} onClick={reingestTextbook}>
+              Re-ingest
+            </Button>
+          </div>
+          {reingestResult && <p className="text-xs text-muted-foreground">{reingestResult}</p>}
+        </div>
       )}
     </div>
   );
@@ -323,42 +410,85 @@ function formatUptime(sec: number): string {
   return `${(sec / 3600).toFixed(1)}h`;
 }
 
-// The Sync section: role + per-table push/pull marks and pending counts.
-// Same card language as the checks above; "disabled" is a calm one-liner.
-function SyncSection({ sync }: { sync: SyncStatus }) {
-  const timeOf = (iso: string | null) =>
-    iso
-      ? new Date(iso).toLocaleString("en-US", {
-          month: "short",
-          day: "numeric",
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      : "never";
+// Manual "Sync now" for a configured client — runs the same runSyncPass() the
+// 5-minute cron does, then refreshes the status so the per-table push/pull
+// marks and pending counts update in place.
+function SyncNowButton({ onSynced }: { onSynced: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function syncNow() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/sync/run", { method: "POST" });
+      const body = (await res.json()) as { ok?: boolean; error?: string; status?: SyncStatus };
+      if (res.ok) {
+        const pending = (body.status?.tables ?? []).reduce((n, t) => n + t.pending, 0);
+        setResult(
+          pending > 0
+            ? `Synced — ${pending} row(s) still pending, will retry next tick.`
+            : "Synced — up to date."
+        );
+        onSynced();
+      } else {
+        setResult(body.error ?? "Sync failed");
+      }
+    } catch {
+      setResult("Could not reach the app's API.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border pt-2">
+      <Button size="sm" variant="outline" disabled={busy} onClick={syncNow} className="self-start">
+        {busy ? "Syncing…" : "Sync now"}
+      </Button>
+      {result && <p className="text-xs text-muted-foreground">{result}</p>}
+    </div>
+  );
+}
+
+// Compact Sync summary: role + health + "N of M categories syncing", with a
+// link into /sync (the full control center). The per-category toggles and
+// per-table marks live on /sync now — this page just surfaces state.
+function SyncSection({ sync, onSynced }: { sync: SyncStatus; onSynced: () => void }) {
+  const totalPending = (sync.tables ?? [])
+    .filter((t) => t.enabled)
+    .reduce((n, t) => n + t.pending, 0);
 
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold tracking-tight">Sync</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold tracking-tight">Sync</h2>
+        <Link href="/sync" className="text-xs text-muted-foreground hover:text-foreground">
+          Manage sync →
+        </Link>
+      </div>
       {sync.role === "disabled" ? (
         <Card className="px-(--card-spacing)">
           <p className="text-xs text-muted-foreground">
             Device sync is disabled — set SYNC_ROLE (host/client) in .env.local to enable it.
-            Only allowlisted tracker tables ever sync; finance, mail, and notes stay local.
+            Choose what syncs on the{" "}
+            <Link href="/sync" className="underline hover:text-foreground">
+              Sync page
+            </Link>
+            .
           </p>
         </Card>
       ) : (
-        <Card className="gap-3 px-(--card-spacing)">
+        <Card className="gap-2 px-(--card-spacing)">
           <div className="flex items-center gap-2 text-xs">
             <span
               className={cn(
                 "size-2.5 shrink-0 rounded-full",
-                sync.configured ? "bg-emerald-500" : "bg-yellow-500"
+                sync.configured ? "bg-emerald-500" : "bg-warn"
               )}
               aria-hidden
             />
-            <span className="font-medium">
-              {sync.role === "host" ? "Host" : "Client"}
-            </span>
+            <span className="font-medium">{sync.role === "host" ? "Host" : "Client"}</span>
             <span className="text-muted-foreground">
               {sync.role === "host"
                 ? sync.configured
@@ -370,25 +500,13 @@ function SyncSection({ sync }: { sync: SyncStatus }) {
               {sync.deviceId && ` · device ${sync.deviceId.slice(0, 8)}`}
             </span>
           </div>
-          {sync.tables && (
-            <div className="grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2">
-              {sync.tables.map((t) => (
-                <div key={t.table} className="flex items-baseline justify-between gap-3 text-xs">
-                  <span className="font-mono">{t.table}</span>
-                  <span className="text-muted-foreground">
-                    {t.pending > 0 && (
-                      <span className="text-yellow-600 dark:text-yellow-500">
-                        {t.pending} pending ·{" "}
-                      </span>
-                    )}
-                    {sync.role === "client"
-                      ? `push ${timeOf(t.lastPushAt)} · pull ${timeOf(t.lastPullAt)}`
-                      : "served live"}
-                  </span>
-                </div>
-              ))}
-            </div>
+          {sync.categories && (
+            <p className="text-xs text-muted-foreground">
+              {sync.categories.enabled} of {sync.categories.total} categories syncing
+              {totalPending > 0 && <span className="text-warn"> · {totalPending} pending</span>}
+            </p>
           )}
+          {sync.role === "client" && sync.configured && <SyncNowButton onSynced={onSynced} />}
         </Card>
       )}
     </div>

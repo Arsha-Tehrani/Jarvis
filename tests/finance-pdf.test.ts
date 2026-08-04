@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   BrokerageStatementError,
+  extractStatementBalance,
   groupRecords,
   inferPeriodEnd,
   isBrokerageStatement,
@@ -123,6 +124,42 @@ test("brokerage/investment reports are detected and refused, not mis-parsed", ()
   assert.equal(isBrokerageStatement(CHECKING), false);
   assert.equal(isBrokerageStatement(CREDIT_CARD), false);
   assert.throws(() => parsePdfText(BROKERAGE), BrokerageStatementError);
+});
+
+test("extractStatementBalance reads the summary balance and its kind", () => {
+  // Checking: last "Ending Balance" → a cash asset.
+  assert.deepEqual(extractStatementBalance(CHECKING), {
+    balance: 4046.73,
+    kind: "cash",
+    label: "Checking",
+  });
+  // Credit card: "New Balance" alongside "Minimum Payment Due" → a debt.
+  assert.deepEqual(extractStatementBalance(CREDIT_CARD), {
+    balance: 249.24,
+    kind: "debt",
+    label: "Credit Card",
+  });
+  // Nothing to suggest when there's no summary line.
+  assert.equal(extractStatementBalance("just some text, no balance here"), null);
+});
+
+test("extractStatementBalance labels with the classified account sub-type, not a hardcoded default", () => {
+  // A savings statement has the exact same "Ending Balance" structure as
+  // checking — without a sub-type label, it would collide with a checking
+  // suggestion under the same generic "Checking" label. Passing the
+  // classifier's actual sub-type (as ingest.ts now does) fixes that.
+  assert.deepEqual(extractStatementBalance(CHECKING, "Savings"), {
+    balance: 4046.73,
+    kind: "cash",
+    label: "Savings",
+  });
+  assert.deepEqual(extractStatementBalance(CREDIT_CARD, "Credit Card"), {
+    balance: 249.24,
+    kind: "debt",
+    label: "Credit Card",
+  });
+  // No override → the old hardcoded defaults, for content-ambiguous imports.
+  assert.equal(extractStatementBalance(CHECKING)?.label, "Checking");
 });
 
 test("cross-year: a December line on a January statement lands in the prior year", () => {

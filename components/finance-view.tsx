@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { SpendChart } from "@/components/spend-chart";
+import { TransactionTable } from "@/components/transaction-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -23,6 +24,15 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { InvestmentHoldings } from "@/components/investment-holdings";
 import type {
   CategorySpend,
   CutbackSuggestion,
@@ -31,27 +41,107 @@ import type {
   RecurringCharge,
 } from "@/lib/finance/analyze";
 import type { RadarItem } from "@/lib/finance/radar";
+import { importLogInitialState, reanalyzeUiReducer } from "@/lib/finance/reanalyze-ui-state";
+import type { FinanceTab } from "@/lib/finance/finance-tabs";
 
-type Statement = { id: number; month: string | null; file_path: string; imported_at: string };
+type Statement = {
+  id: number;
+  month: string | null;
+  file_path: string;
+  imported_at: string;
+  kind?: string | null;
+  account_type?: string | null;
+};
+
+const ACCOUNT_TYPE_LABEL: Record<string, string> = {
+  checking: "Checking",
+  savings: "Savings",
+  credit_card: "Credit Card",
+  investment: "Investment",
+};
+
+type ReanalyzeCounts = { count: number; categories: Record<string, number> };
+type ReanalyzePreview = {
+  statementId: number;
+  file: string;
+  kind: string;
+  accountType?: string;
+  current: ReanalyzeCounts;
+  next: ReanalyzeCounts | { rejected: true; reason: string };
+};
+
+// Before/after summary shown pre-commit, per CLAUDE.md's confirm-gate rule
+// for destructive financial-data writes — never just a bare "are you sure?".
+function ReanalyzeDiff({ preview }: { preview: ReanalyzePreview }) {
+  if ("rejected" in preview.next) {
+    return <p className="text-destructive">{preview.next.reason}</p>;
+  }
+  const unit = preview.kind === "brokerage" ? "holdings" : "transactions";
+  return (
+    <p className="text-muted-foreground">
+      {preview.current.count} → {preview.next.count} {unit}
+      {preview.accountType && ACCOUNT_TYPE_LABEL[preview.accountType]
+        ? ` — ${ACCOUNT_TYPE_LABEL[preview.accountType]}`
+        : ""}
+      {preview.kind === "transaction" && (
+        <>
+          {" "}
+          (estimated categories:{" "}
+          {Object.entries(preview.next.categories)
+            .map(([cat, n]) => `${cat} ×${n}`)
+            .join(", ") || "none"}
+          )
+        </>
+      )}
+    </p>
+  );
+}
 type ImportResult = {
   file: string;
+  status: "imported" | "warning" | "rejected";
   imported: number;
-  categorizedBy: string;
+  kind?: "transaction" | "brokerage" | "unknown";
+  accountType?: string;
+  categorizedBy?: string;
+  warnings?: string[];
+  reason?: string;
   llmError?: string;
-  error?: string;
+  confidence?: number;
+  signals?: string[];
+  // Option B, docs/multi-institution-parsing.md: a confirm-gated suggestion
+  // from the local LLM on a rejected (unknown/below-floor) file.
+  llmSuggestion?: { kind: "brokerage" | "transaction"; subKind?: string; reason: string };
 };
+
+type MonthComparison = { current: MonthSummary; comparison: MonthSummary | null };
 
 type FinanceData = {
   statementsDir: string;
   statements: Statement[];
   transactionCount: number;
+  periods: string[];
+  currentPeriod: string | null;
+  comparisonPeriod: string | null;
   spendByCategory: CategorySpend[];
   recurring: RecurringCharge[];
   radar: RadarItem[];
-  summaries: MonthSummary[];
+  summaries: MonthComparison;
   goals: Goal[];
   cutbacks: CutbackSuggestion[];
+  categoryReference: Array<{ category: string; keywords: string[] }>;
 };
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// "2026-06" → "June 2026". Mirrors lib/finance/period.monthLabel for the UI.
+function monthLabel(period: string | null): string {
+  if (!period) return "—";
+  const [y, m] = period.split("-").map(Number);
+  return MONTH_NAMES[m - 1] ? `${MONTH_NAMES[m - 1]} ${y}` : period;
+}
 
 const usd = (v: number) =>
   `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -72,10 +162,28 @@ export function FinanceView() {
   const [goalTarget, setGoalTarget] = useState("");
   const [selectedRenewals, setSelectedRenewals] = useState<Set<string>>(new Set());
   const [renewalResult, setRenewalResult] = useState<string | null>(null);
+  // The imported-statement list lives behind a click (an import-log dialog);
+  // at most one Re-Analyze confirmation (single statement, or "all") can be
+  // pending at a time, and closing the log clears any pending confirmation —
+  // one reducer models both, see lib/finance/reanalyze-ui-state.ts.
+  const [importLog, dispatchReanalyzePending] = useReducer(
+    reanalyzeUiReducer,
+    importLogInitialState
+  );
+  const reanalyzePending = importLog.pending;
+  const [singlePreview, setSinglePreview] = useState<ReanalyzePreview | null>(null);
+  const [allPreviews, setAllPreviews] = useState<ReanalyzePreview[] | null>(null);
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
+  // null = show the derived latest period; a YYYY-MM = the month paged to.
+  const [month, setMonth] = useState<string | null>(null);
+  // Category filter shared by the chips, the spend chart, and the txn table.
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  // Phase 4: which of the four account-type tabs the Transactions section shows.
+  const [financeTab, setFinanceTab] = useState<FinanceTab>("total");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (ym: string | null) => {
     try {
-      const res = await fetch("/api/finance");
+      const res = await fetch(`/api/finance${ym ? `?month=${ym}` : ""}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Failed to load finance data");
       setData(body);
@@ -86,8 +194,8 @@ export function FinanceView() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(month);
+  }, [load, month]);
 
   async function runImport() {
     setBusy(true);
@@ -101,7 +209,122 @@ export function FinanceView() {
       const body = await res.json();
       if (!res.ok) setError(body.error ?? "Import failed");
       else setImportResults(body.results);
-      await load();
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Re-Analyze: destructive (deletes + re-imports a statement's rows), so a
+  // preview is always fetched first and committed only on an explicit click,
+  // per CLAUDE.md's confirm-gate rule for financial-data writes. Opening
+  // either confirmation (single or all) always replaces whatever was
+  // previously pending, so only one card is ever on screen at once.
+  // Manual account-type correction (Phase 2, Symptom A): no keyword
+  // heuristic is 100% across every bank's wording forever, so let the user
+  // fix a wrong/missing badge directly. Scoped to just this statement — see
+  // lib/finance/ingest.ts's setStatementAccountType for why there's no
+  // stable cross-statement key to remember it by instead.
+  async function setAccountType(statementId: number, accountType: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_account_type",
+          statementId,
+          accountType: accountType === "" ? null : accountType,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Failed to update account type");
+      }
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewReanalyzeOne(statementId: number) {
+    dispatchReanalyzePending({ type: "open_single", statementId });
+    setReanalyzeError(null);
+    setSinglePreview(null);
+    setAllPreviews(null);
+    setBusy(true);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reanalyze_preview", statementId }),
+      });
+      const body = await res.json();
+      if (!res.ok) setReanalyzeError(body.error ?? "Preview failed");
+      else setSinglePreview(body.preview);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmReanalyzeOne() {
+    if (!singlePreview) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reanalyze_commit", statementId: singlePreview.statementId }),
+      });
+      const body = await res.json();
+      if (!res.ok) setReanalyzeError(body.error ?? "Re-analyze failed");
+      dispatchReanalyzePending({ type: "close" });
+      setSinglePreview(null);
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewReanalyzeAll() {
+    if (!data) return;
+    dispatchReanalyzePending({ type: "open_all" });
+    setReanalyzeError(null);
+    setSinglePreview(null);
+    setAllPreviews(null);
+    setBusy(true);
+    try {
+      const previews: ReanalyzePreview[] = [];
+      for (const s of data.statements) {
+        const res = await fetch("/api/finance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reanalyze_preview", statementId: s.id }),
+        });
+        const body = await res.json();
+        if (res.ok) previews.push(body.preview);
+      }
+      setAllPreviews(previews);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmReanalyzeAll() {
+    if (!allPreviews) return;
+    setBusy(true);
+    try {
+      for (const p of allPreviews) {
+        await fetch("/api/finance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reanalyze_commit", statementId: p.statementId }),
+        });
+      }
+      dispatchReanalyzePending({ type: "close" });
+      setAllPreviews(null);
+      await load(month);
     } finally {
       setBusy(false);
     }
@@ -128,24 +351,66 @@ export function FinanceView() {
             "Upload failed"
         );
       }
-      const rejectedLines = (body.rejected ?? []).map(
+      const rejectedLines: ImportResult[] = (body.rejected ?? []).map(
         (r: { name: string; reason: string }) => ({
           file: r.name,
+          status: "rejected" as const,
           imported: 0,
-          categorizedBy: "none",
-          error: r.reason,
+          reason: r.reason,
         })
       );
       if (body.results || rejectedLines.length) {
         setImportResults([...(body.results ?? []), ...rejectedLines]);
       }
-      await load();
+      await load(month);
     } catch {
       setError("Could not reach the API.");
     } finally {
       setBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  // Option B, docs/multi-institution-parsing.md: confirm a local-LLM
+  // suggestion on a file the deterministic scorer rejected. Never runs
+  // without this explicit click — nothing is auto-applied.
+  async function confirmLlmSuggestion(index: number) {
+    const r = importResults?.[index];
+    if (!r?.llmSuggestion) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "import_with_suggestion",
+          file: r.file,
+          kind: r.llmSuggestion.kind,
+          subKind: r.llmSuggestion.subKind,
+        }),
+      });
+      const body = await res.json();
+      setImportResults((prev) => {
+        if (!prev) return prev;
+        const next = [...prev];
+        next[index] = res.ok
+          ? body.result
+          : { ...r, reason: body.error ?? "Import failed", llmSuggestion: undefined };
+        return next;
+      });
+      await load(month);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function dismissLlmSuggestion(index: number) {
+    setImportResults((prev) => {
+      if (!prev) return prev;
+      const next = [...prev];
+      next[index] = { ...next[index], llmSuggestion: undefined };
+      return next;
+    });
   }
 
   async function saveGoal(e: React.FormEvent) {
@@ -165,7 +430,7 @@ export function FinanceView() {
       } else {
         setGoalTarget("");
       }
-      await load();
+      await load(month);
     } finally {
       setBusy(false);
     }
@@ -173,7 +438,7 @@ export function FinanceView() {
 
   async function deleteGoal(id: number) {
     await fetch(`/api/finance/goals?id=${id}`, { method: "DELETE" });
-    await load();
+    await load(month);
   }
 
   function toggleRenewal(merchant: string) {
@@ -221,7 +486,12 @@ export function FinanceView() {
   if (error && !data) return <p className="text-sm text-destructive">{error}</p>;
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
-  const [last, current] = data.summaries;
+  const current = data.summaries.current;
+  const last = data.summaries.comparison;
+  const periods = data.periods ?? [];
+  const shownIdx = data.currentPeriod ? periods.indexOf(data.currentPeriod) : -1;
+  const canPrev = shownIdx > 0;
+  const canNext = shownIdx >= 0 && shownIdx < periods.length - 1;
 
   return (
     <div className="flex flex-col gap-6">
@@ -255,9 +525,21 @@ export function FinanceView() {
             <Button variant="outline" onClick={runImport} disabled={busy}>
               Scan folder
             </Button>
-            <span className="text-muted-foreground">
-              {data.statements.length} imported · {data.transactionCount} transactions
-            </span>
+            {data.statements.length > 0 ? (
+              <button
+                type="button"
+                className="text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => dispatchReanalyzePending({ type: "open_log" })}
+              >
+                {data.statements.length} statement
+                {data.statements.length === 1 ? "" : "s"} imported ·{" "}
+                {data.transactionCount} transactions · view import log
+              </button>
+            ) : (
+              <span className="text-muted-foreground">
+                {data.statements.length} imported · {data.transactionCount} transactions
+              </span>
+            )}
           </div>
           {importResults && (
             <ul className="flex flex-col gap-1">
@@ -265,55 +547,296 @@ export function FinanceView() {
                 <li className="text-muted-foreground">No new files found.</li>
               )}
               {importResults.map((r, i) => (
-                <li key={i} className={r.error ? "text-destructive" : ""}>
+                <li
+                  key={i}
+                  className={
+                    r.status === "rejected"
+                      ? "text-destructive"
+                      : r.status === "warning"
+                        ? "text-warn"
+                        : ""
+                  }
+                >
                   <span className="font-medium">{r.file}</span>:{" "}
-                  {r.error
-                    ? r.error
-                    : `${r.imported} transactions (categorized by ${r.categorizedBy})`}
-                  {r.llmError && (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      — LLM unavailable ({r.llmError}); keyword rules used
-                    </span>
+                  {r.status === "rejected" ? (
+                    <>Rejected — {r.reason}</>
+                  ) : (
+                    <>
+                      {r.imported}{" "}
+                      {r.kind === "brokerage" ? "holdings" : "transactions"}
+                      {r.accountType && ACCOUNT_TYPE_LABEL[r.accountType]
+                        ? ` — ${ACCOUNT_TYPE_LABEL[r.accountType]}`
+                        : ""}
+                      {r.categorizedBy ? ` (${r.categorizedBy})` : ""}
+                      {r.status === "warning" ? " — parsed with warnings" : ""}
+                    </>
+                  )}
+                  {r.warnings?.length ? (
+                    <ul className="ml-4 list-disc text-muted-foreground">
+                      {r.warnings.map((w, j) => (
+                        <li key={j}>{w}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {r.llmSuggestion && (
+                    <div className="mt-1 flex flex-col gap-1 rounded border border-border p-2 text-foreground">
+                      <p>
+                        This looks like a{" "}
+                        <span className="font-medium">
+                          {r.llmSuggestion.subKind && ACCOUNT_TYPE_LABEL[r.llmSuggestion.subKind]
+                            ? ACCOUNT_TYPE_LABEL[r.llmSuggestion.subKind]
+                            : r.llmSuggestion.kind}
+                        </span>{" "}
+                        statement, per the local model: <em>{r.llmSuggestion.reason}</em>
+                      </p>
+                      <div className="flex gap-2">
+                        <Button size="sm" disabled={busy} onClick={() => confirmLlmSuggestion(i)}>
+                          Tag it and import
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => dismissLlmSuggestion(i)}
+                        >
+                          Skip
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </li>
               ))}
             </ul>
           )}
-          {data.statements.length > 0 && (
-            <ul className="text-muted-foreground">
-              {data.statements.map((s) => (
-                <li key={s.id}>
-                  {s.file_path} — {s.month ?? "?"} (imported {s.imported_at.slice(0, 10)})
-                </li>
+          {/* The per-statement list (file/month, account-type badge +
+              correction, Re-Analyze) lives behind the summary-line click
+              above — an import log you open, not an always-visible block.
+              Closing this dialog also clears any pending re-analyze
+              confirmation (see lib/finance/reanalyze-ui-state.ts). */}
+          <Dialog
+            open={importLog.logOpen}
+            onOpenChange={(open) => {
+              if (open) {
+                dispatchReanalyzePending({ type: "open_log" });
+              } else {
+                dispatchReanalyzePending({ type: "close_log" });
+                setSinglePreview(null);
+                setAllPreviews(null);
+              }
+            }}
+          >
+            <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Import log</DialogTitle>
+                <DialogDescription>
+                  Every imported statement: file, month, account type (correctable), and
+                  Re-Analyze.
+                </DialogDescription>
+              </DialogHeader>
+              {data.statements.length > 0 && (
+                <div>
+                  <Button variant="outline" size="sm" onClick={previewReanalyzeAll} disabled={busy}>
+                    Re-Analyze All…
+                  </Button>
+                </div>
+              )}
+              {reanalyzeError && <p className="text-destructive">{reanalyzeError}</p>}
+              {reanalyzePending?.type === "single" && singlePreview && (
+                <div className="flex flex-col gap-2 rounded border border-border p-3">
+                  <p className="font-medium">Re-analyze &quot;{singlePreview.file}&quot;?</p>
+                  <ReanalyzeDiff preview={singlePreview} />
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={busy} onClick={confirmReanalyzeOne}>
+                      Confirm Re-Analyze
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => {
+                        dispatchReanalyzePending({ type: "close" });
+                        setSinglePreview(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {reanalyzePending?.type === "all" && allPreviews && (
+                <div className="flex flex-col gap-2 rounded border border-border p-3">
+                  <p className="font-medium">
+                    Re-analyze all {allPreviews.length} statement(s)?
+                  </p>
+                  <ul className="flex flex-col gap-2">
+                    {allPreviews.map((p) => (
+                      <li key={p.statementId}>
+                        <p className="text-muted-foreground">{p.file}</p>
+                        <ReanalyzeDiff preview={p} />
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={busy} onClick={confirmReanalyzeAll}>
+                      Confirm Re-Analyze All
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => {
+                        dispatchReanalyzePending({ type: "close" });
+                        setAllPreviews(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {data.statements.length > 0 && (
+                <ul className="text-muted-foreground">
+                  {data.statements.map((s) => (
+                    <li key={s.id} className="flex items-center gap-2 py-0.5">
+                      <span>
+                        {s.file_path} — {s.month ?? "?"} (imported {s.imported_at.slice(0, 10)})
+                      </span>
+                      {s.account_type && ACCOUNT_TYPE_LABEL[s.account_type] ? (
+                        <Badge variant="outline">{ACCOUNT_TYPE_LABEL[s.account_type]}</Badge>
+                      ) : s.kind === "transaction" ? (
+                        <Badge variant="outline">Statement</Badge>
+                      ) : null}
+                      <select
+                        className="rounded border border-border bg-transparent px-1 py-0.5 text-xs text-foreground"
+                        value={s.account_type ?? ""}
+                        disabled={busy}
+                        onChange={(e) => void setAccountType(s.id, e.target.value)}
+                        aria-label={`Correct account type for ${s.file_path}`}
+                      >
+                        <option value="">Unlabeled</option>
+                        <option value="checking">Checking</option>
+                        <option value="savings">Savings</option>
+                        <option value="credit_card">Credit Card</option>
+                        <option value="investment">Investment</option>
+                      </select>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => previewReanalyzeOne(s.id)}
+                      >
+                        Re-Analyze
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </DialogContent>
+          </Dialog>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle>{monthLabel(data.currentPeriod)}</CardTitle>
+            {/* Statement-based, so navigate real months with data — no live
+                "current month". Paging is disabled past the imported range. */}
+            <div className="flex items-center gap-2 text-sm">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canPrev}
+                onClick={() => setMonth(periods[shownIdx - 1])}
+              >
+                ← Prev
+              </Button>
+              <Select
+                value={data.currentPeriod ?? undefined}
+                onValueChange={(v) => setMonth(v)}
+              >
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="Month" />
+                </SelectTrigger>
+                <SelectContent>
+                  {[...periods].reverse().map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {monthLabel(p)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canNext}
+                onClick={() => setMonth(periods[shownIdx + 1])}
+              >
+                Next →
+              </Button>
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Statement-based — figures cover the month shown, not a live current month.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {current.month === "" ? (
+            <p className="text-sm text-muted-foreground">
+              No transactions imported yet.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-8 text-sm">
+              {(
+                [
+                  ["Income", current.income, last?.income],
+                  ["Spend", current.spend, last?.spend],
+                  ["Invested", current.invested, last?.invested],
+                  ["Net", current.net, last?.net],
+                ] as const
+              ).map(([label, value, prev]) => (
+                <div key={label}>
+                  <p className="text-2xl font-semibold tabular-nums">{usd(value)}</p>
+                  <p className="text-muted-foreground">
+                    {label}
+                    {last
+                      ? ` · ${usd(prev ?? 0)} in ${monthLabel(data.comparisonPeriod)}`
+                      : " · not enough history yet"}
+                  </p>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>This month ({current.month})</CardTitle>
+          <CardTitle>How categories work</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-8 text-sm">
-            {(
-              [
-                ["Income", current.income, last.income],
-                ["Spend", current.spend, last.spend],
-                ["Invested", current.invested, last.invested],
-                ["Net", current.net, last.net],
-              ] as const
-            ).map(([label, value, prev]) => (
-              <div key={label}>
-                <p className="text-2xl font-semibold tabular-nums">{usd(value)}</p>
-                <p className="text-muted-foreground">
-                  {label} · {usd(prev)} last month
-                </p>
-              </div>
-            ))}
-          </div>
+        <CardContent className="text-sm">
+          {/* Generated from the real keyword-fallback rules in categorize.ts —
+              never a separate copy that can drift. */}
+          <details>
+            <summary className="cursor-pointer text-muted-foreground">
+              Every transaction is sorted into one of these 15 categories (LLM first,
+              these keyword rules as the always-working fallback). Click to see them.
+            </summary>
+            <ul className="mt-3 flex flex-col gap-2">
+              {(data.categoryReference ?? []).map((c) => (
+                <li key={c.category} className="flex flex-col gap-1">
+                  <span className="font-medium">{c.category}</span>
+                  <span className="text-muted-foreground">
+                    {c.keywords.length > 0
+                      ? `matches: ${c.keywords.slice(0, 8).join(", ")}${c.keywords.length > 8 ? "…" : ""}`
+                      : c.category === "Other"
+                        ? "anything the rules don't match (and the LLM didn't classify)"
+                        : "assigned by the model or by amount (positive = Income)"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
         </CardContent>
       </Card>
 
@@ -328,19 +851,41 @@ export function FinanceView() {
             </p>
           ) : (
             <>
-              <SpendChart data={data.spendByCategory} />
+              {/* Clickable chips filter the transaction table below in place. */}
+              <div className="flex flex-wrap gap-2">
+                {data.spendByCategory.map((c) => (
+                  <button
+                    key={c.category}
+                    onClick={() =>
+                      setCategoryFilter(categoryFilter === c.category ? null : c.category)
+                    }
+                  >
+                    <Badge variant={categoryFilter === c.category ? "default" : "secondary"}>
+                      {c.category} {usd(c.thisMonth)}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+              {/* Clicking a bar applies that category filter. */}
+              <SpendChart data={data.spendByCategory} onSelect={setCategoryFilter} />
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Category</TableHead>
-                    <TableHead className="text-right">This month</TableHead>
-                    <TableHead className="text-right">Last month</TableHead>
+                    <TableHead className="text-right">{monthLabel(data.currentPeriod)}</TableHead>
+                    <TableHead className="text-right">Prior month</TableHead>
                     <TableHead className="text-right">Change</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="font-data text-[13px]">
                   {data.spendByCategory.map((c) => (
-                    <TableRow key={c.category}>
+                    <TableRow
+                      key={c.category}
+                      className="cursor-pointer"
+                      onClick={() =>
+                        setCategoryFilter(categoryFilter === c.category ? null : c.category)
+                      }
+                    >
                       <TableCell>{c.category}</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {usd(c.thisMonth)}
@@ -359,6 +904,74 @@ export function FinanceView() {
               </Table>
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Transactions — {monthLabel(data.currentPeriod)}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/* Built on Phase 2/3's account_type tagging — a tab is only as
+              good as the classification feeding it. */}
+          <Tabs value={financeTab} onValueChange={(v) => setFinanceTab(v as FinanceTab)}>
+            <TabsList>
+              <TabsTrigger value="total">Total</TabsTrigger>
+              <TabsTrigger value="checking">Checking & Savings</TabsTrigger>
+              <TabsTrigger value="credit_card">Credit Card</TabsTrigger>
+              <TabsTrigger value="investment">Investment</TabsTrigger>
+            </TabsList>
+            <TabsContent value="total" className="mt-3">
+              <TransactionTable
+                month={data.currentPeriod}
+                tab="total"
+                categoryFilter={categoryFilter}
+                onClearFilter={() => setCategoryFilter(null)}
+                onChanged={() => void load(month)}
+              />
+            </TabsContent>
+            <TabsContent value="checking" className="mt-3">
+              <p className="mb-2 text-sm font-medium text-muted-foreground">
+                Checking & Savings
+              </p>
+              <TransactionTable
+                month={data.currentPeriod}
+                tab="checking"
+                categoryFilter={categoryFilter}
+                onClearFilter={() => setCategoryFilter(null)}
+                onChanged={() => void load(month)}
+              />
+            </TabsContent>
+            <TabsContent value="credit_card" className="mt-3">
+              <TransactionTable
+                month={data.currentPeriod}
+                tab="credit_card"
+                categoryFilter={categoryFilter}
+                onClearFilter={() => setCategoryFilter(null)}
+                onChanged={() => void load(month)}
+              />
+            </TabsContent>
+            <TabsContent value="investment" className="mt-3 flex flex-col gap-4">
+              <div>
+                <p className="mb-2 text-sm font-medium text-muted-foreground">
+                  Current holdings
+                </p>
+                <InvestmentHoldings />
+              </div>
+              <div>
+                <p className="mb-2 text-sm font-medium text-muted-foreground">
+                  Investment-related transactions
+                </p>
+                <TransactionTable
+                  month={data.currentPeriod}
+                  tab="investment"
+                  categoryFilter={categoryFilter}
+                  onClearFilter={() => setCategoryFilter(null)}
+                  onChanged={() => void load(month)}
+                />
+              </div>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
 
@@ -383,7 +996,7 @@ export function FinanceView() {
                     <TableHead className="text-right">Last charge</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="font-data text-[13px]">
                   {data.recurring.map((r) => (
                     <TableRow key={r.merchant}>
                       <TableCell>{r.merchant}</TableCell>

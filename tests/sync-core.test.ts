@@ -10,6 +10,7 @@ import {
   markPushed,
 } from "../lib/sync/core.ts";
 import {
+  HARD_EXCLUDED_TABLES,
   SYNC_TABLE_NAMES,
   getSyncSpec,
   pullQuerySchema,
@@ -20,21 +21,30 @@ import {
 // All against in-memory sqlite — no network, no jarvis.db, no two machines.
 
 // ---- THE test: excluded tables can never be requested ----------------------
+//
+// The old flat allowlist rejected a big fixed list. Now most of those are
+// user-toggleable via the Sync Control Center — so the permanent guarantee
+// narrows to two sets:
+//   1. HARD_EXCLUDED_TABLES — locked forever (would break the app, not just
+//      leak): oauth_tokens, device_meta, sync_state, sync_config.
+//   2. Tables never entered in the registry at all (mail, agent_log, …) — no
+//      spec, so no wire schema will name them either.
 
-const FORBIDDEN = [
-  "transactions",
-  "statements",
+const NEVER_SYNCABLE = [
+  ...HARD_EXCLUDED_TABLES,
   "mail_messages",
   "mail_accounts",
-  "oauth_tokens",
   "agent_log",
   "network_log",
   "health_logs",
   "accounts",
+  // Part E: goals folded into the unified habits/Tracker model → legacy,
+  // local-only, no longer synced.
+  "goals",
 ];
 
-test("non-allowlisted tables are rejected by the push endpoint schema", () => {
-  for (const table of FORBIDDEN) {
+test("non-syncable tables are rejected by the push endpoint schema", () => {
+  for (const table of NEVER_SYNCABLE) {
     const parsed = pushBodySchema.safeParse({
       table,
       rows: [
@@ -49,31 +59,34 @@ test("non-allowlisted tables are rejected by the push endpoint schema", () => {
   }
 });
 
-test("non-allowlisted tables are rejected by the pull endpoint schema", () => {
-  for (const table of FORBIDDEN) {
+test("non-syncable tables are rejected by the pull endpoint schema", () => {
+  for (const table of NEVER_SYNCABLE) {
     const parsed = pullQuerySchema.safeParse({ table });
     assert.equal(parsed.success, false, `${table} must be rejected by pull`);
   }
 });
 
-test("the allowlist itself contains no raw finance/mail/token tables", () => {
-  for (const table of FORBIDDEN) {
-    assert.ok(!SYNC_TABLE_NAMES.includes(table), `${table} must never be allowlisted`);
+test("the registry never lists a hard-excluded table (impossible to even name on the wire)", () => {
+  for (const table of HARD_EXCLUDED_TABLES) {
+    assert.ok(!SYNC_TABLE_NAMES.includes(table), `${table} must never be syncable`);
   }
 });
 
 // ---- fixtures ---------------------------------------------------------------
 
 const SYNC_COLS = `sync_id TEXT, updated_at TEXT, origin_device_id TEXT,
-  sync_dirty INTEGER NOT NULL DEFAULT 1`;
+  sync_dirty INTEGER NOT NULL DEFAULT 1, deleted_at TEXT`;
 
 function freshDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   db.exec(`CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL, due_at TEXT, priority TEXT NOT NULL DEFAULT 'medium',
+    title TEXT NOT NULL, due_at TEXT, priority TEXT NOT NULL DEFAULT 'high',
     status TEXT NOT NULL DEFAULT 'open', source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    description TEXT, gcal_event_id TEXT, completed_at TEXT,
+    llm_rank INTEGER, llm_rank_source TEXT,
+    llm_suggested_priority TEXT, llm_rationale TEXT,
     ${SYNC_COLS})`);
   db.exec(`CREATE TABLE gym_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL UNIQUE, notes TEXT,
@@ -81,6 +94,7 @@ function freshDb(): InstanceType<typeof Database> {
   db.exec(`CREATE TABLE habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
     cadence TEXT NOT NULL DEFAULT 'daily', goal INTEGER NOT NULL DEFAULT 1,
+    source TEXT, target REAL,
     ${SYNC_COLS})`);
   db.exec(`CREATE TABLE habit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +161,7 @@ test("collectPending backfills sync identity and serializes dirty rows", () => {
 
 test("applyPush upserts by sync_id and the host-timestamped write wins deterministically", () => {
   const host = freshDb();
-  const v1 = { sync_id: UUID_A, origin_device_id: "mac", data: { title: "v1", due_at: null, priority: "low", status: "open", source: "agent", created_at: "2026-07-01" } };
+  const v1 = { sync_id: UUID_A, origin_device_id: "mac", data: { title: "v1", due_at: null, priority: "later", status: "open", source: "agent", created_at: "2026-07-01" } };
   const v2 = { ...v1, data: { ...v1.data, title: "v2", status: "done" } };
 
   const r1 = applyPush(host, tasksSpec, [v1], "2026-07-07T10:00:00.000Z");
@@ -185,7 +199,7 @@ function pulledTask(syncId: string, title: string, updatedAt: string) {
     sync_id: syncId,
     origin_device_id: "other-device",
     updated_at: updatedAt,
-    data: { title, due_at: null, priority: "medium", status: "open", source: "manual", created_at: "2026-07-01" },
+    data: { title, due_at: null, priority: "high", status: "open", source: "manual", created_at: "2026-07-01" },
   };
 }
 
@@ -265,4 +279,86 @@ test("host stamps are strictly increasing even within one millisecond", () => {
   const b = stamp();
   const c = stamp();
   assert.ok(a < b && b < c, `expected strictly increasing, got ${a}, ${b}, ${c}`);
+});
+
+// ---- task-board columns round-trip (Phase 5) ----------------------------------
+
+test("a task row round-trips device→host→device with every new column intact", () => {
+  const deviceA = freshDb();
+  const host = freshDb();
+  deviceA
+    .prepare(
+      `INSERT INTO tasks (title, description, due_at, priority, gcal_event_id,
+         completed_at, llm_rank, llm_rank_source, llm_suggested_priority, llm_rationale)
+       VALUES ('file taxes', 'the big folder', '2026-07-31', 'urgent', 'gcal-ev-1',
+         NULL, 2, 'llm', 'urgent', 'deadline is statutory')`
+    )
+    .run();
+
+  // Device A pushes; host applies and stamps.
+  const pending = collectPending(deviceA, tasksSpec, "device-a");
+  assert.equal(pending.length, 1);
+  const { stamped } = applyPush(host, tasksSpec, pending, "2026-07-07T10:00:00.000Z");
+  markPushed(deviceA, tasksSpec, stamped);
+
+  const hostRow = host.prepare("SELECT * FROM tasks").get() as Record<string, unknown>;
+  assert.equal(hostRow.description, "the big folder");
+  assert.equal(hostRow.gcal_event_id, "gcal-ev-1");
+  assert.equal(hostRow.llm_rank, 2);
+  assert.equal(hostRow.llm_rank_source, "llm");
+  assert.equal(hostRow.llm_suggested_priority, "urgent");
+  assert.equal(hostRow.llm_rationale, "deadline is statutory");
+  assert.equal(hostRow.completed_at, null);
+
+  // A second device pulls the same row — every column lands there too.
+  const deviceB = freshDb();
+  const served = collectPending(host, tasksSpec, "host"); // row is clean on host…
+  assert.equal(served.length, 0);
+  applyPull(deviceB, tasksSpec, [
+    {
+      sync_id: pending[0].sync_id,
+      origin_device_id: "device-a",
+      updated_at: "2026-07-07T10:00:00.000Z",
+      data: pending[0].data,
+    },
+  ]);
+  const bRow = deviceB.prepare("SELECT * FROM tasks").get() as Record<string, unknown>;
+  for (const col of [
+    "title", "description", "due_at", "priority", "gcal_event_id",
+    "llm_rank", "llm_rank_source", "llm_suggested_priority", "llm_rationale",
+  ]) {
+    assert.equal(bRow[col], hostRow[col], `${col} must survive the round trip`);
+  }
+});
+
+test("a local completion is not resurrected by a stale pull (completed_at specifically)", () => {
+  const db = freshDb();
+  // The task synced in clean (open) with a host stamp…
+  applyPull(db, tasksSpec, [
+    {
+      sync_id: UUID_A,
+      origin_device_id: "device-b",
+      updated_at: "2026-07-07T10:00:00.000Z",
+      data: { title: "call bank", due_at: null, priority: "high", status: "open", source: "manual", created_at: "2026-07-01" },
+    },
+  ]);
+  // …then this device completes it (app write → trigger marks dirty).
+  db.prepare(
+    "UPDATE tasks SET completed_at = '2026-07-07T11:00:00.000Z', status = 'done' WHERE sync_id = ?"
+  ).run(UUID_A);
+
+  // A stale pull from device B still says it's open, with a NEWER host
+  // stamp — the dirty-local rule must protect the completion until it pushes.
+  const result = applyPull(db, tasksSpec, [
+    {
+      sync_id: UUID_A,
+      origin_device_id: "device-b",
+      updated_at: "2026-07-07T12:00:00.000Z",
+      data: { title: "call bank", due_at: null, priority: "high", status: "open", source: "manual", created_at: "2026-07-01", completed_at: null },
+    },
+  ]);
+  assert.deepEqual(result, { applied: 0, skipped: 1, fkMissing: 0 });
+  const row = db.prepare("SELECT status, completed_at FROM tasks").get() as Record<string, unknown>;
+  assert.equal(row.status, "done");
+  assert.equal(row.completed_at, "2026-07-07T11:00:00.000Z", "completion must not be resurrected");
 });
