@@ -63,8 +63,11 @@ async function intradayResponse() {
   // bar for them (history-core.ts's isSparseIntraday). They get a flat line.
   const equities = holdings.filter((h) => !h.is_cash_equivalent);
 
-  // Previous close comes from the live quote (price − change). The quote
-  // cache is IN-MEMORY (lib/stocks.ts), warmed by the 15-minute cron and at
+  // Previous close comes from each ticker's own prior-session bar where the
+  // superset has one (priorBarsByTicker below) — this quote-derived value
+  // (price − change) is the FALLBACK for a ticker whose bars don't reach back
+  // that far, and it still prices the cash-equivalents, so warm it either
+  // way. The quote cache is IN-MEMORY (lib/stocks.ts), warmed by the 15-minute cron and at
   // launch — so on a freshly started server it is cold, and a cache-only
   // read would leave every prevClose null and silently fall back to COST
   // BASIS. That would put the chart's dashed "Prev close" line at cost basis
@@ -101,22 +104,33 @@ async function intradayResponse() {
       const ticker = h.ticker.toUpperCase();
       try {
         const chart = await getStockChart(ticker, "1D");
-        return { ticker, series: chart.series, fallback: chart.fallback };
+        // superset = the unshaped 6-day 5m window the 1D plan already
+        // fetched, which contains the PRIOR session's bars that `series`
+        // (sessions: 1) trims away. The builder reads the prior session's
+        // close out of it, so the baseline costs no extra Yahoo call.
+        return {
+          ticker,
+          series: chart.series,
+          superset: chart.superset,
+          fallback: chart.fallback,
+        };
       } catch (err) {
         console.warn(
           `[portfolio-history] 1d: ${ticker} intraday unavailable (${
             err instanceof Error ? err.message : err
           }) — holding at previous close`
         );
-        return { ticker, series: null, fallback: null };
+        return { ticker, series: null, superset: null, fallback: null };
       }
     })
   );
 
   const barsByTicker: Record<string, IntradayBar[]> = {};
+  const priorBarsByTicker: Record<string, IntradayBar[]> = {};
   let intradayFallbackLabel: string | null = null;
   for (const c of charts) {
     if (c.series) barsByTicker[c.ticker] = c.series;
+    if (c.superset) priorBarsByTicker[c.ticker] = c.superset;
     // getStockChart degraded this ticker to daily bars — surface its label
     // rather than silently drawing coarser data (the never-silent rule).
     if (c.fallback && !intradayFallbackLabel) intradayFallbackLabel = c.fallback;
@@ -127,6 +141,7 @@ async function intradayResponse() {
     barsByTicker,
     prevCloseByTicker,
     cashPriceByTicker,
+    priorBarsByTicker,
   });
 
   return NextResponse.json({

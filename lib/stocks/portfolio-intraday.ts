@@ -21,7 +21,7 @@
 // isSparseIntraday documents that). They are drawn as a flat line for the
 // session, so the cash band behaves exactly as it does on the other ranges.
 
-import { etDate, etInstant } from "./history-core.ts";
+import { barSessionDate, etDate, etInstant } from "./history-core.ts";
 import type { ChartPoint, ChartSeries } from "./portfolio-history";
 
 // Re-exported so the chart component has one import for everything 1D.
@@ -50,7 +50,20 @@ export type IntradayInput = {
   // Previous close per ticker (price − change from the live quote). This is
   // the last REAL price for a ticker, used before its first bar of the
   // session and for a ticker with no bars at all. Never substitute $0.
+  //
+  // FALLBACK, not first choice: the quote comes from a different provider
+  // than the bars (Finnhub vs. Yahoo here), and mixing them makes the
+  // header's day move disagree with the holdings table — measured at −$61 on
+  // a real portfolio, because Yahoo's last 5-minute bar is the last trade
+  // BEFORE the closing auction while the quote carries the official close.
+  // priorBarsByTicker is preferred wherever it has an answer.
   prevCloseByTicker: Record<string, number | null>;
+  // Each equity ticker's UNSHAPED bar superset (StockChart.superset). A 1D
+  // plan fetches ~6 days of 5m bars to pad past weekends, so the PRIOR
+  // session is already in there — no extra network call. Its close wins over
+  // prevCloseByTicker so the plotted bars and the baseline they are measured
+  // against come from one provider. See previousCloseFromBars.
+  priorBarsByTicker?: Record<string, IntradayBar[]>;
   // Current price for cash-equivalents only (their money-market quote).
   // Falls back to the ticker's previous close, then to cost basis — the same
   // cost-basis fallback computePortfolioTotal uses for an unpriced holding,
@@ -108,10 +121,26 @@ export function sessionTicks(session: string): number[] {
   return TICK_HOURS_ET.map((h) => etInstant(session, h));
 }
 
-/** True when an instant falls inside its own ET date's regular session. */
+/**
+ * True when a BAR belongs to its own ET date's regular session.
+ *
+ * Half-open on purpose: a bar's timestamp is the START of its interval, so
+ * the bar stamped 16:00 is the 16:00–16:05 POST-MARKET window, not the close.
+ * Verified live on VOO, 2026-11-13: the bar stamped 15:55 closed at 693.37
+ * against an official close of 693.38, while the 16:00 bar closed at 690.50
+ * — 0.4% lower. Including it made the chart's last point, and every
+ * prior-session close read by previousCloseFromBars, a post-market print, and
+ * put the header's day move $57 away from the holdings table's on a $10k
+ * portfolio. A thin ticker that doesn't trade after the bell hides this (its
+ * 16:00 bar just repeats the close), which is why only the liquid names were
+ * off.
+ *
+ * So: start >= 09:30 and start < 16:00. The last bar of a session is the one
+ * stamped 15:55, and its close IS the session's close.
+ */
 export function isRegularHours(ms: number): boolean {
   const { open, close } = sessionBounds(etDate(ms));
-  return ms >= open && ms <= close;
+  return ms >= open && ms < close;
 }
 
 // Yahoo's 5-minute bars include PRE- and POST-market trading — verified live
@@ -130,6 +159,36 @@ function pickSession(allBars: number[]): string | null {
   for (const ms of allBars) if (isRegularHours(ms)) sessions.add(etDate(ms));
   if (sessions.size === 0) return null;
   return [...sessions].sort().at(-1) ?? null;
+}
+
+/**
+ * A ticker's close on the last session BEFORE `session`, from its unshaped
+ * bar superset — the same Yahoo bars the chart plots, so the baseline and the
+ * line can't come from providers that disagree.
+ *
+ * "Close" means the last REGULAR-HOURS bar of that session: the superset
+ * includes post-market prints (a thin 19:59 ET trade), and letting one of
+ * those stand in for the close would quietly move the baseline.
+ *
+ * Returns null when the superset doesn't reach back that far (so the caller
+ * falls back to the quote) — never 0.
+ */
+export function previousCloseFromBars(
+  bars: IntradayBar[],
+  session: string
+): number | null {
+  const prior = bars
+    .filter((b) => {
+      if (!Number.isFinite(b.close)) return false;
+      if (barSessionDate(b.date) >= session) return false;
+      // A plain YYYY-MM-DD bar IS a daily close (the degraded-to-daily
+      // fallback path); only full timestamps need the regular-hours filter.
+      if (b.date.length <= 10) return true;
+      const ms = Date.parse(b.date);
+      return Number.isFinite(ms) && isRegularHours(ms);
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return prior.length > 0 ? prior[prior.length - 1].close : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +222,7 @@ export function buildIntradaySeries({
   barsByTicker,
   prevCloseByTicker,
   cashPriceByTicker = {},
+  priorBarsByTicker = {},
 }: IntradayInput): IntradaySeries {
   const equities = holdings.filter((h) => !isCash(h));
   const cashHoldings = holdings.filter(isCash);
@@ -187,13 +247,31 @@ export function buildIntradaySeries({
   const inSession = (b: IntradayBar): boolean => {
     if (!window) return false;
     const ms = Date.parse(b.date);
-    return ms >= window.open && ms <= window.close;
+    // Half-open, matching isRegularHours — the 16:00 bar is post-market.
+    return ms >= window.open && ms < window.close;
+  };
+
+  // One price per holding for "before this session": the prior session's
+  // close from the ticker's own bars when the superset reaches back that far,
+  // else the quote-derived previous close, else cost basis. Memoized because
+  // both the carry-forward seed and prevCloseTotal below need it.
+  const prevCloseCache = new Map<string, number>();
+  const prevCloseOf = (h: IntradayHolding): number => {
+    const t = key(h.ticker);
+    const hit = prevCloseCache.get(t);
+    if (hit !== undefined) return hit;
+    const fromBars = session
+      ? previousCloseFromBars(priorBarsByTicker[t] ?? [], session)
+      : null;
+    const price = fromBars ?? fallbackPrice(h, prevCloseByTicker[t]);
+    prevCloseCache.set(t, price);
+    return price;
   };
 
   const equitySeries = equities.map((h) => ({
     holding: h,
     bars: barsFor(h).filter(inSession),
-    prevClose: fallbackPrice(h, prevCloseByTicker[key(h.ticker)]),
+    prevClose: prevCloseOf(h),
     cursor: 0,
     // Last close seen at or before the current timestamp; null until the
     // ticker's first bar, where prevClose stands in.
@@ -207,10 +285,7 @@ export function buildIntradaySeries({
     return sum + price * h.shares;
   }, 0);
 
-  const prevCloseStocks = equities.reduce(
-    (sum, h) => sum + fallbackPrice(h, prevCloseByTicker[key(h.ticker)]) * h.shares,
-    0
-  );
+  const prevCloseStocks = equities.reduce((sum, h) => sum + prevCloseOf(h) * h.shares, 0);
   const prevCloseTotal: IntradayTotals = {
     stocks: prevCloseStocks,
     cash: cashValue,
@@ -267,12 +342,18 @@ export function applyCashToggle(points: ChartPoint[], includeCash: boolean): Cha
 
 /**
  * The header's figure for 1D: change measured from the PREVIOUS CLOSE rather
- * than the first plotted point. With fresh quotes for every ticker this
+ * than the first plotted point. Given the same prices for both terms this
  * equals computePortfolioTotal's totalDayMove to the cent — see
- * tests/portfolio-intraday.test.ts. (Mid-session the two can differ by a few
- * cents, because the chart's last point is the last completed 5-minute bar
- * while the live quote has moved on. That is honest: the chart shows bar
- * data, so its header is measured in bar data.)
+ * tests/portfolio-intraday.test.ts.
+ *
+ * Both terms come from the ticker's own bars whenever the superset reaches
+ * the prior session (priorBarsByTicker), which is what keeps this close to
+ * the holdings table's day move: a provider-level price gap cancels out of a
+ * SUBTRACTION, but only if both sides of it came from the same provider.
+ * Mid-session the two still differ by a little, because the chart's last
+ * point is the last completed 5-minute bar while the table's live quote has
+ * moved on. That is honest: the chart shows bar data, so its header is
+ * measured in bar data.
  */
 export function intradayChange(
   series: IntradaySeries,

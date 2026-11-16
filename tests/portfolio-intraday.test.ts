@@ -7,6 +7,7 @@ import {
   etDate,
   intradayChange,
   isRegularHours,
+  previousCloseFromBars,
   sessionBounds,
   type IntradayBar,
   type IntradayHolding,
@@ -443,9 +444,10 @@ test("pre-market and after-hours bars are dropped — the session is 9:30–4:00
         bar("14:25", 2), // 09:25 ET — still pre-market, 5 min before the bell
         bar("14:30", 3), // 09:30 ET — the open
         bar("18:00", 4), // 13:00 ET
-        bar("21:00", 5), // 16:00 ET — the close, inclusive
-        bar("21:05", 6), // 16:05 ET — after-hours
-        { date: "2026-11-14T00:59:59.000Z", close: 7 }, // 19:59 ET, after-hours
+        bar("20:55", 5), // 15:55 ET — the last regular-hours bar
+        bar("21:00", 6), // 16:00 ET — the 16:00–16:05 window, post-market
+        bar("21:05", 7), // 16:05 ET — after-hours
+        { date: "2026-11-14T00:59:59.000Z", close: 8 }, // 19:59 ET, after-hours
       ],
     },
     prevCloseByTicker: { AAA: 1 },
@@ -456,7 +458,7 @@ test("pre-market and after-hours bars are dropped — the session is 9:30–4:00
     [3, 4, 5]
   );
   assert.equal(built.points[0].date, "2026-11-13T14:30:00.000Z");
-  assert.equal(built.points.at(-1)?.date, "2026-11-13T21:00:00.000Z");
+  assert.equal(built.points.at(-1)?.date, "2026-11-13T20:55:00.000Z");
   assert.equal(built.session, "2026-11-13");
   // Every point sits inside the axis domain, so nothing can be clipped.
   const { open, close } = sessionBounds("2026-11-13");
@@ -476,11 +478,37 @@ test("a session with only extended-hours bars is treated as no session at all", 
   assert.equal(built.session, null);
 });
 
-test("isRegularHours is inclusive of the bell at both ends", () => {
+test("isRegularHours is half-open: the 16:00 bar is post-market, not the close", () => {
+  // A bar's timestamp is its interval START. 15:55 covers 15:55–16:00 and is
+  // the session's last bar; 16:00 covers 16:00–16:05 and is post-market.
   assert.equal(isRegularHours(Date.parse("2026-11-13T14:29:59Z")), false);
   assert.equal(isRegularHours(Date.parse("2026-11-13T14:30:00Z")), true);
-  assert.equal(isRegularHours(Date.parse("2026-11-13T21:00:00Z")), true);
-  assert.equal(isRegularHours(Date.parse("2026-11-13T21:00:01Z")), false);
+  assert.equal(isRegularHours(Date.parse("2026-11-13T20:55:00Z")), true);
+  assert.equal(isRegularHours(Date.parse("2026-11-13T21:00:00Z")), false);
+});
+
+test("the session's last point is the 15:55 bar, not the 16:00 post-market one", () => {
+  // The live bug: VOO's 15:55 bar closed at 693.37 (official close 693.38)
+  // while its 16:00 bar closed at 690.50. Plotting the 16:00 bar put the
+  // header's day move $57 off the holdings table's on a $10k portfolio.
+  const built = buildIntradaySeries({
+    holdings: [equity("VOO", 1)],
+    barsByTicker: {
+      VOO: [bar("20:50", 693.63), bar("20:55", 693.37), bar("21:00", 690.5)],
+    },
+    prevCloseByTicker: { VOO: 696.0 },
+    priorBarsByTicker: {
+      // Thursday's close has the same trap: 20:55 is the close, 21:00 isn't.
+      VOO: [priorBar("20:55", 696.0), priorBar("21:00", 696.2)],
+    },
+  });
+
+  const last = built.points[built.points.length - 1];
+  assert.equal(last.stocks, 693.37);
+  assert.equal(new Date(last.t).toISOString(), "2026-11-13T20:55:00.000Z");
+  assert.equal(built.prevCloseTotal.stocks, 696.0);
+  // 693.37 − 696.00, both official closes — what the holdings table shows.
+  assert.equal(intradayChange(built, false)?.change.toFixed(2), "-2.63");
 });
 
 test("sessionBounds is 9:30 AM – 4:00 PM ET, correct across DST", () => {
@@ -502,4 +530,136 @@ test("etDate rolls over on the ET boundary, not the UTC one", () => {
   // 2026-11-14T02:30Z is still the 13th in ET (21:30).
   assert.equal(etDate(Date.parse("2026-11-14T02:30:00Z")), "2026-11-13");
   assert.equal(etDate(Date.parse("2026-11-14T05:30:00Z")), "2026-11-14");
+});
+
+// ---------------------------------------------------------------------------
+// Previous close from the ticker's own bars
+// ---------------------------------------------------------------------------
+//
+// The baseline the header measures from used to come from the live quote
+// (Finnhub) while the plotted bars came from Yahoo. A subtraction between two
+// providers carries their price-level disagreement straight into the answer:
+// measured at −$61 on a real portfolio, which is why the chart's day move and
+// the holdings table's disagreed. Taking the baseline from the SAME bars the
+// chart plots makes that gap cancel. The prior session is already inside the
+// 6-day 5m window a 1D plan fetches, so this costs no extra Yahoo call.
+
+// A bar on Thursday 2026-11-12, the session before the pinned Friday.
+const priorBar = (hhmmZ: string, close: number): IntradayBar => ({
+  date: `2026-11-12T${hhmmZ}:00.000Z`,
+  close,
+});
+
+test("previousCloseFromBars takes the prior session's last REGULAR-HOURS bar", () => {
+  const bars = [
+    priorBar("14:30", 100), // 09:30 ET open
+    priorBar("20:55", 110), // 15:55 ET — the last regular-hours bar
+    priorBar("21:30", 999), // 16:30 ET — post-market, must not win
+    bar("14:30", 120), // the session itself, must not win
+  ];
+  assert.equal(previousCloseFromBars(bars, "2026-11-13"), 110);
+});
+
+test("previousCloseFromBars returns null when the superset doesn't reach back", () => {
+  // Only the session's own bars — nothing earlier to read a close from.
+  assert.equal(previousCloseFromBars([bar("14:30", 120), bar("20:55", 121)], "2026-11-13"), null);
+  assert.equal(previousCloseFromBars([], "2026-11-13"), null);
+});
+
+test("previousCloseFromBars reads a daily bar too, for the degraded-to-daily path", () => {
+  // getStockChart's fallback serves plain YYYY-MM-DD bars. Those ARE closes,
+  // so no regular-hours filter applies — and no timezone shift either.
+  const daily: IntradayBar[] = [
+    { date: "2026-11-11", close: 90 },
+    { date: "2026-11-12", close: 110 },
+    { date: "2026-11-13", close: 120 },
+  ];
+  assert.equal(previousCloseFromBars(daily, "2026-11-13"), 110);
+});
+
+test("the prior session's close WINS over the quote-derived previous close", () => {
+  // The quote says the previous close was 90; the ticker's own prior-session
+  // bar says 110. The bars win, so the baseline and the line agree.
+  const built = buildIntradaySeries({
+    holdings: [equity("AAA", 10)],
+    barsByTicker: { AAA: [bar("14:30", 120)] },
+    prevCloseByTicker: { AAA: 90 },
+    priorBarsByTicker: { AAA: [priorBar("20:55", 110), bar("14:30", 120)] },
+  });
+
+  assert.equal(built.prevCloseTotal.stocks, 1100);
+  // 10 × (120 − 110) = 100, not 10 × (120 − 90) = 300.
+  assert.equal(intradayChange(built, false)?.change, 100);
+});
+
+test("a ticker whose superset has no prior session falls back to its quote", () => {
+  // Mixed portfolio: AAA's superset reaches Thursday, BBB's doesn't. Each
+  // holding resolves its own baseline — one missing superset must not drag
+  // the other off the bar-derived value.
+  const built = buildIntradaySeries({
+    holdings: [equity("AAA", 10), equity("BBB", 10)],
+    barsByTicker: { AAA: [bar("14:30", 120)], BBB: [bar("14:30", 50)] },
+    prevCloseByTicker: { AAA: 90, BBB: 45 },
+    priorBarsByTicker: { AAA: [priorBar("20:55", 110)], BBB: [bar("14:30", 50)] },
+  });
+
+  // AAA from its bars (110), BBB from its quote (45).
+  assert.equal(built.prevCloseTotal.stocks, 10 * 110 + 10 * 45);
+});
+
+test("a ticker with no bars at all is held at its prior-session close", () => {
+  // The per-ticker failure mode: BBB's intraday fetch failed, so it has no
+  // bars in the session. It must flat-line at its prior-session close — the
+  // bar-derived one, where the superset has it.
+  const built = buildIntradaySeries({
+    holdings: [equity("AAA", 1), equity("BBB", 2)],
+    barsByTicker: { AAA: [bar("14:30", 10), bar("14:35", 12)] },
+    prevCloseByTicker: { AAA: 9, BBB: 90 },
+    priorBarsByTicker: { BBB: [priorBar("20:55", 110)] },
+  });
+
+  assert.equal(built.points.length, 2);
+  assert.equal(built.points[0].stocks, 10 + 2 * 110);
+  assert.equal(built.points[1].stocks, 12 + 2 * 110);
+  // BBB is flat at the SAME baseline it is measured from (110, from its bars
+  // — not the quote's 90), so a ticker whose fetch failed contributes nothing
+  // to the day move instead of a phantom 2 × $20.
+  assert.equal(built.prevCloseTotal.stocks, 9 + 2 * 110);
+  assert.equal(intradayChange(built, false)?.change, 12 - 9);
+});
+
+test("the day move no longer moves when the quote provider's price LEVEL shifts", () => {
+  // The actual bug this fixes. The quote provider's prices sit ~0.6% below
+  // Yahoo's last 5-minute bar (its official close includes the closing
+  // auction). With the baseline taken from the bars, that level gap cancels:
+  // the same bars give the same day move whatever the quotes say.
+  const withQuoteLevel = (factor: number) =>
+    intradayChange(
+      buildIntradaySeries({
+        holdings: [equity("AAA", 13.472, 150), equity("BBB", 207.5, 44)],
+        barsByTicker: {
+          AAA: [bar("14:30", 185.9), bar("20:55", 187.43)],
+          BBB: [bar("14:30", 41.9), bar("20:55", 41.08)],
+        },
+        // The quote-derived baseline, scaled — i.e. a different provider.
+        prevCloseByTicker: { AAA: 185.26 * factor, BBB: 42.01 * factor },
+        priorBarsByTicker: {
+          AAA: [priorBar("20:55", 185.26)],
+          BBB: [priorBar("20:55", 42.01)],
+        },
+      }),
+      false
+    )?.change;
+
+  const expected = 13.472 * (187.43 - 185.26) + 207.5 * (41.08 - 42.01);
+  const base = withQuoteLevel(1);
+  // To the cent against the hand-computed figure (the summation order
+  // differs, so the last float bit does too).
+  assert.equal(base?.toFixed(2), expected.toFixed(2));
+  // Exactly unchanged when the quote provider's level moves: the quotes no
+  // longer enter the subtraction at all.
+  assert.equal(withQuoteLevel(1.006), base);
+  assert.equal(withQuoteLevel(0.98), base);
+  // And it is a real number, not two zeroes agreeing.
+  assert.ok(Math.abs(expected) > 100);
 });
