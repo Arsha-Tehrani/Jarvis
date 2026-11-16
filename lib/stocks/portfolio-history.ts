@@ -10,10 +10,17 @@
 // bank/checking/savings balances (`accounts_total`) never appear here — that
 // blended accounts+holdings view lives exactly once, on the Net Worth page.
 
-// Brokerage-style range buttons (1W … All). Resolution is chosen
+// Brokerage-style range buttons (1D … All). Resolution is chosen
 // automatically per range (see autoGranularity) — there is no separate
 // daily/weekly toggle.
-export const PORTFOLIO_RANGES = ["1w", "1m", "3m", "6m", "ytd", "1y", "all"] as const;
+//
+// "1d" is the odd one out and deliberately so: every other range windows the
+// recorded daily net-worth snapshots through the functions in THIS file,
+// while 1d has no snapshot to window (the session is still happening) and is
+// built from live intraday bars by lib/stocks/portfolio-intraday.ts instead.
+// The API branches on it before reaching any of the snapshot shaping below,
+// so nothing here changes behaviour for 1w…all.
+export const PORTFOLIO_RANGES = ["1d", "1w", "1m", "3m", "6m", "ytd", "1y", "all"] as const;
 export type PortfolioRange = (typeof PORTFOLIO_RANGES)[number];
 
 export const PORTFOLIO_GRANULARITIES = ["daily", "weekly"] as const;
@@ -38,6 +45,11 @@ export type PortfolioHistoryPoint = PortfolioSnapshotRow;
 // Range → lookback window in days; `all` (null) keeps everything and `ytd`
 // is calendar-based (see rangeStart).
 const RANGE_DAYS: Record<Exclude<PortfolioRange, "ytd">, number | null> = {
+  // Present only to keep this map total over PortfolioRange. The snapshot
+  // path is never asked for "1d" (the API routes it to the intraday
+  // builder); if it somehow were, one day of snapshots is the honest answer
+  // rather than a crash.
+  "1d": 1,
   "1w": 7,
   "1m": 30,
   "3m": 90,

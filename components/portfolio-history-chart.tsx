@@ -5,6 +5,7 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -17,10 +18,19 @@ import {
   rangeChange,
   toChartSeries,
   type ChartPoint,
+  type ChartSeries,
   type PortfolioGranularity,
   type PortfolioHistoryPoint,
   type PortfolioRange,
 } from "@/lib/stocks/portfolio-history";
+import {
+  applyCashToggle,
+  etDate,
+  intradayChange,
+  sessionBounds,
+  sessionTicks,
+  type IntradayTotals,
+} from "@/lib/stocks/portfolio-intraday";
 
 // Value over time on the Stocks page, scoped to the INVESTMENT ACCOUNT ONLY:
 // stocks (equity holdings, a real ticker price) and cash-equivalent
@@ -29,21 +39,35 @@ import {
 // Drawn from the SAME daily net-worth snapshot the Net Worth page uses (no
 // second snapshot mechanism).
 //
-// Brokerage-style: one row of range buttons (1W … All) and the resolution
+// Brokerage-style: one row of range buttons (1D … All) and the resolution
 // follows the range automatically (daily, weekly past ~13 months). The x-axis
 // is real time, so missing days take their true width; short gaps are drawn
 // across and long ones break the line (lib/stocks/portfolio-history.ts's
 // toChartSeries). A "Cash" toggle hides the sweep/money-market band so the
 // stocks line can use a tight y-axis instead of sitting on a $0 baseline.
+//
+// 1D is the exception to all of that: there is no snapshot for a session
+// that is still happening, so it values today's positions at intraday prices
+// (lib/stocks/portfolio-intraday.ts). Its axis is the fixed 9:30 AM–4:00 PM
+// ET session rather than the plotted span, so a partial day fills from the
+// left and leaves the rest empty the way a brokerage app does, and its
+// header change is measured from the previous close (the dashed reference
+// line) rather than from the first point of the day.
 
 type HistoryResponse = {
   range: PortfolioRange;
-  granularity: PortfolioGranularity;
-  series: PortfolioHistoryPoint[];
+  granularity: PortfolioGranularity | "intraday";
+  // Raw snapshot rows on 1w…all; already chart-shaped points on 1d.
+  series: PortfolioHistoryPoint[] | ChartPoint[];
   hasBreakdown: boolean;
+  // 1d only.
+  session?: string | null;
+  prevCloseTotal?: IntradayTotals;
+  intradayFallbackLabel?: string | null;
 };
 
 const RANGE_LABELS: Record<PortfolioRange, string> = {
+  "1d": "1D",
   "1w": "1W",
   "1m": "1M",
   "3m": "3M",
@@ -52,6 +76,12 @@ const RANGE_LABELS: Record<PortfolioRange, string> = {
   "1y": "1Y",
   all: "All",
 };
+
+// While 1D is selected the session is still moving. The per-(ticker,
+// interval) intraday cache in lib/stocks/history.ts is already 15 minutes,
+// which is what bounds the Yahoo call rate — this poll just keeps the view
+// from going stale, and adds no caching of its own.
+const INTRADAY_POLL_MS = 5 * 60 * 1000;
 
 // Per-viewer conveniences only (remembered range / cash toggle) — wrapped so
 // a blocked or empty storage never breaks the chart.
@@ -78,12 +108,21 @@ const usd = (v: number) => `$${v.toLocaleString("en-US", { maximumFractionDigits
 const usdCents = (v: number) =>
   `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const ET = "America/New_York";
+
 function axisDate(t: number, spanDays: number): string {
   return new Date(t).toLocaleDateString("en-US", {
     month: "short",
     ...(spanDays > 400 ? { year: "2-digit" } : { day: "numeric" }),
     timeZone: "UTC",
   });
+}
+
+// "10 AM", "12 PM" — on-the-hour ET labels for the 1D axis.
+function axisTime(t: number): string {
+  return new Date(t)
+    .toLocaleTimeString("en-US", { hour: "numeric", timeZone: ET })
+    .replace(/\s/g, " ");
 }
 
 function fullDate(date: string): string {
@@ -93,6 +132,31 @@ function fullDate(date: string): string {
     year: "numeric",
     timeZone: "UTC",
   });
+}
+
+// "Fri, Nov 13" in ET, for the session label.
+function sessionLabel(session: string): string {
+  return new Date(sessionBounds(session).open).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: ET,
+  });
+}
+
+// The 1D tooltip's heading: the session date plus the bar's time of day.
+function fullTimestamp(iso: string): string {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: ET,
+  })} · ${d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: ET,
+  })} ET`;
 }
 
 // ~5 evenly spaced, day-aligned ticks across the plotted span.
@@ -122,15 +186,18 @@ function niceStep(span: number): number {
 // y-axis bounds + ticks on round dollar values. A stacked stocks+cash band
 // keeps its $0 baseline (the band's height IS the value); a stocks-only line
 // gets a tight, padded range so its movement is readable, like a brokerage
-// chart.
+// chart. `alsoFit` pulls an extra value into range — on 1D that's the
+// previous close, so its dashed reference line can never sit off-chart.
 function yAxis(
   points: ChartPoint[],
   showCash: boolean,
-  mode: "split" | "total"
+  mode: "split" | "total",
+  alsoFit?: number | null
 ): { domain: [number, number]; ticks: number[] } {
   const vals = points
     .map((p) => (mode === "total" ? p.total : showCash ? p.total : p.stocks))
     .filter((v): v is number => v != null);
+  if (alsoFit != null) vals.push(alsoFit);
   if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
   const hi = Math.max(...vals);
   const fromZero = mode === "split" && showCash;
@@ -149,9 +216,10 @@ type TooltipProps = {
   payload?: Array<{ payload: ChartPoint }>;
   showCash: boolean;
   mode: "split" | "total";
+  intraday: boolean;
 };
 
-function ChartTooltip({ active, payload, showCash, mode }: TooltipProps) {
+function ChartTooltip({ active, payload, showCash, mode, intraday }: TooltipProps) {
   const p = payload?.[0]?.payload;
   if (!active || !p || p.date == null) return null; // break markers have no tooltip
   const row = (label: string, value: number | null, swatch?: string) =>
@@ -166,7 +234,9 @@ function ChartTooltip({ active, payload, showCash, mode }: TooltipProps) {
     );
   return (
     <div className="rounded-[var(--radius)] border border-border bg-background px-3 py-2 text-xs text-foreground shadow-sm">
-      <div className="mb-1 font-medium">{fullDate(p.date)}</div>
+      <div className="mb-1 font-medium">
+        {intraday ? fullTimestamp(p.date) : fullDate(p.date)}
+      </div>
       {mode === "total" ? (
         row("Total", p.total)
       ) : (
@@ -186,6 +256,8 @@ export function PortfolioHistoryChart() {
   const [data, setData] = useState<HistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The ET calendar date as of the last successful fetch — see load().
+  const [todayEt, setTodayEt] = useState<string | null>(null);
 
   // Restore the remembered range / cash choice after mount (storage isn't
   // available during server render).
@@ -195,24 +267,61 @@ export function PortfolioHistoryChart() {
     if (readStored(CASH_KEY) === "0") setShowCash(false);
   }, []);
 
-  const load = useCallback(async (r: PortfolioRange) => {
-    setLoading(true);
+  const load = useCallback(async (r: PortfolioRange, { quiet = false } = {}) => {
+    // A background refresh must not flash the loading state over a chart
+    // that's already drawn.
+    if (!quiet) setLoading(true);
     try {
       const res = await fetch(`/api/stocks/portfolio-history?range=${r}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Failed to load history");
       setData(body);
+      // Captured at fetch time rather than read during render: "is the
+      // session on screen today?" must not be recomputed from the clock on
+      // every re-render (it would be an impure read, and the answer can only
+      // change when we refetch anyway).
+      setTodayEt(etDate(Date.now()));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load history");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load(range);
   }, [load, range]);
+
+  // While 1D is selected, refresh every 5 minutes — but only while the tab is
+  // actually visible, and catching up once on the way back so a tab left open
+  // overnight doesn't show yesterday.
+  useEffect(() => {
+    if (range !== "1d") return;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (timer != null) clearInterval(timer);
+      timer = null;
+    };
+    const start = () => {
+      stop();
+      timer = setInterval(() => void load("1d", { quiet: true }), INTRADAY_POLL_MS);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void load("1d", { quiet: true });
+        start();
+      } else {
+        stop();
+      }
+    };
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [range, load]);
 
   function changeRange(r: PortfolioRange) {
     setRange(r);
@@ -226,18 +335,48 @@ export function PortfolioHistoryChart() {
     });
   }
 
-  const chart = useMemo(
-    () => toChartSeries(data?.series ?? [], { includeCash: showCash }),
-    [data, showCash]
-  );
-  const plotted = chart.points.filter((p) => p.date != null);
-  const enoughData = plotted.length >= 2;
-  const summary = rangeChange(chart, showCash);
+  // Only trust the intraday shape once the response for 1d has actually
+  // arrived — mid-switch, `data` still holds the previous range's payload.
+  const intraday = data?.range === "1d" && range === "1d";
+  const session = intraday ? (data?.session ?? null) : null;
+  const prevCloseTotal = intraday ? data?.prevCloseTotal : undefined;
 
-  const tMin = plotted[0]?.t ?? 0;
-  const tMax = plotted[plotted.length - 1]?.t ?? 0;
+  const chart = useMemo<ChartSeries>(() => {
+    if (intraday) {
+      // Already chart-shaped by the API; only the Cash toggle is applied here.
+      return {
+        points: applyCashToggle((data?.series ?? []) as ChartPoint[], showCash),
+        mode: "split",
+      };
+    }
+    return toChartSeries((data?.series ?? []) as PortfolioHistoryPoint[], {
+      includeCash: showCash,
+    });
+  }, [data, showCash, intraday]);
+
+  const plotted = chart.points.filter((p) => p.date != null);
+  // One intraday bar is still a session (it renders as a dot); the snapshot
+  // ranges need two points before a line means anything.
+  const enoughData = intraday ? plotted.length >= 1 : plotted.length >= 2;
+
+  const prevCloseRef =
+    prevCloseTotal == null ? null : showCash ? prevCloseTotal.total : prevCloseTotal.stocks;
+  const summary = intraday
+    ? prevCloseTotal == null
+      ? rangeChange(chart, showCash)
+      : intradayChange(
+          { points: chart.points, prevCloseTotal, session, mode: "split" },
+          showCash
+        )
+    : rangeChange(chart, showCash);
+
+  // 1D pins the axis to the whole 9:30–4:00 ET session so a partial day
+  // fills from the left; every other range spans its plotted data.
+  const bounds = session ? sessionBounds(session) : null;
+  const tMin = bounds ? bounds.open : (plotted[0]?.t ?? 0);
+  const tMax = bounds ? bounds.close : (plotted[plotted.length - 1]?.t ?? 0);
   const spanDays = (tMax - tMin) / 86_400_000;
-  const y = yAxis(chart.points, showCash, chart.mode);
+  const y = yAxis(chart.points, showCash, chart.mode, prevCloseRef);
   const yMin = y.domain[0];
   const stocksOnly = chart.mode === "split" && !showCash;
 
@@ -303,6 +442,16 @@ export function PortfolioHistoryChart() {
   const valueLabel =
     chart.mode === "total" ? "Account total" : showCash ? "Stocks + cash" : "Stocks";
 
+  // Which session 1D is showing. "Today" while the market is open or after
+  // today's close; the dated form on a weekend, a holiday, or pre-market,
+  // where the latest session is an earlier day and saying "today" would lie.
+  const whichSession =
+    session == null
+      ? null
+      : session === todayEt
+        ? "Today"
+        : `Last session · ${sessionLabel(session)}`;
+
   return (
     <Card>
       <CardHeader>
@@ -320,10 +469,15 @@ export function PortfolioHistoryChart() {
         ) : error ? (
           <p className="text-sm text-muted-foreground">History unavailable right now.</p>
         ) : !enoughData ? (
-          <p className="text-sm text-muted-foreground">
-            Not enough history in this range yet — a daily snapshot is taken at 18:00 (and
-            on app launch), so this fills in over time.
-          </p>
+          intraday ? (
+            // A closed market is not an error — stay quiet about it.
+            <p className="text-sm text-muted-foreground">No trading data for today yet.</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Not enough history in this range yet — a daily snapshot is taken at 18:00 (and
+              on app launch), so this fills in over time.
+            </p>
+          )
         ) : (
           <div>
             {summary && (
@@ -341,7 +495,8 @@ export function PortfolioHistoryChart() {
                     ` (${summary.change >= 0 ? "+" : "−"}${Math.abs(summary.pct * 100).toFixed(2)}%)`}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {valueLabel} · {RANGE_LABELS[range]}
+                  {valueLabel} · {whichSession ?? RANGE_LABELS[range]}
+                  {intraday && " · since prev close"}
                   {data?.granularity === "weekly" && " · weekly points"}
                 </span>
               </div>
@@ -354,9 +509,12 @@ export function PortfolioHistoryChart() {
                   type="number"
                   scale="time"
                   domain={[tMin, tMax]}
-                  ticks={timeTicks(tMin, tMax)}
+                  ticks={session ? sessionTicks(session) : timeTicks(tMin, tMax)}
                   tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                  tickFormatter={(t) => axisDate(Number(t), spanDays)}
+                  tickFormatter={(t) =>
+                    intraday ? axisTime(Number(t)) : axisDate(Number(t), spanDays)
+                  }
+                  allowDataOverflow
                 />
                 <YAxis
                   domain={y.domain}
@@ -367,9 +525,27 @@ export function PortfolioHistoryChart() {
                   width={64}
                 />
                 <Tooltip
-                  content={<ChartTooltip showCash={showCash} mode={chart.mode} />}
+                  content={
+                    <ChartTooltip showCash={showCash} mode={chart.mode} intraday={!!intraday} />
+                  }
                   cursor={{ stroke: "var(--ink-soft)", strokeWidth: 1 }}
                 />
+                {/* Where the day started. The header's change is measured
+                    from this line, so it has to be on the chart. */}
+                {prevCloseRef != null && (
+                  <ReferenceLine
+                    y={prevCloseRef}
+                    stroke="var(--ink-soft)"
+                    strokeDasharray="4 4"
+                    strokeWidth={1}
+                    label={{
+                      value: "Prev close",
+                      position: "insideTopLeft",
+                      fontSize: 10,
+                      fill: "var(--muted-foreground)",
+                    }}
+                  />
+                )}
                 {chart.mode === "total" ? (
                   <Area
                     type="monotone"
@@ -421,6 +597,11 @@ export function PortfolioHistoryChart() {
                 )}
               </AreaChart>
             </ResponsiveContainer>
+            {intraday && data?.intradayFallbackLabel && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {data.intradayFallbackLabel}
+              </p>
+            )}
             {chart.mode === "total" && (
               <p className="mt-2 text-xs text-muted-foreground">
                 Stocks/cash split isn&apos;t recorded for this period — showing the investment
