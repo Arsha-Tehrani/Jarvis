@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  MAX_CONNECT_GAP_DAYS,
+  autoGranularity,
   collapseToWeekly,
   filterPortfolioHistory,
   hasBreakdown,
+  portfolioSeriesFor,
+  rangeChange,
+  rangeStart,
+  toChartSeries,
   type PortfolioSnapshotRow,
 } from "../lib/stocks/portfolio-history.ts";
 
@@ -203,4 +209,84 @@ test("filterPortfolioHistory: granularity='weekly' collapses the already-range-f
     out.map((r) => r.date),
     ["2026-07-06", "2026-07-15"]
   );
+});
+
+// ---- brokerage-style ranges + chart shaping ---------------------------------
+
+test("1w and ytd windows: 1w keeps the last 7 days, ytd starts Jan 1 of the current year", () => {
+  const rows = [
+    row("2025-12-31", 1, 0, 1),
+    row("2026-01-01", 2, 0, 2),
+    row("2026-07-09", 3, 0, 3),
+    row("2026-07-10", 4, 0, 4),
+    row("2026-07-17", 5, 0, 5),
+  ];
+  assert.deepEqual(
+    filterPortfolioHistory(rows, "1w", NOW).map((r) => r.date),
+    ["2026-07-10", "2026-07-17"]
+  );
+  assert.equal(rangeStart("ytd", NOW), "2026-01-01");
+  assert.deepEqual(
+    filterPortfolioHistory(rows, "ytd", NOW).map((r) => r.date),
+    ["2026-01-01", "2026-07-09", "2026-07-10", "2026-07-17"]
+  );
+});
+
+test("autoGranularity: daily for a short window, weekly once it spans more than ~13 months", () => {
+  assert.equal(autoGranularity([]), "daily");
+  assert.equal(autoGranularity([row("2026-01-01", 1, 0, 1), row("2026-07-01", 1, 0, 1)]), "daily");
+  assert.equal(autoGranularity([row("2024-01-01", 1, 0, 1), row("2026-07-01", 1, 0, 1)]), "weekly");
+});
+
+test("portfolioSeriesFor: 'all' on a young history stays daily", () => {
+  const rows = [row("2026-07-01", 1, 0, 1), row("2026-07-02", 2, 0, 2)];
+  const out = portfolioSeriesFor(rows, "all", NOW);
+  assert.equal(out.granularity, "daily");
+  assert.equal(out.series.length, 2);
+});
+
+test("toChartSeries: rows without a split are skipped (not holes) and short gaps connect", () => {
+  const pts = [
+    row("2026-07-01", 100, 20, 120),
+    row("2026-07-02", null, null, 125), // legacy row mid-series
+    row("2026-07-04", 110, 20, 130),
+  ];
+  const s = toChartSeries(pts, { includeCash: true });
+  assert.equal(s.mode, "split");
+  assert.deepEqual(s.points.map((p) => p.date), ["2026-07-01", "2026-07-04"]);
+  assert.ok(s.points.every((p) => p.stocks != null), "no fabricated values, no null holes");
+  assert.equal(s.points[1].total, 130);
+});
+
+test("toChartSeries: a gap longer than MAX_CONNECT_GAP_DAYS gets a break marker; a lone point after it is isolated", () => {
+  const pts = [
+    row("2026-08-20", 100, 10, 110),
+    row("2026-08-21", 101, 10, 111),
+    row("2026-11-15", 90, 5, 95), // ~3 months later
+  ];
+  const s = toChartSeries(pts, { includeCash: true });
+  assert.deepEqual(s.points.map((p) => p.date), ["2026-08-20", "2026-08-21", null, "2026-11-15"]);
+  const brk = s.points[2];
+  assert.equal(brk.stocks, null);
+  assert.equal(brk.total, null);
+  assert.equal(s.points[3].isolated, true);
+  assert.equal(s.points[0].isolated, false);
+  assert.ok(MAX_CONNECT_GAP_DAYS >= 3, "a weekend never breaks the line");
+});
+
+test("toChartSeries: hiding cash nulls the cash band but keeps stocks; rangeChange follows the visible value", () => {
+  const pts = [row("2026-07-01", 100, 50, 150), row("2026-07-02", 110, 40, 150)];
+  const off = toChartSeries(pts, { includeCash: false });
+  assert.ok(off.points.every((p) => p.cash == null));
+  assert.deepEqual(rangeChange(off, false), { last: 110, change: 10, pct: 0.1 });
+  const on = toChartSeries(pts, { includeCash: true });
+  assert.deepEqual(rangeChange(on, true), { last: 150, change: 0, pct: 0 });
+});
+
+test("toChartSeries: a window with no split at all falls back to the account total", () => {
+  const pts = [row("2026-07-01", null, null, 150), row("2026-07-02", null, null, 160)];
+  const s = toChartSeries(pts, { includeCash: false });
+  assert.equal(s.mode, "total");
+  assert.deepEqual(s.points.map((p) => p.total), [150, 160]);
+  assert.deepEqual(rangeChange(s, false)?.change, 10);
 });

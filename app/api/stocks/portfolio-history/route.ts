@@ -3,8 +3,8 @@ import { z } from "zod";
 import { allSnapshots } from "@/lib/networth";
 import {
   PORTFOLIO_RANGES,
-  filterPortfolioHistory,
   hasBreakdown,
+  portfolioSeriesFor,
 } from "@/lib/stocks/portfolio-history";
 
 // Portfolio value over time for the Stocks page — the INVESTMENT ACCOUNT
@@ -42,10 +42,12 @@ export async function GET(req: NextRequest) {
       ? s.stocks_value + s.cash_equivalent_value
       : s.holdings_value,
   }));
-  const series = filterPortfolioHistory(rows, range);
+  // Resolution is picked from the window (daily, or weekly past ~13 months).
+  const { series, granularity } = portfolioSeriesFor(rows, range);
 
   return NextResponse.json({
     range,
+    granularity,
     series,
     hasBreakdown: hasBreakdown(series),
   });
