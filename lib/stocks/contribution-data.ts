@@ -6,13 +6,14 @@ import {
   CONTRIBUTION_PERIODS,
   closeOnOrBefore,
   computeContribution,
+  type ContributionLookback,
   type ContributionPeriod,
   type ContributionResult,
   type HistoricalPrices,
 } from "@/lib/stocks/contribution";
 
 // Re-export so existing importers (the API route) keep one import site.
-export { CONTRIBUTION_PERIODS, type ContributionPeriod };
+export { CONTRIBUTION_PERIODS, type ContributionPeriod, type ContributionLookback };
 
 // DB + network glue for per-holding contribution analysis. The pure math is in
 // contribution.ts; this file values current holdings (via the shared
@@ -21,11 +22,19 @@ export { CONTRIBUTION_PERIODS, type ContributionPeriod };
 // that click-to-chart already uses (getStockChart) — no second cache, no second
 // client, no bypass of the once-per-ticker-per-calendar-day rate protection.
 
-const PERIOD_DAYS: Record<ContributionPeriod, number> = { "1w": 7, "2w": 14, "1m": 30 };
+// "1d" is 1 calendar day back; closeOnOrBefore then lands on the previous
+// TRADING day's close, so a Monday run correctly measures against Friday
+// without any weekend/holiday special-casing here.
+const PERIOD_DAYS: Record<ContributionLookback, number> = {
+  "1d": 1,
+  "1w": 7,
+  "2w": 14,
+  "1m": 30,
+};
 
 // period → the YYYY-MM-DD we measure from: today minus the period's calendar
 // days. We then take the closest trading-day close at or before it.
-function periodStartTarget(period: ContributionPeriod, now: Date): string {
+function periodStartTarget(period: ContributionLookback, now: Date): string {
   return new Date(now.getTime() - PERIOD_DAYS[period] * 86_400_000)
     .toISOString()
     .slice(0, 10);
@@ -50,12 +59,12 @@ async function periodStartPrice(
   }
 }
 
-export type ContributionData = ContributionResult & { period: ContributionPeriod };
+export type ContributionData = ContributionResult & { period: ContributionLookback };
 
 // Full response for the API route and the agent tool: value current holdings,
 // fetch each one's period-start close, and run the pure attribution.
 export async function computeContributionData(
-  period: ContributionPeriod,
+  period: ContributionLookback,
   now: Date = new Date()
 ): Promise<ContributionData> {
   const db = getDb();

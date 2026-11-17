@@ -8,14 +8,48 @@ export type ManualStats = {
   thisWeek: number; // logs in the last 7 days (weekly)
   goal: number; // weekly count target
   doneToday: boolean;
+  missedToday?: boolean; // explicit "no" for today via the Slack check-in
 };
+
+const dayBefore = (iso: string): string =>
+  new Date(Date.parse(iso) - 86400_000).toISOString().slice(0, 10);
+
+// Consecutive-day streak ending today, with the "not yet today" grace period
+// that lets a streak survive until the day is over.
+//
+// The one thing an EXPLICIT MISS changes: it revokes that grace. A day with no
+// data is ambiguous — maybe you did it and haven't logged it — so an unlogged
+// today keeps counting back from yesterday, exactly as before. A day you
+// answered "no" to is not ambiguous, so it breaks the streak outright.
+// Earlier days need no special case: a missed day is by definition unlogged,
+// and the walk already stops at the first unlogged day.
+export function dailyStreak(
+  loggedDates: Iterable<string>,
+  missedDates: Iterable<string>,
+  today: string
+): number {
+  const logged = new Set(loggedDates);
+  if (new Set(missedDates).has(today)) return 0;
+  let streak = 0;
+  let cursor = logged.has(today) ? today : dayBefore(today);
+  while (logged.has(cursor)) {
+    streak++;
+    cursor = dayBefore(cursor);
+  }
+  return streak;
+}
 
 // Human label for a MANUAL tracker (no linked data source), driven by cadence.
 export function manualTrackerLabel(cadence: "daily" | "weekly", s: ManualStats): string {
   if (cadence === "daily") {
     const streakPart =
       s.streak === 1 ? "1-day streak" : `${s.streak}-day streak`;
-    return `${streakPart} · ${s.doneToday ? "done today" : "not yet today"}`;
+    const todayPart = s.doneToday
+      ? "done today"
+      : s.missedToday
+        ? "missed today"
+        : "not yet today";
+    return `${streakPart} · ${todayPart}`;
   }
   return `${s.thisWeek} of ${s.goal} this week`;
 }

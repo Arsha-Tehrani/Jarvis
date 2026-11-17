@@ -25,6 +25,9 @@ function tokenMatches(candidate: string | null | undefined, expected: string): b
   return diff === 0;
 }
 
+// Note: Slack needs no exemption here. Inbound Slack traffic arrives over the
+// Socket Mode WebSocket this process opens outbound (lib/slack/socket.ts),
+// never as an inbound HTTP request, so it never passes through middleware.
 export function middleware(req: NextRequest) {
   const expected = process.env.JARVIS_AUTH_TOKEN;
   if (!expected) return NextResponse.next();

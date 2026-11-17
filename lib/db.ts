@@ -3,6 +3,7 @@ import path from "path";
 import { syncColumnMigrations, syncTriggerSql } from "@/lib/sync/tables";
 import { seedSyncConfig } from "@/lib/sync/config";
 import { migrateGoalsToTrackers } from "@/lib/trackers-migrate";
+import { MAGNITUDE_SOURCES } from "@/lib/slack/checkin-core";
 import { CASH_EQUIVALENT_TABLE } from "@/lib/stocks/cash-equivalents";
 
 // One connection per process. Next.js dev hot-reload re-evaluates modules,
@@ -130,6 +131,19 @@ const MIGRATIONS: string[] = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
     date TEXT NOT NULL,
+    UNIQUE(habit_id, date)
+  )`,
+  // Retroactive check-in — an EXPLICIT miss ("asked, and the answer was no"),
+  // which is a different thing from "no data" (never asked / tracker didn't
+  // exist yet) and is the only state that turns a heatmap cell red and breaks
+  // a daily streak. A "yes" answer needs no row here: it writes to whatever
+  // table that tracker already logs to, so completion truth stays in exactly
+  // one place per tracker. `date` is the day being marked, never today.
+  `CREATE TABLE IF NOT EXISTS tracker_misses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(habit_id, date)
   )`,
   // Phase 8 — Gmail triage (read-only + on-demand drafts)
@@ -418,6 +432,18 @@ const COLUMN_MIGRATIONS: Array<{
   // goal folded in from the legacy `goals` table.
   { table: "habits", column: "source", ddl: "source TEXT" },
   { table: "habits", column: "target", ddl: "target REAL" },
+  // Retroactive check-in — per-tracker opt-in for the morning "did you do
+  // this yesterday?" nag. Column default is 1 (a brand-new daily manual habit
+  // is the common case); the seed immediately corrects the rows the default
+  // is wrong for, per defaultCheckinEnabled(): magnitude-based sources answer
+  // a number, not yes/no, and a weekly tracker isn't framed by "yesterday".
+  // MUST stay after the `source` migration above — the seed reads that column.
+  {
+    table: "habits",
+    column: "checkin_enabled",
+    ddl: "checkin_enabled INTEGER NOT NULL DEFAULT 1",
+    seed: seedCheckinEnabled,
+  },
   // fix-plan-3 Phase 6 — automated dividend detection (docs/dividend-automation.md).
   // status: 'pending' (ex-date passed, cash not landed) | 'confirmed' (counts
   // toward the running total). Existing manual rows default to 'confirmed' —
@@ -475,6 +501,23 @@ const COLUMN_MIGRATIONS: Array<{
     ddl: "cash_equivalent_value REAL",
   },
 ];
+
+// Backfill checkin_enabled for trackers that existed before the column did.
+// Same rule as defaultCheckinEnabled() (lib/slack/checkin-core.ts), expressed
+// in SQL: everything daily and non-magnitude keeps the column default of 1;
+// magnitude sources and every weekly tracker are turned off.
+function seedCheckinEnabled(db: Database.Database): void {
+  const placeholders = MAGNITUDE_SOURCES.map(() => "?").join(",");
+  const info = db
+    .prepare(
+      `UPDATE habits SET checkin_enabled = 0
+       WHERE cadence != 'daily' OR source IN (${placeholders})`
+    )
+    .run(...MAGNITUDE_SOURCES);
+  if (info.changes > 0) {
+    console.log(`[db] checkin_enabled defaulted off for ${info.changes} tracker(s)`);
+  }
+}
 
 function seedCashEquivalentHoldings(db: Database.Database): void {
   const tickers = CASH_EQUIVALENT_TABLE.map((r) => r.ticker);

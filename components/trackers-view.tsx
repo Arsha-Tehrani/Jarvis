@@ -51,6 +51,7 @@ type Tracker = {
   thisWeek: number;
   doneToday: boolean;
   dates: string[];
+  missedDates: string[];
   href: string;
 };
 
@@ -262,6 +263,7 @@ export function TrackersView() {
                 </div>
                 <ContributionHeatmap
                   loggedDates={t.dates}
+                  missedDates={t.missedDates}
                   onCorrect={(date, action) => correctTracker(t, date, action)}
                 />
               </div>
@@ -286,6 +288,9 @@ export function TrackersView() {
           {gymError && <p className="text-sm text-destructive">{gymError}</p>}
           <ContributionHeatmap
             loggedDates={gymLogs.map((l) => l.date)}
+            // Misses live on the TRACKER (keyed by habit id), not on gym_logs,
+            // so they come from the gym-sourced tracker row rather than /api/gym.
+            missedDates={trackers.find((t) => t.source === "gym_logs")?.missedDates ?? []}
             onCorrect={correctGym}
           />
         </CardContent>

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -24,6 +25,7 @@ type Tracker = {
   goal: number;
   label: string;
   logCount: number;
+  checkinEnabled: boolean;
 };
 
 type Suggestion = { id: number; name: string; score: number };
@@ -89,6 +91,28 @@ export function HabitsView() {
       await load();
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Per-tracker morning-check-in toggle. Optimistic flip → PATCH → revert on
+  // failure, the same interaction the Sync Control Center's category toggles
+  // use, so a switch anywhere in the app behaves identically.
+  async function setCheckin(t: Tracker, next: boolean) {
+    const prev = trackers;
+    setTrackers(trackers.map((x) => (x.id === t.id ? { ...x, checkinEnabled: next } : x)));
+    try {
+      const res = await fetch("/api/habits", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: t.id, checkinEnabled: next }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setTrackers(data.trackers);
+      setError(null);
+    } catch {
+      setTrackers(prev);
+      setError("Couldn't save that change — reverted.");
     }
   }
 
@@ -207,6 +231,12 @@ export function HabitsView() {
             See streaks, heatmaps and progress rings on the{" "}
             <Link href="/trackers" className="underline">Trackers</Link> page.
           </p>
+          <p className="text-muted-foreground">
+            <span className="font-medium">Morning check-in</span> asks in Slack about
+            anything you didn&apos;t log yesterday — Yes logs it for that day, No marks
+            it missed (red on the heatmap). Off by default for weekly trackers and for
+            ones that need a number rather than a yes/no.
+          </p>
           {trackers.length === 0 ? (
             <p className="text-muted-foreground">Nothing tracked yet — add one above.</p>
           ) : (
@@ -225,6 +255,14 @@ export function HabitsView() {
                     <span className="text-muted-foreground">target {t.goal}/week</span>
                   )}
                   <span className="ml-auto text-muted-foreground">{t.label}</span>
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    Check-in
+                    <Toggle
+                      checked={t.checkinEnabled}
+                      onChange={(next) => void setCheckin(t, next)}
+                      label={t.name}
+                    />
+                  </span>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -241,5 +279,38 @@ export function HabitsView() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// Same dependency-free switch as the Sync Control Center's category toggles
+// (no Radix in this project): persists immediately via onChange.
+function Toggle({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={`Morning check-in for ${label}`}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+        checked ? "bg-emerald-500" : "bg-muted"
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block size-4 transform rounded-full bg-white shadow transition-transform",
+          checked ? "translate-x-4" : "translate-x-0.5"
+        )}
+      />
+    </button>
   );
 }

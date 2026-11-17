@@ -4,7 +4,7 @@ import { budgetAlerts } from "@/lib/finance/budgets";
 import { computeGoalsProgress } from "@/lib/goals-progress";
 import { chat } from "@/lib/llm";
 import { getSetting, setSetting } from "@/lib/settings";
-import { isSlackConfigured, sendDm } from "@/lib/slack";
+import { isSlackConfigured, postTo } from "@/lib/slack";
 import { recordDigest } from "@/lib/slack/task-digest";
 
 // Morning brief: today's events, top tasks, overdue follow-ups, important
@@ -203,7 +203,8 @@ export async function morningBriefJob(): Promise<void> {
   }
   try {
     const { text, taskIds } = await briefText();
-    await sendDm(text);
+    // SLACK_BRIEF_CHANNEL_ID if set, else the DM (unchanged for existing setups).
+    await postTo("brief", { text });
     setSetting(LAST_SENT_KEY, today);
     // The brief IS the morning task digest — record which tasks were shown,
     // in displayed order, so "done 2" replies resolve against it.

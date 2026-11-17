@@ -9,10 +9,18 @@
 // fallback for a holding with no live quote (e.g. the SPAXX money-market
 // core). We never reimplement that valuation here.
 
-// The two analysis windows. Lives here (the pure, client-safe module) so the
-// React card can import it without dragging in the DB/network glue.
+// The analysis windows offered by the Stocks page toggle. Lives here (the
+// pure, client-safe module) so the React card can import it without dragging
+// in the DB/network glue.
 export const CONTRIBUTION_PERIODS = ["1w", "2w", "1m"] as const;
 export type ContributionPeriod = (typeof CONTRIBUTION_PERIODS)[number];
+
+// Every lookback the engine can compute, including "1d" — used by the markets
+// digest for the weekday "what drove today's move" rollup. Deliberately NOT
+// added to CONTRIBUTION_PERIODS: that set is the UI's toggle, and a 1-day
+// button isn't wanted there.
+export const CONTRIBUTION_LOOKBACKS = ["1d", ...CONTRIBUTION_PERIODS] as const;
+export type ContributionLookback = (typeof CONTRIBUTION_LOOKBACKS)[number];
 
 // A holding whose cumulative |contribution| helps cross this share of the
 // total absolute move is part of the "N holdings drove your portfolio"
@@ -146,7 +154,8 @@ function concentrationSummary(
   };
 }
 
-const PERIOD_WORDS: Record<ContributionPeriod, string> = {
+const PERIOD_WORDS: Record<ContributionLookback, string> = {
+  "1d": "the past day",
   "1w": "the past week",
   "2w": "the past two weeks",
   "1m": "the past month",
@@ -155,7 +164,7 @@ const PERIOD_WORDS: Record<ContributionPeriod, string> = {
 // Plain-language answer for the read-only agent tool, from the same result the
 // API returns. Pure so it's unit-testable without a live model or network.
 export function formatContributionAnswer(
-  result: ContributionResult & { period: ContributionPeriod }
+  result: ContributionResult & { period: ContributionLookback }
 ): string {
   const withData = result.holdings.filter((h) => h.hasData);
   const when = PERIOD_WORDS[result.period];

@@ -14,6 +14,7 @@ import { dividendScanJob } from "@/lib/dividends-scan";
 import { taskCalendarReconcileJob } from "@/lib/tasks/calendar";
 import { taskRankLlmJob } from "@/lib/tasks/rank-llm";
 import { eveningTaskDigestJob, middayTaskDigestJob } from "@/lib/slack/task-digest";
+import { marketsDigestJob } from "@/lib/markets-digest";
 
 // In-process scheduler. Non-negotiable #6: every scheduled job also runs
 // once at startup (catch-up-on-launch) so gaps self-heal after sleep.
@@ -46,7 +47,13 @@ const JOBS: Job[] = [
       await weeklyDigestJob();
     },
   },
+  // Sleep question + the retroactive tracker check-in (yesterday's data has
+  // long settled by this hour).
   { name: "slack-morning-checkin", schedule: "30 8 * * *", run: slackCheckinJob },
+  // Markets digest — independent of everything else; scheduled just after a
+  // stocks refresh tick so quotes are fresh. Weekday/weekend branch and
+  // per-day idempotency live in the job (lib/markets-digest.ts).
+  { name: "markets-digest", schedule: "20 8 * * *", run: () => marketsDigestJob() },
   { name: "slack-morning-brief", schedule: "0 8 * * *", run: morningBriefJob },
   // LLM ranking refinement, deliberately before the 08:00 brief so the
   // brief's "top tasks by rank" reflects a fresh pass. Advisory only —

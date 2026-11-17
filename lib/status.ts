@@ -9,6 +9,7 @@ import { latestLeetCodeRow } from "@/lib/leetcode";
 import { getGmailAccessToken, listMailAccounts } from "@/lib/mail";
 import { loggedFetch } from "@/lib/network-log";
 import { SIDECARS, type SidecarDef } from "@/lib/sidecars/registry";
+import { slackSocketState } from "@/lib/slack/socket";
 import {
   runProbes,
   type HealthCheck,
@@ -189,7 +190,17 @@ const slackProbe: Probe = {
       }, { feature: "status-check", purpose: "slack auth.test" });
       const data = (await res.json()) as { ok: boolean; team?: string; error?: string };
       if (!data.ok) return down(`auth.test failed: ${data.error ?? res.status}`);
-      return ok(`authed${data.team ? ` to ${data.team}` : ""}`);
+      const authed = `authed${data.team ? ` to ${data.team}` : ""}`;
+      // Outbound works with just a bot token; INBOUND (check-in buttons, DM
+      // replies) needs the Socket Mode connection to be live, so the probe
+      // reports both. Read from the client directly — there's no URL to ping
+      // now that nothing inbound arrives over HTTP.
+      const socket = slackSocketState();
+      if (socket === "unconfigured") {
+        return ok(`${authed} · inbound off (SLACK_APP_TOKEN not set)`);
+      }
+      if (socket === "connected") return ok(`${authed} · socket connected`);
+      return degraded(`${authed} · socket ${socket} — buttons and DM replies won't work`);
     } catch {
       return down("slack.com unreachable");
     }

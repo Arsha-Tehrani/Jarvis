@@ -28,6 +28,10 @@ export const BACKUP_TABLES = [
   "health_logs",
   "habits",
   "habit_logs",
+  // Explicit check-in misses — part of a tracker's history (they're what makes
+  // a heatmap cell red and break a streak), so a backup without them would
+  // restore an incomplete record.
+  "tracker_misses",
   "mail_accounts",
   "mail_messages",
   "settings",

@@ -4,7 +4,32 @@ Jarvis is a personal dashboard and natural-language agent that runs entirely on 
 
 ![Jarvis Today View](./public/demo.gif)
 
-## Quickstart
+## Table of contents
+
+- [Setup](#setup)
+  - [Prerequisites & install](#prerequisites--install)
+  - [Environment variables](#environment-variables)
+  - [Google Calendar, Gmail & Drive](#google-calendar-gmail--drive)
+  - [Slack check-in & brief](#slack-check-in--brief)
+  - [Sidecars & ActivityWatch](#sidecars--activitywatch)
+  - [Device sync (Tailscale)](#device-sync-tailscale)
+  - [Running continuously (pm2)](#running-continuously-pm2)
+  - [Verify your setup](#verify-your-setup)
+  - [Troubleshooting quick reference](#troubleshooting-quick-reference)
+- [What Jarvis does](#what-jarvis-does)
+  - [Agent](#agent)
+  - [Life tracking](#life-tracking)
+  - [Money](#money)
+  - [Knowledge](#knowledge)
+  - [System & automation](#system--automation)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [How each piece works](#how-each-piece-works)
+- [Scheduler caveat](#scheduler-caveat)
+- [Testing](#testing)
+
+## Setup
+
+### Prerequisites & install
 
 Requires Node.js 20 LTS or newer. See [requirements.txt](./requirements.txt) for the full prerequisite checklist (including optional Python sidecars).
 
@@ -22,23 +47,137 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. With no configuration you get tasks, trackers, notes-free features, and the dashboard; add a local Ollama model for the agent, and API keys per feature as you need them (see [Configuration](#configuration)).
+Open `http://localhost:3000`. With no configuration you get tasks, trackers, notes-free features, and the dashboard; add a local Ollama model for the agent, and API keys per feature as you need them (see [Environment variables](#environment-variables)).
 
 Other commands: `npm run build`, `npm run typecheck`, `npm test` (node test runner), `npm run backup`, `npm run restore`, and `npm run doctor` — a one-shot pre-flight report that checks Ollama and the configured models are pulled, sidecar venvs exist, and paths/keys point at real things (exit code 0 unless something *configured* is broken, so it works as a CI gate).
 
-## Table of contents
+### Environment variables
 
-- [What Jarvis does](#what-jarvis-does)
-  - [Agent](#agent)
-  - [Life tracking](#life-tracking)
-  - [Money](#money)
-  - [Knowledge](#knowledge)
-  - [System & automation](#system--automation)
-- [Architecture at a glance](#architecture-at-a-glance)
-- [Configuration](#configuration)
-- [How each piece works](#how-each-piece-works)
-- [Scheduler caveat](#scheduler-caveat)
-- [Testing](#testing)
+Configure `.env.local` (all optional except the LLM if you want the agent). For which Ollama model to pull for each job — chat/tool-calling, vision, embeddings — see **[docs/MODELS.md](docs/MODELS.md)**; `npm run doctor` verifies what's actually installed.
+
+| Variable | Purpose |
+|---|---|
+| `LLM_PROVIDER` | `ollama` (default) or `anthropic` |
+| `LLM_BASE_URL` | Ollama OpenAI-compatible endpoint (default `http://localhost:11434/v1`) |
+| `LLM_MODEL` | chat model name |
+| `EMBED_MODEL` | embedding model for semantic search (default `nomic-embed-text`) |
+| `ANTHROPIC_API_KEY` | only if `LLM_PROVIDER=anthropic` |
+| `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY` | live stock quotes (price history needs no key — it uses `yahoo-finance2`) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar + Gmail OAuth |
+| `LEETCODE_USERNAME` | daily LeetCode auto-pull |
+| `OBSIDIAN_VAULT_PATH` | notes + weekly digest |
+| `SLACK_BOT_TOKEN` / `SLACK_USER_ID` | check-in, brief, markets digest (outbound) |
+| `SLACK_APP_TOKEN` | app-level `xapp-…` token for Socket Mode — required for anything *inbound* (check-in buttons, DM replies) |
+| `SLACK_SIGNING_SECRET` | **unused.** It authenticated inbound Slack *HTTP* requests; Socket Mode replaced those, so nothing reads it |
+| `SLACK_CHECKIN_CHANNEL_ID` | channel for the morning tracker check-in; falls back to DMing `SLACK_USER_ID` if unset |
+| `SLACK_BRIEF_CHANNEL_ID` | channel for the morning brief; same DM fallback |
+| `SLACK_MARKETS_CHANNEL_ID` | channel for the markets digest. **No fallback** — unset means the job simply doesn't post |
+| `TEXTBOOK_RAG_URL` | textbook sidecar (default `http://localhost:8016`) |
+| `MACRO_SIDECAR_URL` | macro sidecar, for the status probe (default `http://localhost:8017`) |
+| `GOODNOTES_DRIVE_FOLDER` | Drive folder GoodNotes backs up to (default `GoodNotes Backup`) |
+| `AW_BASE_URL` | ActivityWatch API (default `http://localhost:5600`) |
+| `VOICE_SIDECAR_URL` | voice transcription server for the mic button (default `http://localhost:8018`) |
+| `JARVIS_AUTH_TOKEN` | if set, every page/API request must present this bearer token |
+| `SYNC_ROLE` | `host` or `client`; unset = device sync disabled (default) |
+| `SYNC_HOST_URL` | client only — the host's Tailscale address, e.g. `http://home-pc:3000` |
+| `SYNC_AUTH_TOKEN` | shared sync secret, required on both sides (a secret like any other: env-only, never backed up) |
+| `DEVICE_ID` | optional stable machine id; auto-generated and persisted on first run if unset |
+
+### Google Calendar, Gmail & Drive
+
+Set `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (see [Environment variables](#environment-variables)) to enable Calendar, Gmail, and GoodNotes-via-Drive. A few things worth knowing before you connect:
+
+- **Mail triage** requests `gmail.readonly` plus `gmail.compose` (compose only to create drafts) — nothing in the codebase can send mail.
+- **GoodNotes ingestion** needs the `drive.readonly` scope. If you connected Google before this scope existed, do a one-time reconnect from the Calendar tab.
+- OAuth refresh tokens expire roughly weekly in Google's testing mode. When that happens the UI shows a "reconnect" prompt instead of failing silently — just reconnect from the Calendar tab.
+
+### Slack check-in & brief
+
+Set `SLACK_BOT_TOKEN` and `SLACK_USER_ID` (see [Environment variables](#environment-variables)) to enable the morning check-in, the daily brief, and the markets digest. Add `SLACK_APP_TOKEN` to enable anything *inbound* — the check-in's Yes/No buttons and DM replies.
+
+**Channels.** One bot, many channels: `chat.postMessage` takes the channel per call, so the single `SLACK_BOT_TOKEN` posts anywhere it's a member of. Multiple bot identities would mean separate app installs and separate tokens for no benefit here. Set `SLACK_CHECKIN_CHANNEL_ID` / `SLACK_BRIEF_CHANNEL_ID` / `SLACK_MARKETS_CHANNEL_ID` to route each feed; check-in and brief fall back to a DM when unset, so an existing setup keeps working unchanged.
+
+**Inbound uses Socket Mode — no tunnel, no Request URL.** Jarvis opens an outbound WebSocket to Slack and Slack pushes events down it (`lib/slack/socket.ts`), so there's nothing to expose publicly and nothing to re-paste when a tunnel hostname changes. Setup:
+
+1. In your Slack app config (api.slack.com/apps → your app): enable **Socket Mode**, generate an **app-level token** with the `connections:write` scope, and reinstall the app.
+2. Put that `xapp-…` token in `SLACK_APP_TOKEN`.
+3. Give the bot `chat:write` plus either `chat:write.public`, or `/invite @YourBot` into each of the three channels — a bot can't post into a channel it isn't a member of without that scope.
+
+There's no HTTP endpoint to secure, so `SLACK_SIGNING_SECRET` is no longer read by anything, and Slack needs no exemption from the `JARVIS_AUTH_TOKEN` gate. Inbound payloads are still checked against `SLACK_USER_ID` before any write, so another member of a shared channel can't log trackers on your behalf.
+
+The socket is opened once per server process from `instrumentation.ts`, alongside the cron scheduler, guarded against dev hot-reload double-connects (two sockets would handle every button press twice). Like the scheduler, **it only works while the process is running** — see [Running continuously (pm2)](#running-continuously-pm2). `/status`'s Slack probe reports both halves: bot auth, and whether the socket is actually connected.
+
+### Sidecars & ActivityWatch
+
+Sidecars are fully managed from the `/status` page: **Set up** creates `sidecars/<name>/.venv` and pip-installs `requirements.txt` (confined to that folder, idempotent, output streamed to the in-app log panel), and **Start/Stop** spawn the venv's own python (`.venv/bin/python -m rag.server` / `macro.server`, `Scripts\python.exe` on Windows) with logs captured to the same panel. The status card distinguishes *no environment*, *environment missing packages* (named specifically), and *ready*; common crashes get a plain-language hint (missing dependency → re-offer Set up, port already taken). Any sidecar Jarvis started is shut down with the server so nothing gets orphaned. Manual setup/run from a terminal still works exactly as before and is the fallback: `cd sidecars/<name> && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, then `.venv/bin/python -m <module>`. ActivityWatch gets the same card as best-effort control — it's a third-party tray app, so Jarvis launches/quits the installed app per-OS, links to [activitywatch.net](https://activitywatch.net/downloads/) when it isn't installed, and reports "couldn't confirm it stopped" rather than pretending.
+
+### Device sync (Tailscale)
+
+**Prerequisites.** Two machines each running Jarvis, and a private network between them — [Tailscale](https://tailscale.com) is the assumed setup: install it on both so the client can reach the host by its Tailscale name (e.g. `home-pc`) on port 3000. Pick one **always-on** machine as the host (a desktop that's usually awake); every other machine is a client. You also need one shared secret string — generate it however you like, e.g. `openssl rand -hex 32` — that goes in *both* `.env.local` files. This is a star topology: clients talk only to the host, never to each other.
+
+**1. Connect both machines with Tailscale first.** Sync rides on top of a [Tailscale](https://tailscale.com/download) mesh network, not your regular internet/Wi-Fi — install the Tailscale app on both the host and every client machine, sign in to the **same** Tailscale account on each (this is what puts them on the same private "tailnet"; being on the same router/ISP does nothing by itself), and leave it running. Confirm they can see each other before touching `.env.local`:
+   - Run `tailscale status` on either machine — both should be listed and reachable (not "offline").
+   - From the client, `ping <host-tailscale-name>` (or `tailscale ping <host-tailscale-name>`) should get a response. That `<host-tailscale-name>` — the host's Tailscale machine name — is exactly what goes into `SYNC_HOST_URL` below. Find it under the host's device in the [Tailscale admin console](https://login.tailscale.com/admin/machines) or via `tailscale status` on the host itself.
+   - The host machine needs to actually be awake and running `npm run dev` for sync to succeed — if it's asleep or the app isn't running, clients will log `fetch failed` and just retry next tick (harmless, but nothing will sync until it's back).
+
+**2. Host** (the always-on machine) — in its `.env.local`, then restart the app:
+
+```
+SYNC_ROLE=host
+SYNC_AUTH_TOKEN=<shared secret>
+```
+
+The host serves `POST /api/sync/push` and `GET /api/sync/pull`, and refuses both unless the role *and* token check out (`404` if the role isn't `host` — the routes look absent when disabled; `503` if `SYNC_AUTH_TOKEN` is missing; `401` on a bad token). It runs **no sync worker of its own** — clients read its live `jarvis.db` directly — so there is nothing else to start on the host.
+
+**3. Client** (each other machine) — in its `.env.local`, then restart the app:
+
+```
+SYNC_ROLE=client
+SYNC_AUTH_TOKEN=<same shared secret>
+SYNC_HOST_URL=http://<host-tailscale-name>:3000
+DEVICE_ID=laptop            # optional; a UUID is generated + persisted if unset
+```
+
+From here it's automatic: a cron tick **every 5 minutes** (plus once at launch, plus a **~3-second debounced push** right after you write something) pushes the client's changed rows to the host and pulls everyone else's back, table by table. Note the asymmetry — the debounced nudge is **push-only**, so your local edits reach the host within seconds, but you only *receive* other machines' changes on the 5-minute pull tick or at app launch. When you don't want to wait for the tick, the **Sync** section of `/status` has a **Sync now** button (client only) that runs one full push+pull pass on demand (`POST /api/sync/run`) and refreshes the per-table marks in place.
+
+**⚠ If the host also sets `JARVIS_AUTH_TOKEN`** (the remote-access gate), that middleware sits in front of `/api/sync/*` too, and the client only ever sends its `SYNC_AUTH_TOKEN`. So either leave `JARVIS_AUTH_TOKEN` unset on the host (Tailscale is already gating access) or set it to the **same** value as `SYNC_AUTH_TOKEN` — otherwise every sync request is turned away with a `401` before it reaches the sync handler.
+
+**4. Verify.** Open `/status` on either machine — the **Sync** section shows this device's role and id, and per-table pending counts with last push/pull timestamps. Every sync call also appears in `/network-log` (feature `sync-push` / `sync-pull`) with its outcome and latency. Quick end-to-end check: add a task on the client, watch `pending` for `tasks` drop to 0 within a few seconds (push landed), then confirm the task appears on the host — and the reverse within 5 minutes.
+
+**Troubleshooting.** An unreachable or misconfigured host is a *normal, non-fatal* state: the client logs it (to the console and `/network-log`) and retries next tick — sync never crashes the app. If nothing moves: `404` from the host means that machine isn't `SYNC_ROLE=host`; `401` means the tokens don't match (or the `JARVIS_AUTH_TOKEN` clash above); `503` means the host is `SYNC_ROLE=host` but has no `SYNC_AUTH_TOKEN`. Persistent `fetch failed` entries almost always mean step 1 isn't actually satisfied — re-check `tailscale status` on both machines. A row that references another (a `habit_log` whose `habit` hasn't synced yet) is held back and re-pulled on the next tick, so a brand-new tracker can take one extra cycle to fully appear on other devices.
+
+> ⚠ The sync endpoints are designed to sit **behind Tailscale only**. The shared token is the entire auth story — do not port-forward `/api/sync/*` to the open internet.
+
+### Running continuously (pm2)
+
+By default the scheduler **and the Slack Socket Mode connection** only run while `npm run dev` (or `npm start`) is running in an open terminal — they're both process-lifetime things started from `instrumentation.ts`, not per-request handlers. To keep briefs, polls, snapshots, and Slack buttons/DM replies working without that, run the app under a process manager:
+
+```bash
+npm install -g pm2
+npm run build
+pm2 start npm --name jarvis -- start   # runs `next start` on :3000
+pm2 save && pm2 startup                # restart on reboot (follow the printed command)
+
+pm2 logs jarvis                        # tail the cron/job logs
+pm2 restart jarvis                     # after pulling changes + rebuild
+```
+
+`pm2` restarts the process if it crashes and brings it back after a reboot — that's all the "server" this project needs; it's still one local process on your own machine.
+
+### Verify your setup
+
+After configuring anything, three ways to check it worked:
+
+- **`npm run doctor`** — a one-shot pre-flight report: confirms Ollama and the configured models are pulled, sidecar venvs exist, and configured paths/keys point at real things. Exit code 0 unless something *configured* is broken, so it doubles as a CI gate.
+- **`/status`** — thirteen independent probes (Ollama, sidecars, ActivityWatch, vault, Google Calendar/Gmail/Drive, Slack, LeetCode, quote APIs, …), cached ~20s, each showing ok / degraded / down / not-configured.
+- **`npm test`** runs the Node test suite; each Python sidecar has its own pytest suite (`.venv/bin/python -m pytest`), with model, mic, and network calls stubbed. See [Testing](#testing) for the full philosophy.
+
+### Troubleshooting quick reference
+
+- **Sync `404`** — that machine isn't set to `SYNC_ROLE=host`. **`401`** — tokens don't match (or `JARVIS_AUTH_TOKEN` is clashing with `SYNC_AUTH_TOKEN`, see above). **`503`** — host is `SYNC_ROLE=host` but has no `SYNC_AUTH_TOKEN` set. Persistent `fetch failed` — Tailscale isn't actually connected; re-check `tailscale status` on both machines.
+- **Sidecar won't start** — the `/status` page distinguishes *no environment*, *environment missing packages* (named specifically), and *ready*. A named missing dependency means re-run **Set up**; "port already taken" is the other common crash.
+- **Google feature erroring** — OAuth refresh tokens expire in testing mode; reconnect from the Calendar tab.
+- **No LLM running** — nothing breaks. Categorization, briefs, and search all fall back to deterministic behavior; see [Testing](#testing) for how that's guaranteed.
 
 ## What Jarvis does
 
@@ -101,36 +240,7 @@ Next.js app (localhost:3000)          Python sidecars (optional)
 └─ lib/cron.ts    scheduler + catch-up         └─ chat, vision, embedding models
 ```
 
-Everything runs from `npm run dev`. The sidecars are standalone Python services with their own venvs that talk to the app and Ollama over HTTP — nothing Python is in the Next.js build. They are fully managed from the `/status` page: **Set up** creates `sidecars/<name>/.venv` and pip-installs `requirements.txt` (confined to that folder, idempotent, output streamed to the in-app log panel), and **Start/Stop** spawn the venv's own python (`.venv/bin/python -m rag.server` / `macro.server`, `Scripts\python.exe` on Windows) with logs captured to the same panel. The status card distinguishes *no environment*, *environment missing packages* (named specifically), and *ready*; common crashes get a plain-language hint (missing dependency → re-offer Set up, port already taken). Any sidecar Jarvis started is shut down with the server so nothing gets orphaned. Manual setup/run from a terminal still works exactly as before and is the fallback: `cd sidecars/<name> && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, then `.venv/bin/python -m <module>`. ActivityWatch gets the same card as best-effort control — it's a third-party tray app, so Jarvis launches/quits the installed app per-OS, links to [activitywatch.net](https://activitywatch.net/downloads/) when it isn't installed, and reports "couldn't confirm it stopped" rather than pretending.
-
-## Configuration
-
-Configure `.env.local` (all optional except the LLM if you want the agent). For which Ollama model to pull for each job — chat/tool-calling, vision, embeddings — see **[docs/MODELS.md](docs/MODELS.md)**; `npm run doctor` verifies what's actually installed.
-
-| Variable | Purpose |
-|---|---|
-| `LLM_PROVIDER` | `ollama` (default) or `anthropic` |
-| `LLM_BASE_URL` | Ollama OpenAI-compatible endpoint (default `http://localhost:11434/v1`) |
-| `LLM_MODEL` | chat model name |
-| `EMBED_MODEL` | embedding model for semantic search (default `nomic-embed-text`) |
-| `ANTHROPIC_API_KEY` | only if `LLM_PROVIDER=anthropic` |
-| `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY` | live stock quotes (price history needs no key — it uses `yahoo-finance2`) |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar + Gmail OAuth |
-| `LEETCODE_USERNAME` | daily LeetCode auto-pull |
-| `OBSIDIAN_VAULT_PATH` | notes + weekly digest |
-| `SLACK_BOT_TOKEN` / `SLACK_USER_ID` / `SLACK_SIGNING_SECRET` | check-in, brief |
-| `TEXTBOOK_RAG_URL` | textbook sidecar (default `http://localhost:8016`) |
-| `MACRO_SIDECAR_URL` | macro sidecar, for the status probe (default `http://localhost:8017`) |
-| `GOODNOTES_DRIVE_FOLDER` | Drive folder GoodNotes backs up to (default `GoodNotes Backup`) |
-| `AW_BASE_URL` | ActivityWatch API (default `http://localhost:5600`) |
-| `VOICE_SIDECAR_URL` | voice transcription server for the mic button (default `http://localhost:8018`) |
-| `JARVIS_AUTH_TOKEN` | if set, every page/API request must present this bearer token |
-| `SYNC_ROLE` | `host` or `client`; unset = device sync disabled (default) |
-| `SYNC_HOST_URL` | client only — the host's Tailscale address, e.g. `http://home-pc:3000` |
-| `SYNC_AUTH_TOKEN` | shared sync secret, required on both sides (a secret like any other: env-only, never backed up) |
-| `DEVICE_ID` | optional stable machine id; auto-generated and persisted on first run if unset |
-
----
+Everything runs from `npm run dev`. The sidecars are standalone Python services with their own venvs that talk to the app and Ollama over HTTP — nothing Python is in the Next.js build. See [Setup → Sidecars & ActivityWatch](#sidecars--activitywatch) for how to install, start, and stop them.
 
 ## How each piece works
 
@@ -161,7 +271,8 @@ Each turn also records **cost/latency telemetry** on its `agent_log` row: provid
 | Dividend scan (ex-date detection + pending→confirmed promotion) | 07:00 daily |
 | LeetCode daily pull | 08:00 daily |
 | Slack morning brief | 08:00 daily |
-| Slack morning check-in | 08:30 daily |
+| Markets digest (weekday day-move / weekend week-move + dividends) | 08:20 daily |
+| Slack morning check-in (sleep question + retroactive tracker check-in) | 08:30 daily |
 | Stocks refresh | every 15 min |
 | Calendar poll | hourly |
 | GoodNotes → RAG sync | hourly (:15) |
@@ -206,7 +317,8 @@ Either sidecar path must validate as `{item, calories, protein, carbs, fat}` aga
 Goals and Habits used to be two systems that overlapped (the same real-world thing, e.g. "gym", could be logged/shown in two disconnected places, and a Goal was a static number with nothing behind it). They're now **one Tracker model**: a Tracker is a row in the generalized `habits` table. `source` links it to a built-in feed (`gym_logs`, `leetcode`, `sleep_hours`, `calories`, `savings_rate`) or is null for a manual habit; `target` is the numeric goal that used to live in the separate `goals` table.
 
 - **One home for visualization** — the **Trackers page** renders everything: sourced trackers (the former Goals) as progress **rings** vs. their target; manual trackers as **heatmaps** with a cadence-correct label. Labels respect cadence — `daily` speaks in streaks ("12-day streak"), `weekly` in count-vs-target ("4 of 6 this week") — never "per week" for a daily streak (a real bug this fixes; `lib/tracker-progress.ts`, unit-tested).
-- **Habits page = management** — name/cadence/target, **deletion**, and a link into Trackers, not a second chart. Deleting is two different things and the confirm copy says which: a **manual habit** is deleted along with all its logged entries (real, irreversible data loss — the dialog states the exact count), while "deleting" a **sourced tracker** only removes the target/cadence config; the underlying `gym_logs`/`leetcode_stats`/health data belongs to its own feature, stays untouched, and a new tracker can point at the same source later. One handler (`lib/tracker-delete.ts`) backs the UI button, the API route, and the confirm-gated `delete_habit` agent tool — which is deliberately *not* revertible via `revert_action` (a manual habit's cascaded logs can't be restored, and a fake inverse would be worse than refusing). Creating a tracker runs a **duplicate check** against every existing tracker: deterministic normalized-name/keyword similarity first (`lib/tracker-dedupe.ts`, always runs), with an optional LLM pass for closer semantic matches — always a *suggestion* ("this looks like your existing 'Gym' — use it, or create anyway?"), never a silent block.
+- **Three heatmap states, not two** — **completed** (a log entry exists, `--heat-4`), **missed** (a `tracker_misses` row: you were asked in the morning check-in and said no, `--tracker-missed` red), and **no data** (neither — never asked, check-in off, or the tracker didn't exist yet, `--heat-1`). "Missed" gets its own token rather than a shade of the ramp because it's a different *kind* of day, not a weaker version of done. An explicit miss for today also revokes the "not yet today" grace period and breaks a daily streak; an ambiguous no-data day behaves exactly as it always has (`dailyStreak` in `lib/tracker-progress.ts`, unit-tested). A day later logged wins over a stale miss row, so a correction never leaves a red cell behind.
+- **Habits page = management** — name/cadence/target, the per-tracker **morning check-in** switch, **deletion**, and a link into Trackers, not a second chart. Deleting is two different things and the confirm copy says which: a **manual habit** is deleted along with all its logged entries (real, irreversible data loss — the dialog states the exact count), while "deleting" a **sourced tracker** only removes the target/cadence config; the underlying `gym_logs`/`leetcode_stats`/health data belongs to its own feature, stays untouched, and a new tracker can point at the same source later. One handler (`lib/tracker-delete.ts`) backs the UI button, the API route, and the confirm-gated `delete_habit` agent tool — which is deliberately *not* revertible via `revert_action` (a manual habit's cascaded logs can't be restored, and a fake inverse would be worse than refusing). Creating a tracker runs a **duplicate check** against every existing tracker: deterministic normalized-name/keyword similarity first (`lib/tracker-dedupe.ts`, always runs), with an optional LLM pass for closer semantic matches — always a *suggestion* ("this looks like your existing 'Gym' — use it, or create anyway?"), never a silent block.
 - **Goals retired** — a goal is just a target on a Tracker, so progress is always computed from real logged data, never a static number. The standalone **Goals page redirects** to Trackers. An **idempotent migration** (`lib/trackers-migrate.ts`) folds each legacy `goals` row into a Tracker, mapping all five kinds (`calories` stays a ceiling, not a floor) and **merging** a pre-existing habit/goal pair for the same thing into one Tracker instead of duplicating it. `goals` is kept as a legacy table for backup/restore but is no longer written.
 - **Downstream** — the agent's `set_goal` is now an alias that sets a Tracker's target (still confirm-gated); the morning brief's "goals at risk" and the weekly digest read from the unified Tracker progress (`computeGoalsProgress`, now sourced from `lib/trackers.ts`).
 
@@ -317,7 +429,12 @@ The index refreshes on a 30-minute cron (plus launch catch-up) and only re-embed
 
 ### Slack check-in & morning brief
 
-- **Check-in** (08:30): an outbound DM asks the enabled questions — sleep time, gym yes/no, LeetCode yes/no/count — idempotent per day. Replies are handled by deterministic parsers first, LLM only as fallback, and every answer writes through the *existing agent tool handlers* — one code path per tracker. (Inbound replies need a tunnel; the outbound DM works with just a bot token.)
+- **Check-in** (08:30): two messages, each idempotent per day.
+  - *Retroactive tracker check-in.* Looks at **yesterday**, finds every check-in-enabled tracker with no completion record for that day, and asks "did you do this?" with a Yes/No button pair per tracker in one Block Kit message. **Yes** logs it for that historical date through the existing agent tool (`log_gym` / `log_leetcode` / `log_habit`, each of which already accepted an explicit `date`); **No** writes a `tracker_misses` row — an *explicit* miss, which is a different thing from "no data". Presses arrive over Socket Mode; the socket handler only decodes the payload and calls `handleTrackerResponse` (`lib/slack/tracker-response.ts` — db injected, no Slack types, unit-tested against an in-memory DB). Either way the button row is replaced via `chat.update` with a static ✅/🔴 line, so a double-tap can't double-log. Trackers already answered (logged or missed) are never re-asked, which is what makes launch catch-up safe; if nothing is unconfirmed, no message is sent at all.
+  - *Sleep* stays its own free-text question, since it needs a number rather than a toggle. Replies are handled by deterministic parsers first, LLM only as fallback.
+
+  Which trackers get nagged is a per-tracker switch (`habits.checkin_enabled`) on the **Habits** page. Defaults follow the source and cadence: daily gym / LeetCode / manual habits **on**; magnitude-based trackers (`sleep_hours`, `calories`, `savings_rate`) and every weekly-cadence tracker **off**, since neither a number nor a weekly count is framed by "did you do this yesterday?". New trackers get the same rule the migration backfilled with.
+- **Markets digest** (08:20 → `SLACK_MARKETS_CHANNEL_ID`): Mon–Fri, the most recent trading day's portfolio move (the same `computePortfolioTotal` day-move figure the Stocks page shows) plus the `CONCENTRATION_THRESHOLD` "what's driving it" rollup at a 1-day lookback. Sat/Sun, the past week's move from the *same* contribution engine at a 7-day lookback — the exact calculation behind the Stocks page's "1W" toggle, just a different lookback passed in. Both include dividends confirmed (by payment date) or newly pending (by ex-date) inside the covered window, using the existing dividend tables and payout math. No math is re-derived anywhere in the job.
 - **Morning brief** (08:00): today's events, top tasks, overdue career follow-ups, important-unread mail count, category-budget warnings, and any goal/streak at risk. The brief is assembled deterministically; the LLM only rephrases it, with the plain rendering as the always-working fallback.
 
 ### Weekly digest
@@ -352,46 +469,13 @@ Sync state is written only after a successful ingest — if the sidecar or Ollam
 
 ### Device sync (selective, host/client)
 
+> See [Setup → Device sync](#device-sync-tailscale) to connect two machines over Tailscale.
+
 Jarvis instances on multiple machines sync a **user-configurable** set of categories, chosen per device on the **`/sync` page** (the Sync Control Center) and persisted in the local `sync_config` table. The registry of every category lives in one place (`lib/sync/tables.ts`); on first upgrade the set that shipped syncing stays on — `tasks`, `gym_logs`, `habits`/`habit_logs` (the unified Trackers, including their `source`/`target`), `leetcode_stats`, `networth_snapshots`, `applications` (the career pipeline), `reading`, `watchlist`, and `holdings` — and everything newly exposed as a toggle (bank transactions & statements, category budgets, merchant overrides, meal/macro logs, contacts, bulk-import history) starts **off**, so nobody's data begins syncing that wasn't already. Flip them on from `/sync`; `/status` shows a compact summary with a **Manage sync →** link. The legacy `goals` table is no longer synced (folded into `habits`). Turning a category off never deletes local data — it only pauses future push/pull for it.
 
 Effective sync for any table is the **intersection** of host-enabled and client-enabled, so for a two-device setup keep the same toggles on both. A small set stays **permanently locked** (greyed out, no toggle) because syncing them would break the app, not merely leak data: `oauth_tokens` (live rotating credentials), `device_meta` (per-device sync identity), and `sync_state`/`sync_config` (per-device bookkeeping). These are hard-excluded — filtered server-side and impossible to even name on the wire, even if a config row somehow said otherwise (there's a test for exactly that). Notes/Obsidian aren't a database table (they're files — use Obsidian Sync/Syncthing/a synced folder for the vault). Two known, accepted limitations: (1) if two devices both run brokerage imports *before* syncing, `holdings` resolution is per-row, so the merged set may match neither statement — keep imports on one machine; (2) `transactions` merge safely on a content key (date + amount + description + account), but the `statements` containers themselves have no cross-device identity, so both devices may keep duplicate statement rows if each imported the same file before syncing.
 
-**Prerequisites.** Two machines each running Jarvis, and a private network between them — [Tailscale](https://tailscale.com) is the assumed setup: install it on both so the client can reach the host by its Tailscale name (e.g. `home-pc`) on port 3000. Pick one **always-on** machine as the host (a desktop that's usually awake); every other machine is a client. You also need one shared secret string — generate it however you like, e.g. `openssl rand -hex 32` — that goes in *both* `.env.local` files. This is a star topology: clients talk only to the host, never to each other.
-
-**1. Connect both machines with Tailscale first.** Sync rides on top of a [Tailscale](https://tailscale.com/download) mesh network, not your regular internet/Wi-Fi — install the Tailscale app on both the host and every client machine, sign in to the **same** Tailscale account on each (this is what puts them on the same private "tailnet"; being on the same router/ISP does nothing by itself), and leave it running. Confirm they can see each other before touching `.env.local`:
-   - Run `tailscale status` on either machine — both should be listed and reachable (not "offline").
-   - From the client, `ping <host-tailscale-name>` (or `tailscale ping <host-tailscale-name>`) should get a response. That `<host-tailscale-name>` — the host's Tailscale machine name — is exactly what goes into `SYNC_HOST_URL` below. Find it under the host's device in the [Tailscale admin console](https://login.tailscale.com/admin/machines) or via `tailscale status` on the host itself.
-   - The host machine needs to actually be awake and running `npm run dev` for sync to succeed — if it's asleep or the app isn't running, clients will log `fetch failed` and just retry next tick (harmless, but nothing will sync until it's back).
-
-**2. Host** (the always-on machine) — in its `.env.local`, then restart the app:
-
-```
-SYNC_ROLE=host
-SYNC_AUTH_TOKEN=<shared secret>
-```
-
-The host serves `POST /api/sync/push` and `GET /api/sync/pull`, and refuses both unless the role *and* token check out (`404` if the role isn't `host` — the routes look absent when disabled; `503` if `SYNC_AUTH_TOKEN` is missing; `401` on a bad token). It runs **no sync worker of its own** — clients read its live `jarvis.db` directly — so there is nothing else to start on the host.
-
-**3. Client** (each other machine) — in its `.env.local`, then restart the app:
-
-```
-SYNC_ROLE=client
-SYNC_AUTH_TOKEN=<same shared secret>
-SYNC_HOST_URL=http://<host-tailscale-name>:3000
-DEVICE_ID=laptop            # optional; a UUID is generated + persisted if unset
-```
-
-From here it's automatic: a cron tick **every 5 minutes** (plus once at launch, plus a **~3-second debounced push** right after you write something) pushes the client's changed rows to the host and pulls everyone else's back, table by table. Note the asymmetry — the debounced nudge is **push-only**, so your local edits reach the host within seconds, but you only *receive* other machines' changes on the 5-minute pull tick or at app launch. When you don't want to wait for the tick, the **Sync** section of `/status` has a **Sync now** button (client only) that runs one full push+pull pass on demand (`POST /api/sync/run`) and refreshes the per-table marks in place.
-
-**⚠ If the host also sets `JARVIS_AUTH_TOKEN`** (the remote-access gate), that middleware sits in front of `/api/sync/*` too, and the client only ever sends its `SYNC_AUTH_TOKEN`. So either leave `JARVIS_AUTH_TOKEN` unset on the host (Tailscale is already gating access) or set it to the **same** value as `SYNC_AUTH_TOKEN` — otherwise every sync request is turned away with a `401` before it reaches the sync handler.
-
-**4. Verify.** Open `/status` on either machine — the **Sync** section shows this device's role and id, and per-table pending counts with last push/pull timestamps. Every sync call also appears in `/network-log` (feature `sync-push` / `sync-pull`) with its outcome and latency. Quick end-to-end check: add a task on the client, watch `pending` for `tasks` drop to 0 within a few seconds (push landed), then confirm the task appears on the host — and the reverse within 5 minutes.
-
-**Troubleshooting.** An unreachable or misconfigured host is a *normal, non-fatal* state: the client logs it (to the console and `/network-log`) and retries next tick — sync never crashes the app. If nothing moves: `404` from the host means that machine isn't `SYNC_ROLE=host`; `401` means the tokens don't match (or the `JARVIS_AUTH_TOKEN` clash above); `503` means the host is `SYNC_ROLE=host` but has no `SYNC_AUTH_TOKEN`. Persistent `fetch failed` entries almost always mean step 1 isn't actually satisfied — re-check `tailscale status` on both machines. A row that references another (a `habit_log` whose `habit` hasn't synced yet) is held back and re-pulled on the next tick, so a brand-new tracker can take one extra cycle to fully appear on other devices.
-
 How conflicts resolve: every row carries a `sync_id` (cross-device identity; the local autoincrement id stays internal) and an `updated_at` that the **host stamps with its own clock at receipt time**. Device clocks are never trusted for ordering — the last write to *reach the host* wins, deterministically. A locally-edited row is never overwritten by a pull until its own push has landed. Deletes propagate as **tombstones**: deleting a row sets its `deleted_at` timestamp (the row is hidden everywhere, never physically removed), and that write syncs exactly like an edit — a delete is just "the newest write happened to be a delete", with the same host-stamped last-write-wins resolution, so an edit newer than a delete correctly un-deletes the row. Tombstones are kept indefinitely (purging one before every device pulled it would let a stale device resurrect the row) and are included in backups so a restore can't undelete anything. The one exception: deleting a **manual habit** cascades a genuine, irreversible hard delete of the habit and its logs — the confirm dialog promises exactly that, and it deliberately does not propagate. Two devices logging the same thing independently (same gym date, same goal kind) merge by natural key instead of duplicating.
-
-> ⚠ The sync endpoints are designed to sit **behind Tailscale only**. The shared token is the entire auth story — do not port-forward `/api/sync/*` to the open internet.
 
 On **backups**: `sync_state` (the pull cursors) is included so a restored client resumes where it left off; `device_meta` (this machine's sync identity) deliberately is **not**, so restoring a backup onto a second machine can't clone identities — and `SYNC_AUTH_TOKEN` lives only in `.env.local`, never in any table or export.
 
@@ -427,19 +511,7 @@ All state lives in `jarvis.db` (better-sqlite3, migrations run idempotently on s
 
 ## Scheduler caveat
 
-The `node-cron` scheduler lives **in the Next.js process** — when `npm run dev` (or `npm start`) stops, every scheduled job stops with it. Catch-up-on-launch heals the gaps for daily/weekly jobs the next time you start the app, but nothing runs while it's down. If you want the briefs, polls, and snapshots to fire without a terminal open, keep the app alive under a process manager:
-
-```bash
-npm install -g pm2
-npm run build
-pm2 start npm --name jarvis -- start   # runs `next start` on :3000
-pm2 save && pm2 startup                # restart on reboot (follow the printed command)
-
-pm2 logs jarvis                        # tail the cron/job logs
-pm2 restart jarvis                     # after pulling changes + rebuild
-```
-
-`pm2` restarts the process if it crashes and brings it back after a reboot, which is all the "server" this project needs — it's still one local process on your own machine.
+The `node-cron` scheduler lives **in the Next.js process** — when `npm run dev` (or `npm start`) stops, every scheduled job stops with it. Catch-up-on-launch heals the gaps for daily/weekly jobs the next time you start the app, but nothing runs while it's down. The **Slack Socket Mode connection** has exactly the same lifetime and the same fix, so treat them as one concern: with the process down, check-in buttons and DM replies do nothing (and unlike cron, there's no catch-up — a button pressed while the app was down is simply never delivered; press it again once it's back). See [Setup → Running continuously (pm2)](#running-continuously-pm2) to keep both alive without an open terminal.
 
 ## Testing
 

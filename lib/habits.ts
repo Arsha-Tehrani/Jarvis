@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { findHabitByName } from "@/lib/tracker-delete";
+import { dailyStreak } from "@/lib/tracker-progress";
 
 // Generic habits: daily cadence tracks a consecutive-day streak; weekly
 // cadence tracks this week's count against `goal` per week.
@@ -44,13 +45,15 @@ export function listHabits(): HabitWithStats[] {
     ).map((r) => r.date);
     const set = new Set(dates);
 
-    // Streak: consecutive days ending today (or yesterday if today not yet logged).
-    let streak = 0;
-    let cursor = set.has(today) ? today : isoDaysAgo(1);
-    while (set.has(cursor)) {
-      streak++;
-      cursor = new Date(Date.parse(cursor) - 86400_000).toISOString().slice(0, 10);
-    }
+    // Streak: consecutive days ending today (or yesterday if today not yet
+    // logged) — and an explicit check-in miss for today revokes that grace.
+    // Same shared rule the Trackers page uses; never a second implementation.
+    const missed = (
+      db
+        .prepare("SELECT date FROM tracker_misses WHERE habit_id = ? AND date >= ?")
+        .all(habit.id, since) as { date: string }[]
+    ).map((r) => r.date);
+    const streak = dailyStreak(dates, missed, today);
 
     const weekAgo = isoDaysAgo(7);
     const thisWeek = dates.filter((d) => d > weekAgo).length;

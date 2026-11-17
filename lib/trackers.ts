@@ -2,6 +2,7 @@ import { getDb } from "@/lib/db";
 import { monthSummaries } from "@/lib/finance/analyze";
 import {
   clamp01,
+  dailyStreak,
   manualFraction,
   manualOnTrack,
   manualTrackerLabel,
@@ -35,6 +36,13 @@ export type Tracker = {
   thisWeek: number;
   doneToday: boolean;
   dates: string[];
+  // Days explicitly answered "no" in the morning Slack check-in. A distinct
+  // state from "no data" — see lib/slack/checkin-core.ts — and the only one
+  // that turns a heatmap cell red and breaks a daily streak.
+  missedDates: string[];
+  // Whether the morning check-in nags about this tracker (toggled per tracker
+  // on the Habits page).
+  checkinEnabled: boolean;
   // All-time logged-entry count (manual trackers only; 0 for sourced) — the
   // delete confirmation says exactly how many entries would be lost.
   logCount: number;
@@ -123,7 +131,7 @@ export function listTrackers(): Tracker[] {
   const db = getDb();
   const rows = db
     .prepare(
-      "SELECT id, name, cadence, goal, source, target FROM habits WHERE deleted_at IS NULL ORDER BY (source IS NULL), name"
+      "SELECT id, name, cadence, goal, source, target, checkin_enabled FROM habits WHERE deleted_at IS NULL ORDER BY (source IS NULL), name"
     )
     .all() as {
     id: number;
@@ -132,11 +140,25 @@ export function listTrackers(): Tracker[] {
     goal: number;
     source: string | null;
     target: number | null;
+    checkin_enabled: number;
   }[];
   const today = new Date().toISOString().slice(0, 10);
   const since = isoDaysAgo(370);
 
-  return rows.map((r) => {
+  // Explicit misses apply to every tracker kind (they're keyed by habit id,
+  // not by the underlying log table), so they're read outside the branch.
+  const missesFor = (habitId: number): string[] =>
+    (
+      db
+        .prepare(
+          "SELECT date FROM tracker_misses WHERE habit_id = ? AND date >= ? ORDER BY date DESC"
+        )
+        .all(habitId, since) as { date: string }[]
+    ).map((x) => x.date);
+
+  return rows.map(({ checkin_enabled, ...r }) => {
+    const checkinEnabled = checkin_enabled === 1;
+    const missedDates = missesFor(r.id);
     if (r.source) {
       // Sourced tracker → ring against its numeric target.
       const { actual, unit, displayActual, href } = sourcedActual(r.source);
@@ -155,6 +177,8 @@ export function listTrackers(): Tracker[] {
         thisWeek: 0,
         doneToday: false,
         dates: [],
+        missedDates,
+        checkinEnabled,
         logCount: 0,
         href,
       };
@@ -169,12 +193,7 @@ export function listTrackers(): Tracker[] {
         .all(r.id, since) as { date: string }[]
     ).map((x) => x.date);
     const set = new Set(dates);
-    let streak = 0;
-    let cursor = set.has(today) ? today : isoDaysAgo(1);
-    while (set.has(cursor)) {
-      streak++;
-      cursor = new Date(Date.parse(cursor) - 86400_000).toISOString().slice(0, 10);
-    }
+    const streak = dailyStreak(dates, missedDates, today);
     const thisWeek = dates.filter((d) => d > isoDaysAgo(7)).length;
     const doneToday = set.has(today);
     const logCount = (
@@ -184,7 +203,13 @@ export function listTrackers(): Tracker[] {
         n: number;
       }
     ).n;
-    const stats = { streak, thisWeek, goal: r.goal, doneToday };
+    const stats = {
+      streak,
+      thisWeek,
+      goal: r.goal,
+      doneToday,
+      missedToday: missedDates.includes(today),
+    };
     return {
       ...r,
       display: "heatmap" as const,
@@ -199,6 +224,8 @@ export function listTrackers(): Tracker[] {
       thisWeek,
       doneToday,
       dates,
+      missedDates,
+      checkinEnabled,
       logCount,
       href: "/trackers",
     };

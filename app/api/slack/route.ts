@@ -13,10 +13,11 @@ import {
 const postSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("set_questions"),
+    // Only `sleep` remains: the gym/LeetCode yes-no questions moved to the
+    // generalized tracker check-in, whose per-tracker toggles live on the
+    // Habits page (habits.checkin_enabled), not here.
     questions: z.object({
       sleep: z.boolean(),
-      gym: z.boolean(),
-      leetcode: z.boolean(),
     }),
   }),
   z.object({ action: z.literal("send_now") }),

@@ -42,6 +42,12 @@
   --heat-3: #8A7A54;
   --heat-4: #5C4F33;
 
+  /* Explicit check-in miss ("asked, and the answer was no") on a heatmap.
+     Deliberately its OWN token, not a step of the --heat ramp: a miss is a
+     different KIND of day from "logged less", and reusing a ramp shade would
+     make it read as a weaker version of done. */
+  --tracker-missed: #A6392E;
+
   /* Type */
   --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-body: "Inter", -apple-system, "Segoe UI", sans-serif;

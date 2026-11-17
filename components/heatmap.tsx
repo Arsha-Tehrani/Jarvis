@@ -5,8 +5,15 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 // GitHub-style contribution grid: 53 columns of weeks, rows Sun–Sat.
-// Binary cells — the day is either logged or it isn't. Shared by the gym
-// tracker and every habit.
+// Shared by the gym tracker and every habit. Three states per cell, not two:
+//
+//   completed — a log entry exists                       (--heat-4)
+//   missed    — an explicit "no" from the Slack check-in (--tracker-missed)
+//   no data   — neither: never asked, check-in off for   (--heat-1)
+//               this tracker, or it didn't exist yet
+//
+// "Missed" is a real answer, not an absence, which is why it gets its own
+// token rather than a shade of the ramp.
 //
 // Manual correction: when `onCorrect` is provided, clicking a day opens a
 // small confirm bar (this app's pattern: data-altering actions are
@@ -15,13 +22,16 @@ import { cn } from "@/lib/utils";
 // double-log or un-log the wrong day. Future days are never offered.
 export function ContributionHeatmap({
   loggedDates,
+  missedDates = [],
   onCorrect,
 }: {
   loggedDates: string[];
+  missedDates?: string[];
   // Called after the user confirms: action is what should happen to date.
   onCorrect?: (date: string, action: "log" | "unlog") => Promise<void> | void;
 }) {
   const logged = new Set(loggedDates);
+  const missed = new Set(missedDates);
   const today = new Date();
   const todayKey = toKey(today);
   const [selected, setSelected] = useState<string | null>(null);
@@ -65,11 +75,20 @@ export function ContributionHeatmap({
                 ) : (
                   <div
                     key={d}
-                    title={`${date}${logged.has(date) ? " ✓" : ""}`}
+                    title={`${date}${
+                      logged.has(date) ? " ✓" : missed.has(date) ? " — missed" : ""
+                    }`}
                     onClick={onCorrect ? () => setSelected(date) : undefined}
                     className={cn(
                       "size-2.5 rounded-[2px]",
-                      logged.has(date) ? "bg-(--heat-4)" : "bg-(--heat-1)",
+                      // Logged wins over missed: if the day was later logged
+                      // (a correction, or a "no" the user reversed), it IS
+                      // done — the stale miss row must not paint it red.
+                      logged.has(date)
+                        ? "bg-(--heat-4)"
+                        : missed.has(date)
+                          ? "bg-(--tracker-missed)"
+                          : "bg-(--heat-1)",
                       date === todayKey && "ring-1 ring-foreground/40",
                       onCorrect && "cursor-pointer hover:ring-1 hover:ring-foreground/60",
                       selected === date && "ring-2 ring-foreground"
@@ -86,7 +105,11 @@ export function ContributionHeatmap({
           <span>
             <span className="font-medium">{selected}</span>
             {" — "}
-            {logged.has(selected) ? "logged ✓" : "not logged"}
+            {logged.has(selected)
+              ? "logged ✓"
+              : missed.has(selected)
+                ? "marked missed"
+                : "not logged"}
           </span>
           {logged.has(selected) ? (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => confirm(selected, "unlog")}>

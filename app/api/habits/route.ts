@@ -5,6 +5,7 @@ import { queueSyncPush } from "@/lib/sync/client";
 import { tombstone, undelete } from "@/lib/sync/tombstone";
 import { checkTrackerDuplicate, listTrackers } from "@/lib/trackers";
 import { deleteTracker } from "@/lib/tracker-delete";
+import { defaultCheckinEnabled } from "@/lib/slack/checkin-core";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -65,19 +66,21 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
+    const cadence = body.cadence ?? "daily";
+    // A brand-new tracker gets whatever its source/cadence implies — the same
+    // rule the column migration backfilled with (lib/slack/checkin-core.ts),
+    // so creating one after the migration behaves identically to one that
+    // predates it. New trackers created here are always manual (source null).
+    const checkin = defaultCheckinEnabled(null, cadence) ? 1 : 0;
     if (sameName) {
       undelete(db, "habits", "id = ?", [sameName.id]);
-      db.prepare("UPDATE habits SET cadence = ?, goal = ? WHERE id = ?").run(
-        body.cadence ?? "daily",
-        body.goal ?? 1,
-        sameName.id
-      );
+      db.prepare(
+        "UPDATE habits SET cadence = ?, goal = ?, checkin_enabled = ? WHERE id = ?"
+      ).run(cadence, body.goal ?? 1, checkin, sameName.id);
     } else {
-      db.prepare("INSERT INTO habits (name, cadence, goal) VALUES (?, ?, ?)").run(
-        body.name,
-        body.cadence ?? "daily",
-        body.goal ?? 1
-      );
+      db.prepare(
+        "INSERT INTO habits (name, cadence, goal, checkin_enabled) VALUES (?, ?, ?, ?)"
+      ).run(body.name, cadence, body.goal ?? 1, checkin);
     }
     queueSyncPush(); // debounced, non-blocking; no-op unless SYNC_ROLE=client
     return NextResponse.json({ trackers: listTrackers() }, { status: 201 });
@@ -122,6 +125,29 @@ export async function POST(req: NextRequest) {
       }),
       `${body.action === "log" ? "Logged" : "Un-logged"} "${habit.name}" for ${date}.`
     );
+  }
+  queueSyncPush();
+  return NextResponse.json({ trackers: listTrackers() });
+}
+
+const patchSchema = z.object({
+  id: z.number().int().positive(),
+  checkinEnabled: z.boolean(),
+});
+
+// Per-tracker config updates. Today that's exactly one field: whether the
+// morning Slack check-in nags about this tracker (same interaction pattern as
+// the Sync Control Center's per-category toggles).
+export async function PATCH(req: NextRequest) {
+  const parsed = patchSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
+  }
+  const changes = getDb()
+    .prepare("UPDATE habits SET checkin_enabled = ? WHERE id = ? AND deleted_at IS NULL")
+    .run(parsed.data.checkinEnabled ? 1 : 0, parsed.data.id).changes;
+  if (changes === 0) {
+    return NextResponse.json({ error: "Tracker not found" }, { status: 404 });
   }
   queueSyncPush();
   return NextResponse.json({ trackers: listTrackers() });
