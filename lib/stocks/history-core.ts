@@ -7,6 +7,69 @@
 export type PricePoint = { date: string; close: number };
 
 // ---------------------------------------------------------------------------
+// Market-local (Eastern) dates
+// ---------------------------------------------------------------------------
+
+// A "trading session" is a date in the MARKET's timezone, not UTC. That
+// distinction is load-bearing: a US session's after-hours tail (16:00–20:00
+// ET) falls on the NEXT UTC date, so grouping bars by their UTC date splits
+// one session in two and makes "the last session" resolve to a handful of
+// post-market prints. Verified live 2026-11-15: GOOGL's 5m series for the
+// Friday 2026-11-13 session ended with 13 bars stamped
+// 2026-11-14T00:00–00:59Z (19:00–19:59 ET), so a UTC-keyed `sessions: 1`
+// kept ONLY those and discarded the entire regular session. Offsets come
+// from Intl rather than a hardcoded −5/−4 so DST is never wrong.
+const MARKET_TZ = "America/New_York";
+
+export function etOffsetMs(ms: number): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: MARKET_TZ,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(new Date(ms));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+  // Reading the ET wall-clock back AS IF it were UTC gives the offset by
+  // diffing. hour % 24 because hour12:false can render midnight as "24".
+  const asIfUtc = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") % 24,
+    get("minute"),
+    get("second")
+  );
+  return asIfUtc - ms;
+}
+
+/** The ET calendar date (YYYY-MM-DD) an instant falls on. */
+export function etDate(ms: number): string {
+  return new Date(ms + etOffsetMs(ms)).toISOString().slice(0, 10);
+}
+
+/** ms for a given ET wall-clock time (HH:MM) on an ET calendar date. */
+export function etInstant(date: string, hhmm: string): number {
+  const asIfUtc = Date.parse(`${date}T${hhmm}:00Z`);
+  // Callers use market hours, nowhere near the 02:00 DST boundary, so the
+  // offset at the naive instant is the offset at the real one.
+  return asIfUtc - etOffsetMs(asIfUtc);
+}
+
+/** The ET session date a bar belongs to, from its `date` field. */
+export function barSessionDate(date: string): string {
+  // A plain YYYY-MM-DD (daily/weekly/monthly granularity) is ALREADY a
+  // session date — don't put it through a timezone shift, which would roll
+  // it back a day.
+  if (date.length <= 10) return date.slice(0, 10);
+  const ms = Date.parse(date);
+  return Number.isFinite(ms) ? etDate(ms) : date.slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
 // Timeframe → fetch plan
 // ---------------------------------------------------------------------------
 
@@ -133,9 +196,12 @@ export function applyDisplay(points: PricePoint[], plan: ChartPlan): PricePoint[
     out = out.filter((p) => p.date.slice(0, 10) >= from);
   }
   if (plan.sessions != null) {
-    const days = [...new Set(out.map((p) => p.date.slice(0, 10)))];
+    // Keyed by MARKET-LOCAL date, not UTC — see barSessionDate. Sorting the
+    // distinct dates rather than trusting insertion order keeps this correct
+    // even though an ET session's bars straddle two UTC dates.
+    const days = [...new Set(out.map((p) => barSessionDate(p.date)))].sort();
     const keep = new Set(days.slice(-plan.sessions));
-    out = out.filter((p) => keep.has(p.date.slice(0, 10)));
+    out = out.filter((p) => keep.has(barSessionDate(p.date)));
   }
   return out;
 }

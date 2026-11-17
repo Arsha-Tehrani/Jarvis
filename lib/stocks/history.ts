@@ -33,6 +33,15 @@ export type StockChart = {
   // Human label when the intraday request degraded to daily bars — the UI
   // must render it (degraded granularity is never silent).
   fallback: string | null;
+  // The UNSHAPED series for `interval`: everything fetched/cached before
+  // applyDisplay's displayFrom/sessions trim. `series` is a window onto this.
+  //
+  // Exposed for one caller: the portfolio 1D range needs each ticker's
+  // PREVIOUS session close, and a 1D plan's fetch window is already a 6-day
+  // 5m superset (padded past weekends), so the prior session is sitting in
+  // here — reading it costs no extra Yahoo call and keeps the chart's bars
+  // and its baseline on the SAME provider. The per-ticker dialog ignores it.
+  superset: PricePoint[];
 };
 
 function readCache(ticker: string, interval: Interval, now: Date): PricePoint[] | null {
@@ -56,7 +65,9 @@ function writeCache(ticker: string, interval: Interval, series: PricePoint[], no
 // call through the shared audited Yahoo client, cache the raw superset, then
 // slice/trim for the timeframe (pure). Throws on fetch/parse failure —
 // including "no data", so the caller can decide whether a fallback applies.
-async function fetchPlan(ticker: string, plan: ChartPlan, now: Date): Promise<PricePoint[]> {
+type FetchedPlan = { shown: PricePoint[]; superset: PricePoint[] };
+
+async function fetchPlan(ticker: string, plan: ChartPlan, now: Date): Promise<FetchedPlan> {
   const cached = readCache(ticker, plan.interval, now);
   let points = cached;
   if (!points) {
@@ -83,7 +94,7 @@ async function fetchPlan(ticker: string, plan: ChartPlan, now: Date): Promise<Pr
   if (isIntraday(plan.interval) && isSparseIntraday(shown, now)) {
     throw new Error(`Only ${shown.length} stale ${plan.interval} bar(s) for ${ticker}`);
   }
-  return shown;
+  return { shown, superset: points };
 }
 
 // The dialog's one entry point. Intraday plans degrade to their labeled
@@ -100,8 +111,8 @@ export async function getStockChart(
   const upper = ticker.toUpperCase();
   const plan = resolveInterval(timeframe, now);
   try {
-    const series = await fetchPlan(upper, plan, now);
-    return { timeframe, interval: plan.interval, series, fallback: null };
+    const { shown, superset } = await fetchPlan(upper, plan, now);
+    return { timeframe, interval: plan.interval, series: shown, fallback: null, superset };
   } catch (err) {
     if (!plan.fallback) throw err;
     console.warn(
@@ -109,12 +120,13 @@ export async function getStockChart(
         err instanceof Error ? err.message : err
       }) — falling back to daily`
     );
-    const series = await fetchPlan(upper, plan.fallback.plan, now);
+    const { shown, superset } = await fetchPlan(upper, plan.fallback.plan, now);
     return {
       timeframe,
       interval: plan.fallback.plan.interval,
-      series,
+      series: shown,
       fallback: plan.fallback.label,
+      superset,
     };
   }
 }

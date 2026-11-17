@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   TIMEFRAMES,
   applyDisplay,
+  barSessionDate,
   isCacheFresh,
   isSparseIntraday,
   parseYahooChart,
@@ -225,4 +226,36 @@ test("a bar with no usable price at all is dropped, not NaN-poisoned into the se
 test("empty quotes (delisted/unknown symbol) throws a clear error, not an empty chart", () => {
   assert.throws(() => parseYahooChart({ quotes: [] }, "BOGUSTICKER"), /unknown or delisted/i);
   assert.throws(() => parseYahooChart({}, "BOGUSTICKER"), /unknown or delisted/i);
+});
+
+// ---- sessions are MARKET-LOCAL dates, not UTC ------------------------------
+// Regression for a live failure found 2026-11-15: a US session's after-hours
+// tail (16:00–20:00 ET) is stamped on the NEXT UTC date, so a UTC-keyed
+// `sessions: 1` selected only those post-market prints and discarded the
+// whole regular session. GOOGL's Friday 2026-11-13 5m series ended with 13
+// bars at 2026-11-14T00:00–00:59Z (19:00–19:59 ET); `sessions: 1` returned
+// exactly those 13 instead of the ~79 regular-session bars.
+
+test("sessions keys on the ET session date, so after-hours bars don't become their own session", () => {
+  const bars: PricePoint[] = [
+    { date: "2026-11-13T14:30:00.000Z", close: 1 }, // 09:30 ET — the open
+    { date: "2026-11-13T21:00:00.000Z", close: 2 }, // 16:00 ET — the close
+    { date: "2026-11-14T00:00:00.000Z", close: 3 }, // 19:00 ET — after-hours
+    { date: "2026-11-14T00:59:58.000Z", close: 4 }, // 19:59 ET — after-hours
+  ];
+  // All four belong to the SAME ET session (2026-11-13), so sessions:1 keeps
+  // all of them — never just the two that happen to carry a UTC date of the
+  // 14th.
+  const lastOne = applyDisplay(bars, { sessions: 1 } as ChartPlan);
+  assert.deepEqual(
+    lastOne.map((p) => p.close),
+    [1, 2, 3, 4]
+  );
+});
+
+test("barSessionDate maps an instant to its ET session, and leaves a plain date alone", () => {
+  assert.equal(barSessionDate("2026-11-14T00:59:58.000Z"), "2026-11-13"); // 19:59 ET
+  assert.equal(barSessionDate("2026-11-13T14:30:00.000Z"), "2026-11-13"); // 09:30 ET
+  // A daily bar's date is already a session date — no timezone shift.
+  assert.equal(barSessionDate("2026-11-13"), "2026-11-13");
 });
