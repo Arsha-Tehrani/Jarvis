@@ -5,8 +5,6 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -15,10 +13,10 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
-  PORTFOLIO_GRANULARITIES,
   PORTFOLIO_RANGES,
-  collapseToWeekly,
-  hasBreakdown,
+  rangeChange,
+  toChartSeries,
+  type ChartPoint,
   type PortfolioGranularity,
   type PortfolioHistoryPoint,
   type PortfolioRange,
@@ -26,45 +24,64 @@ import {
 
 // Value over time on the Stocks page, scoped to the INVESTMENT ACCOUNT ONLY:
 // stocks (equity holdings, a real ticker price) and cash-equivalent
-// (money-market/sweep positions like SPAXX) stack to the investment
-// account's own total. Manual bank/checking/savings balances never appear
-// here — that blended accounts+holdings view lives on the Net Worth page.
+// (money-market/sweep positions like SPAXX). Manual bank/checking/savings
+// balances never appear here — that blended view lives on the Net Worth page.
 // Drawn from the SAME daily net-worth snapshot the Net Worth page uses (no
-// second snapshot mechanism). Self-contained like the other dashboard cards:
-// it fetches its own data and degrades quietly (Trackers/Screen-time
-// convention) rather than crashing when there isn't enough history yet.
+// second snapshot mechanism).
+//
+// Brokerage-style: one row of range buttons (1W … All) and the resolution
+// follows the range automatically (daily, weekly past ~13 months). The x-axis
+// is real time, so missing days take their true width; short gaps are drawn
+// across and long ones break the line (lib/stocks/portfolio-history.ts's
+// toChartSeries). A "Cash" toggle hides the sweep/money-market band so the
+// stocks line can use a tight y-axis instead of sitting on a $0 baseline.
 
 type HistoryResponse = {
   range: PortfolioRange;
+  granularity: PortfolioGranularity;
   series: PortfolioHistoryPoint[];
   hasBreakdown: boolean;
 };
 
 const RANGE_LABELS: Record<PortfolioRange, string> = {
+  "1w": "1W",
   "1m": "1M",
   "3m": "3M",
   "6m": "6M",
+  ytd: "YTD",
   "1y": "1Y",
   all: "All",
 };
 
-const GRANULARITY_LABELS: Record<PortfolioGranularity, string> = {
-  daily: "Daily",
-  weekly: "Weekly",
-};
+// Per-viewer conveniences only (remembered range / cash toggle) — wrapped so
+// a blocked or empty storage never breaks the chart.
+const RANGE_KEY = "jarvis.portfolioChart.range";
+const CASH_KEY = "jarvis.portfolioChart.showCash";
 
-// Sensible default so a year-plus view isn't a cluttered wall of daily
-// points — the user can always override it (see granularityTouched below).
-function defaultGranularityFor(range: PortfolioRange): PortfolioGranularity {
-  return range === "1m" ? "daily" : "weekly";
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // ignore — the choice just won't be remembered
+  }
 }
 
 const usd = (v: number) => `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+const usdCents = (v: number) =>
+  `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-function axisDate(date: string): string {
-  return new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
+function axisDate(t: number, spanDays: number): string {
+  return new Date(t).toLocaleDateString("en-US", {
     month: "short",
-    day: "numeric",
+    ...(spanDays > 400 ? { year: "2-digit" } : { day: "numeric" }),
     timeZone: "UTC",
   });
 }
@@ -78,18 +95,105 @@ function fullDate(date: string): string {
   });
 }
 
+// ~5 evenly spaced, day-aligned ticks across the plotted span.
+function timeTicks(min: number, max: number): number[] {
+  if (max <= min) return [min];
+  const DAY = 86_400_000;
+  const count = 5;
+  const step = (max - min) / (count - 1);
+  const ticks: number[] = [];
+  for (let i = 0; i < count; i++) {
+    // Points sit at 12:00 UTC; snap each tick to its day's noon (floor, not
+    // round — rounding a noon timestamp lands on the next day).
+    ticks.push(Math.floor((min + step * i) / DAY) * DAY + DAY / 2);
+  }
+  return [...new Set(ticks)];
+}
+
+// Round step for ~4 y-axis intervals: 1, 2, 2.5 or 5 × 10^k.
+function niceStep(span: number): number {
+  const raw = span / 4;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+  return nice * mag;
+}
+
+// y-axis bounds + ticks on round dollar values. A stacked stocks+cash band
+// keeps its $0 baseline (the band's height IS the value); a stocks-only line
+// gets a tight, padded range so its movement is readable, like a brokerage
+// chart.
+function yAxis(
+  points: ChartPoint[],
+  showCash: boolean,
+  mode: "split" | "total"
+): { domain: [number, number]; ticks: number[] } {
+  const vals = points
+    .map((p) => (mode === "total" ? p.total : showCash ? p.total : p.stocks))
+    .filter((v): v is number => v != null);
+  if (vals.length === 0) return { domain: [0, 1], ticks: [0, 1] };
+  const hi = Math.max(...vals);
+  const fromZero = mode === "split" && showCash;
+  const lo = fromZero ? 0 : Math.min(...vals);
+  const pad = fromZero ? 0 : Math.max((hi - lo) * 0.1, hi * 0.005, 1);
+  const step = niceStep(Math.max(hi + pad - (lo - pad), 1));
+  const min = Math.max(0, Math.floor((lo - pad) / step) * step);
+  const max = Math.ceil((hi + pad) / step) * step;
+  const ticks: number[] = [];
+  for (let v = min; v <= max + step / 2; v += step) ticks.push(v);
+  return { domain: [min, max], ticks };
+}
+
+type TooltipProps = {
+  active?: boolean;
+  payload?: Array<{ payload: ChartPoint }>;
+  showCash: boolean;
+  mode: "split" | "total";
+};
+
+function ChartTooltip({ active, payload, showCash, mode }: TooltipProps) {
+  const p = payload?.[0]?.payload;
+  if (!active || !p || p.date == null) return null; // break markers have no tooltip
+  const row = (label: string, value: number | null, swatch?: string) =>
+    value == null ? null : (
+      <div className="flex items-center justify-between gap-4">
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          {swatch && <span className={cn("inline-block size-2 rounded-[2px]", swatch)} />}
+          {label}
+        </span>
+        <span className="font-data tabular-nums">{usdCents(value)}</span>
+      </div>
+    );
+  return (
+    <div className="rounded-[var(--radius)] border border-border bg-background px-3 py-2 text-xs text-foreground shadow-sm">
+      <div className="mb-1 font-medium">{fullDate(p.date)}</div>
+      {mode === "total" ? (
+        row("Total", p.total)
+      ) : (
+        <>
+          {row("Stocks", p.stocks, "bg-gain")}
+          {showCash && row("Cash", p.cash, "bg-cash-equivalent")}
+          {showCash && row("Total", p.total)}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function PortfolioHistoryChart() {
   const [range, setRange] = useState<PortfolioRange>("3m");
+  const [showCash, setShowCash] = useState(true);
   const [data, setData] = useState<HistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [granularity, setGranularity] = useState<PortfolioGranularity>(
-    defaultGranularityFor("3m")
-  );
-  // Once the user picks a granularity directly, range changes stop
-  // overriding it — "reasonable default, but let the user override either
-  // way rather than locking granularity to range."
-  const [granularityTouched, setGranularityTouched] = useState(false);
+
+  // Restore the remembered range / cash choice after mount (storage isn't
+  // available during server render).
+  useEffect(() => {
+    const r = readStored(RANGE_KEY);
+    if (r && (PORTFOLIO_RANGES as readonly string[]).includes(r)) setRange(r as PortfolioRange);
+    if (readStored(CASH_KEY) === "0") setShowCash(false);
+  }, []);
 
   const load = useCallback(async (r: PortfolioRange) => {
     setLoading(true);
@@ -112,13 +216,38 @@ export function PortfolioHistoryChart() {
 
   function changeRange(r: PortfolioRange) {
     setRange(r);
-    if (!granularityTouched) setGranularity(defaultGranularityFor(r));
+    writeStored(RANGE_KEY, r);
   }
 
-  function changeGranularity(g: PortfolioGranularity) {
-    setGranularity(g);
-    setGranularityTouched(true);
+  function toggleCash() {
+    setShowCash((prev) => {
+      writeStored(CASH_KEY, prev ? "0" : "1");
+      return !prev;
+    });
   }
+
+  const chart = useMemo(
+    () => toChartSeries(data?.series ?? [], { includeCash: showCash }),
+    [data, showCash]
+  );
+  const plotted = chart.points.filter((p) => p.date != null);
+  const enoughData = plotted.length >= 2;
+  const summary = rangeChange(chart, showCash);
+
+  const tMin = plotted[0]?.t ?? 0;
+  const tMax = plotted[plotted.length - 1]?.t ?? 0;
+  const spanDays = (tMax - tMin) / 86_400_000;
+  const y = yAxis(chart.points, showCash, chart.mode);
+  const yMin = y.domain[0];
+  const stocksOnly = chart.mode === "split" && !showCash;
+
+  // A lone point after a long break can't be drawn as an area — give it a dot.
+  const isolatedDot = (color: string) =>
+    function IsolatedDot(props: { cx?: number; cy?: number; payload?: ChartPoint; index?: number }) {
+      const { cx, cy, payload, index } = props;
+      if (!payload?.isolated || cx == null || cy == null) return <g key={index} />;
+      return <circle key={index} cx={cx} cy={cy} r={3} fill={color} stroke={color} />;
+    };
 
   const rangeSelector = (
     <div className="flex flex-wrap gap-1" role="tablist" aria-label="Range">
@@ -141,45 +270,38 @@ export function PortfolioHistoryChart() {
     </div>
   );
 
-  const granularitySelector = (
-    <div className="flex flex-wrap gap-1" role="tablist" aria-label="Granularity">
-      {PORTFOLIO_GRANULARITIES.map((g) => (
-        <button
-          key={g}
-          role="tab"
-          aria-selected={g === granularity}
-          onClick={() => changeGranularity(g)}
-          className={cn(
-            "rounded-[var(--radius)] border px-2.5 py-1 font-data text-xs",
-            g === granularity
-              ? "border-(--accent) bg-accent text-accent-foreground"
-              : "border-border text-muted-foreground hover:text-foreground"
-          )}
-        >
-          {GRANULARITY_LABELS[g]}
-        </button>
-      ))}
-    </div>
+  const cashToggle = (
+    <button
+      type="button"
+      aria-pressed={showCash}
+      onClick={toggleCash}
+      disabled={chart.mode === "total"}
+      title={
+        chart.mode === "total"
+          ? "No stocks/cash split recorded for this period"
+          : showCash
+            ? "Hide the cash (money-market) band"
+            : "Show the cash (money-market) band"
+      }
+      className={cn(
+        "flex items-center gap-1.5 rounded-[var(--radius)] border px-2.5 py-1 font-data text-xs disabled:opacity-50",
+        showCash
+          ? "border-(--accent) bg-accent text-accent-foreground"
+          : "border-border text-muted-foreground hover:text-foreground"
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block size-2.5 rounded-[2px] border border-cash-equivalent",
+          showCash && "bg-cash-equivalent"
+        )}
+      />
+      Cash
+    </button>
   );
 
-  // Weekly collapsing runs entirely client-side over the already-fetched
-  // daily series (lib/stocks/portfolio-history.ts's collapseToWeekly, pure)
-  // — toggling granularity never refetches from the API, so there's no
-  // loading flash. Only a range change triggers a network request.
-  const series = data?.series ?? [];
-  const displaySeries = useMemo(
-    () => (granularity === "weekly" ? collapseToWeekly(series) : series),
-    [series, granularity]
-  );
-  // Recomputed against displaySeries (not the server's flag for the daily
-  // series): collapsing to weekly can change which points survive, e.g. a
-  // week whose LAST day predates the stocks/cash split while an earlier day
-  // in that week had it.
-  const seriesHasBreakdown = hasBreakdown(displaySeries);
-
-  // Quiet unavailable states, matching the app's convention: a chart needs at
-  // least two points to draw a trend (a new install has 0–1 snapshots).
-  const enoughData = displaySeries.length >= 2;
+  const valueLabel =
+    chart.mode === "total" ? "Account total" : showCash ? "Stocks + cash" : "Stocks";
 
   return (
     <Card>
@@ -187,7 +309,7 @@ export function PortfolioHistoryChart() {
         <CardTitle className="flex flex-wrap items-center justify-between gap-2">
           Investment account — value over time
           <span className="flex flex-wrap items-center gap-2">
-            {granularitySelector}
+            {cashToggle}
             {rangeSelector}
           </span>
         </CardTitle>
@@ -196,127 +318,115 @@ export function PortfolioHistoryChart() {
         {loading && !data ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : error ? (
-          <p className="text-sm text-muted-foreground">
-            History unavailable right now.
-          </p>
+          <p className="text-sm text-muted-foreground">History unavailable right now.</p>
         ) : !enoughData ? (
           <p className="text-sm text-muted-foreground">
-            Not enough history yet — a daily snapshot is taken at 18:00 (and on app
-            launch), so this fills in over the next few days.
+            Not enough history in this range yet — a daily snapshot is taken at 18:00 (and
+            on app launch), so this fills in over time.
           </p>
-        ) : seriesHasBreakdown ? (
+        ) : (
           <div>
-            <div className="mb-2 flex gap-4 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-[2px] bg-gain" />
-                Stocks
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-[2px] bg-cash-equivalent" />
-                Cash (investment account)
-              </span>
-            </div>
+            {summary && (
+              <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="font-data text-2xl tabular-nums">{usdCents(summary.last)}</span>
+                <span
+                  className={cn(
+                    "font-data text-sm tabular-nums",
+                    summary.change >= 0 ? "text-gain" : "text-loss"
+                  )}
+                >
+                  {summary.change >= 0 ? "+" : "−"}
+                  {usdCents(Math.abs(summary.change))}
+                  {summary.pct != null &&
+                    ` (${summary.change >= 0 ? "+" : "−"}${Math.abs(summary.pct * 100).toFixed(2)}%)`}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {valueLabel} · {RANGE_LABELS[range]}
+                  {data?.granularity === "weekly" && " · weekly points"}
+                </span>
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={displaySeries} stackOffset="none">
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+              <AreaChart data={chart.points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
                 <XAxis
-                  dataKey="date"
+                  dataKey="t"
+                  type="number"
+                  scale="time"
+                  domain={[tMin, tMax]}
+                  ticks={timeTicks(tMin, tMax)}
                   tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                  tickFormatter={axisDate}
-                  minTickGap={40}
+                  tickFormatter={(t) => axisDate(Number(t), spanDays)}
                 />
                 <YAxis
+                  domain={y.domain}
+                  ticks={y.ticks}
+                  allowDataOverflow
                   tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
                   tickFormatter={(v) => usd(Number(v))}
                   width={64}
                 />
                 <Tooltip
-                  labelFormatter={(d) => fullDate(String(d))}
-                  formatter={(value, name) => [usd(Number(value)), name]}
+                  content={<ChartTooltip showCash={showCash} mode={chart.mode} />}
                   cursor={{ stroke: "var(--ink-soft)", strokeWidth: 1 }}
-                  contentStyle={{
-                    borderRadius: "var(--radius)",
-                    border: "1px solid var(--border)",
-                    background: "var(--background)",
-                    color: "var(--foreground)",
-                    fontSize: 12,
-                  }}
                 />
-                {/* Stacked: stocks (bottom) + cash-equivalent (top) = the
-                    investment account's own total at the band's top edge.
-                    connectNulls=false so pre-breakdown rows gap. Genuinely
-                    distinct hues (green vs. teal), not shades of one gray. */}
-                <Area
-                  type="monotone"
-                  dataKey="stocks_value"
-                  name="Stocks"
-                  stackId="worth"
-                  stroke="var(--gain)"
-                  fill="var(--gain)"
-                  fillOpacity={0.35}
-                  strokeWidth={1.75}
-                  connectNulls={false}
-                  dot={false}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="cash_equivalent_value"
-                  name="Cash (investment account)"
-                  stackId="worth"
-                  stroke="var(--cash-equivalent)"
-                  fill="var(--cash-equivalent)"
-                  fillOpacity={0.35}
-                  strokeWidth={1.75}
-                  connectNulls={false}
-                  dot={false}
-                />
+                {chart.mode === "total" ? (
+                  <Area
+                    type="monotone"
+                    dataKey="total"
+                    name="Total"
+                    stroke="var(--ink-soft)"
+                    fill="var(--ink-soft)"
+                    fillOpacity={0.12}
+                    strokeWidth={2}
+                    baseValue={yMin}
+                    connectNulls={false}
+                    dot={isolatedDot("var(--ink-soft)")}
+                    isAnimationActive={false}
+                  />
+                ) : (
+                  <>
+                    {/* Stocks on the bottom; with cash shown, cash stacks on
+                        top so the band's top edge is the account total. */}
+                    <Area
+                      type="monotone"
+                      dataKey="stocks"
+                      name="Stocks"
+                      stackId={showCash ? "worth" : undefined}
+                      stroke="var(--gain)"
+                      fill="var(--gain)"
+                      fillOpacity={stocksOnly ? 0.18 : 0.35}
+                      strokeWidth={stocksOnly ? 2 : 1.75}
+                      baseValue={stocksOnly ? yMin : undefined}
+                      connectNulls={false}
+                      dot={isolatedDot("var(--gain)")}
+                      isAnimationActive={false}
+                    />
+                    {showCash && (
+                      <Area
+                        type="monotone"
+                        dataKey="cash"
+                        name="Cash (investment account)"
+                        stackId="worth"
+                        stroke="var(--cash-equivalent)"
+                        fill="var(--cash-equivalent)"
+                        fillOpacity={0.35}
+                        strokeWidth={1.75}
+                        connectNulls={false}
+                        dot={isolatedDot("var(--cash-equivalent)")}
+                        isAnimationActive={false}
+                      />
+                    )}
+                  </>
+                )}
               </AreaChart>
             </ResponsiveContainer>
-          </div>
-        ) : (
-          // Only pre-breakdown snapshots survive the window: no stocks/cash
-          // split to show, so plot the investment account's own total alone
-          // with a note rather than two all-gap lines.
-          <div>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Stocks/cash split isn&apos;t recorded for this period — showing the
-              investment account&apos;s total.
-            </p>
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={displaySeries}>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                  tickFormatter={axisDate}
-                  minTickGap={40}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                  tickFormatter={(v) => usd(Number(v))}
-                  width={64}
-                />
-                <Tooltip
-                  labelFormatter={(d) => fullDate(String(d))}
-                  formatter={(value) => [usd(Number(value)), "Total"]}
-                  cursor={{ stroke: "var(--ink-soft)", strokeWidth: 1 }}
-                  contentStyle={{
-                    borderRadius: "var(--radius)",
-                    border: "1px solid var(--border)",
-                    background: "var(--background)",
-                    color: "var(--foreground)",
-                    fontSize: 12,
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="total"
-                  stroke="var(--ink-soft)"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {chart.mode === "total" && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Stocks/cash split isn&apos;t recorded for this period — showing the investment
+                account&apos;s total.
+              </p>
+            )}
           </div>
         )}
       </CardContent>
